@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -1373,7 +1373,65 @@ whenReady();
 
 
 # --------------------------------------------------------------------------- #
+#  Selbst-Installation (beim ersten Doppelklick der heruntergeladenen .exe)
+# --------------------------------------------------------------------------- #
+def install_dir():
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local")
+    return os.path.join(base, "ClaudeSessionBrowser")
+
+
+def _make_shortcuts(target):
+    wd = os.path.dirname(target)
+    targets = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        targets.append(os.path.join(appdata, "Microsoft", "Windows", "Start Menu",
+                                    "Programs", "Claude Session Browser.lnk"))
+    targets.append(os.path.join(HOME, "Desktop", "Claude Session Browser.lnk"))
+    for lnk in targets:
+        ps = ("$w=New-Object -ComObject WScript.Shell; "
+              "$s=$w.CreateShortcut('%s'); $s.TargetPath='%s'; "
+              "$s.WorkingDirectory='%s'; $s.IconLocation='%s,0'; $s.Save()"
+              % (lnk, target, wd, target))
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           creationflags=0x08000000)  # CREATE_NO_WINDOW
+        except OSError:
+            pass
+
+
+def self_install():
+    """Wird die heruntergeladene .exe ausserhalb des Install-Ordners gestartet,
+    kopiert sie sich nach %LOCALAPPDATA% (beschreibbar, ohne Web-Markierung),
+    legt eine Verknuepfung an und startet von dort. Gibt True zurueck, wenn die
+    aufrufende Instanz sich beenden soll."""
+    if not getattr(sys, "frozen", False):
+        return False
+    cur = os.path.abspath(sys.executable)
+    target = os.path.join(install_dir(), "ClaudeSessionBrowser.exe")
+    if os.path.normcase(cur) == os.path.normcase(target):
+        return False  # laeuft bereits aus dem Install-Ordner
+    try:
+        os.makedirs(install_dir(), exist_ok=True)
+        try:
+            # shutil.copy kopiert KEINE Alternate-Data-Streams -> Zone.Identifier
+            # (die "aus dem Web"-Markierung) faellt automatisch weg
+            shutil.copy(cur, target)
+        except OSError:
+            if not os.path.exists(target):
+                return False  # konnte nicht installieren -> normal weiterlaufen
+            # Ziel evtl. gesperrt (laeuft schon) -> einfach die vorhandene starten
+        _make_shortcuts(target)
+        subprocess.Popen([target], creationflags=0x00000008)  # DETACHED
+        return True
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------------------- #
 def main():
+    if self_install():
+        return  # heruntergeladene Instanz beendet sich; installierte Kopie laeuft
     api = Api()
     s = api.settings
     kw = dict(

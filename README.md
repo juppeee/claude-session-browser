@@ -37,29 +37,20 @@ pyinstaller --onefile --noconsole --name ClaudeSessionBrowser --icon claude_sess
 Die fertige Datei liegt danach unter `dist/ClaudeSessionBrowser.exe` und läuft
 ohne Python-Installation.
 
-## Windows-Sicherheitswarnung beim ersten Start
+## Installieren
 
-Die `.exe` ist nicht signiert (kein kostenpflichtiges Zertifikat), daher zeigt
-Windows beim **heruntergeladenen** Programm eine Warnung („Unbekannter
-Herausgeber" / SmartScreen) oder blockiert es über Smart App Control
-(„Gefährliche Dateierweiterung aus dem Web"). Das ist normal und harmlos.
+[**ClaudeSessionBrowser.exe herunterladen**](https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe)
+und **doppelklicken** – das war's.
 
-**Lösung – die „aus dem Web"-Markierung entfernen** (PowerShell):
+Beim ersten Start richtet sich die App selbst ein: Sie kopiert sich nach
+`%LOCALAPPDATA%\ClaudeSessionBrowser`, legt eine Verknüpfung (Startmenü +
+Desktop) an und startet von dort. Die heruntergeladene Datei im Download-Ordner
+kann danach gelöscht werden.
 
-```powershell
-Unblock-File "$env:USERPROFILE\Downloads\ClaudeSessionBrowser.exe"
-```
-
-**Oder gleich beim Download** (lädt nach LocalAppData und entsperrt sofort):
-
-```powershell
-$d="$env:LOCALAPPDATA\ClaudeSessionBrowser"; ni -ItemType Directory -Force $d | Out-Null
-iwr "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe" -OutFile "$d\ClaudeSessionBrowser.exe"
-Unblock-File "$d\ClaudeSessionBrowser.exe"; explorer $d
-```
-
-Hinweis: Updates über den eingebauten Updater sind davon nicht betroffen – die
-laden die Datei ohne Web-Markierung herunter.
+> Beim allerersten Start zeigt Windows ggf. eine SmartScreen-Warnung
+> („Unbekannter Herausgeber"), weil die App nicht signiert ist. Einfach auf
+> **„Weitere Informationen" → „Trotzdem ausführen"** klicken. Danach kommt sie
+> nicht mehr (die installierte Kopie trägt keine „aus dem Web"-Markierung).
 
 ## Updates veröffentlichen
 

@@ -1,6 +1,6 @@
 {
-  "version": "1.0.2",
-  "notes": "Update funktioniert jetzt auch, wenn die App an einem geschützten Ort (z. B. C:\\) liegt – Download in Temp-Ordner und Austausch mit Adminrechten falls nötig.",
+  "version": "1.0.3",
+  "notes": "Selbst-Installation: einfach herunterladen und doppelklicken – die App richtet sich selbst ein (richtiger Ordner, Verknüpfung, keine Web-Blockade). Updates danach komplett automatisch.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
