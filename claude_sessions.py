@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -596,7 +596,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   body{
     font-family:"Segoe UI",system-ui,sans-serif; color:var(--fg);
     background:var(--bg); overflow:hidden; user-select:none;
-    font-size:14px;
+    font-size:14px; color-scheme:dark;   /* native Steuerelemente (Dropdown etc.) dunkel */
   }
   .app{display:flex; flex-direction:column; height:100vh}
 
@@ -768,16 +768,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .empty{flex:1; display:grid; place-items:center; color:var(--muted); text-align:center; padding:30px}
   .empty .big{font-size:15px; color:var(--fg); margin-bottom:8px; font-weight:600}
 
-  /* ---- Detail + Aktionen ---- */
+  /* ---- Hauptbereich: Tabelle links, Panel rechts (nur bei Auswahl) ---- */
+  .main{flex:1; display:flex; gap:14px; min-height:0}
+  .side{width:320px; flex:none; display:flex; flex-direction:column; gap:12px; min-height:0}
+  .main:not(.show-side) .side{display:none}
+  .main.show-side .side{animation:slidein .22s ease}
+  @keyframes slidein{from{opacity:0; transform:translateX(22px)} to{opacity:1; transform:none}}
+
+  /* ---- Detail + Aktionen (rechtes Panel) ---- */
   .detail{
-    margin-top:12px; background:var(--surface); border:1px solid var(--border);
-    border-radius:12px; padding:12px 14px; font-family:"Cascadia Code",Consolas,monospace;
-    font-size:12.5px; color:var(--muted); height:96px; overflow:auto;
-    white-space:pre-wrap; line-height:1.7; user-select:text; flex:none;
+    flex:1; min-height:90px; background:var(--surface); border:1px solid var(--border);
+    border-radius:12px; padding:13px 15px; font-family:"Cascadia Code",Consolas,monospace;
+    font-size:12.5px; color:var(--muted); overflow:auto;
+    white-space:pre-wrap; line-height:1.7; user-select:text;
   }
   .detail b{color:var(--fg); font-weight:600}
-  .actions{display:flex; align-items:center; gap:9px; margin-top:12px}
-  .actions .hint{margin-left:auto; color:var(--muted); font-size:12.5px}
+  .actions{display:flex; flex-direction:column; gap:9px; flex:none}
+  .actions .btn{width:100%; justify-content:center}
+  .actions .hint{color:var(--muted); font-size:12px; text-align:center; margin-top:2px}
 
   /* ---- Einstellungen ---- */
   .settings{overflow-y:auto; flex:1; padding-right:6px}
@@ -787,6 +795,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   .card h2{font-size:15px; margin-bottom:4px}
   .card .sub{color:var(--muted); font-size:13px; margin-bottom:14px}
+  /* alle Textfelder in Karten dunkel (kein weisses Standard-Feld) */
+  .card input[type=text]{background:var(--bg); border:1px solid var(--border); color:var(--fg);
+    border-radius:9px; padding:9px 12px; font-family:inherit; font-size:13.5px; outline:none}
+  .card input[type=text]:focus{border-color:var(--accent)}
   .field{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
   .field input[type=text]{
     flex:1; min-width:240px; background:var(--bg); border:1px solid var(--border);
@@ -834,6 +846,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   ::-webkit-scrollbar-thumb{background:var(--surface2); border-radius:8px; border:3px solid var(--bg)}
   ::-webkit-scrollbar-thumb:hover{background:#2c3450}
 
+  /* Toast (statt nativer alert-Box) */
+  .toast{position:fixed; left:50%; bottom:26px; transform:translate(-50%,20px);
+    background:var(--surface2); color:var(--fg); border:1px solid var(--border);
+    border-radius:11px; padding:11px 18px; font-size:13.5px; font-weight:600;
+    box-shadow:0 8px 30px rgba(0,0,0,.5); opacity:0; pointer-events:none;
+    transition:opacity .2s, transform .2s; z-index:80; max-width:80%}
+  .toast.show{opacity:1; transform:translate(-50%,0)}
+
   /* Popover (Farbe) */
   .overlay{position:fixed; inset:0; background:rgba(0,0,0,.5); display:none;
     align-items:center; justify-content:center; z-index:50}
@@ -846,6 +866,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .modal-input{width:100%; background:var(--bg); border:1px solid var(--border); color:var(--fg);
     border-radius:10px; padding:11px 13px; font-family:inherit; font-size:14px; outline:none; margin-bottom:16px}
   .modal-input:focus{border-color:var(--accent)}
+
+  /* eigener Farbwaehler */
+  .cpick{margin:14px 0 16px}
+  .cp-sv{position:relative; width:100%; height:132px; border-radius:11px; overflow:hidden;
+    cursor:crosshair; touch-action:none}
+  .cp-sv-white,.cp-sv-black{position:absolute; inset:0; pointer-events:none}
+  .cp-sv-white{background:linear-gradient(90deg,#fff,rgba(255,255,255,0))}
+  .cp-sv-black{background:linear-gradient(0deg,#000,rgba(0,0,0,0))}
+  .cp-sv-dot{position:absolute; width:15px; height:15px; border-radius:50%; border:2px solid #fff;
+    box-shadow:0 0 0 1.5px rgba(0,0,0,.45); transform:translate(-50%,-50%); pointer-events:none}
+  .cp-hue{-webkit-appearance:none; appearance:none; width:100%; height:14px; border-radius:8px;
+    margin:14px 0 0; outline:none; cursor:pointer;
+    background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
+  .cp-hue::-webkit-slider-thumb{-webkit-appearance:none; width:18px; height:18px; border-radius:50%;
+    background:#fff; border:2px solid rgba(0,0,0,.35); cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,.5)}
+  .cp-foot{display:flex; align-items:center; gap:10px; margin-top:13px}
+  .cp-prev{width:36px; height:36px; border-radius:9px; border:1px solid var(--border); flex:none}
+  .cp-hex{flex:1; background:var(--bg); border:1px solid var(--border); color:var(--fg);
+    border-radius:9px; padding:9px 12px; font-family:Consolas,monospace; font-size:14px; outline:none}
+  .cp-hex:focus{border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -908,30 +948,34 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       </button>
     </div>
 
-    <div class="table">
-      <div class="thead" id="thead"></div>
-      <div class="tbody" id="tbody"></div>
-    </div>
+    <div class="main">
+      <div class="table">
+        <div class="thead" id="thead"></div>
+        <div class="tbody" id="tbody"></div>
+      </div>
 
-    <div class="detail" id="detail">Wähle eine Session aus, um Details zu sehen.</div>
-    <div class="actions">
-      <button class="btn accent" id="btn-resume" disabled onclick="doResume()">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z"/></svg>
-        In Session einsteigen
-      </button>
-      <button class="btn" id="btn-rename" disabled onclick="openRename()">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-        Titel ändern
-      </button>
-      <button class="btn" id="btn-color" disabled onclick="openColor()">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10.5" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/><circle cx="15.5" cy="10.5" r="1.2" fill="currentColor"/></svg>
-        Farbe
-      </button>
-      <button class="btn" id="btn-copy" disabled onclick="doCopy()">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
-        ID kopieren
-      </button>
-      <span class="hint">Doppelklick = einsteigen · F2 = umbenennen</span>
+      <aside class="side">
+        <div class="detail" id="detail">Wähle eine Session aus, um Details zu sehen.</div>
+        <div class="actions">
+          <button class="btn accent" id="btn-resume" disabled onclick="doResume()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z"/></svg>
+            In Session einsteigen
+          </button>
+          <button class="btn" id="btn-rename" disabled onclick="openRename()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+            Titel ändern
+          </button>
+          <button class="btn" id="btn-color" disabled onclick="openColor()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10.5" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/><circle cx="15.5" cy="10.5" r="1.2" fill="currentColor"/></svg>
+            Farbe
+          </button>
+          <button class="btn" id="btn-copy" disabled onclick="doCopy()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            ID kopieren
+          </button>
+          <span class="hint">Doppelklick = einsteigen · F2 = umbenennen</span>
+        </div>
+      </aside>
     </div>
   </div>
 
@@ -942,16 +986,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="toast" id="toast"></div>
+
 <!-- Overlays -->
 <div class="overlay" id="overlay-color">
   <div class="pop">
     <h3>Farbe für diese Session</h3>
     <div class="swatches" id="color-swatches"></div>
-    <div style="margin:14px 0 16px"><input type="color" id="custom-color" style="width:100%;height:38px;border:none;background:none;cursor:pointer"></div>
+    <div class="cpick">
+      <div class="cp-sv" id="cp-sv" onpointerdown="cpDown(event)">
+        <div class="cp-sv-white"></div><div class="cp-sv-black"></div>
+        <div class="cp-sv-dot" id="cp-sv-dot"></div>
+      </div>
+      <input type="range" min="0" max="360" value="250" class="cp-hue" id="cp-hue"
+             oninput="CP.h=+this.value; cpRender()">
+      <div class="cp-foot">
+        <span class="cp-prev" id="cp-prev"></span>
+        <input class="cp-hex" id="cp-hex" maxlength="7" onchange="cpHexIn(this.value)">
+      </div>
+    </div>
     <div class="actions2">
       <button class="btn" onclick="setColor('')">Keine</button>
       <button class="btn" onclick="closeOverlay('overlay-color')">Abbrechen</button>
-      <button class="btn accent" onclick="setColor(document.getElementById('custom-color').value)">Übernehmen</button>
+      <button class="btn accent" onclick="setColor(cpHex())">Übernehmen</button>
     </div>
   </div>
 </div>
@@ -1060,6 +1117,13 @@ async function boot(){
 
 function ingest(st){STATE=st; sessions=st.sessions||[];}
 
+let _toastT=null;
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'), 2600);
+}
+
 function visible(){
   const q=document.getElementById('search').value.toLowerCase().trim();
   const hideHome=STATE.settings.hide_home, home=(STATE.home||'').toLowerCase();
@@ -1121,6 +1185,8 @@ function getSel(){return sessions.find(s=>s.id===selected);}
 function updateDetail(){
   const s=getSel();
   const en=!!s;
+  // rechtes Panel nur zeigen, wenn etwas ausgewaehlt ist
+  document.querySelector('.main').classList.toggle('show-side', en);
   ['btn-resume','btn-rename','btn-color','btn-copy'].forEach(b=>document.getElementById(b).disabled=!en);
   const d=document.getElementById('detail');
   if(!s){d.textContent='Wähle eine Session aus, um Details zu sehen.';return;}
@@ -1146,8 +1212,7 @@ function switchView(v){
 
 async function doRefresh(btn){if(btn)btn.disabled=true; ingest(await api.refresh()); render(); updateDetail(); if(btn)btn.disabled=false;}
 async function doResume(){const s=getSel(); if(!s)return; await api.resume(s.id,s.cwd);}
-async function doCopy(){const s=getSel(); if(!s)return; await api.copy(s.id);
-  document.getElementById('count').textContent='ID kopiert ✓';}
+async function doCopy(){const s=getSel(); if(!s)return; await api.copy(s.id); toast('Session-ID kopiert ✓');}
 
 /* ---- Farbe ---- */
 function buildSwatches(){
@@ -1155,10 +1220,40 @@ function buildSwatches(){
   document.getElementById('color-swatches').innerHTML=html;
 }
 function openColor(){const s=getSel(); if(!s)return;
-  document.getElementById('custom-color').value=s.color||'#6c6cff';
+  const start=s.color||STATE.settings.accent||'#6c6cff';
+  const v=hex2hsv(start); CP.h=v.h; CP.s=v.s||1; CP.v=(v.v===undefined?1:v.v); cpRender();
   document.getElementById('overlay-color').classList.add('show');}
 async function setColor(c){const s=getSel(); if(!s){closeOverlay('overlay-color');return;}
   ingest(await api.set_color(s.id,c)); render(); updateDetail(); closeOverlay('overlay-color');}
+
+/* eigener Farbwaehler (HSV) */
+let CP={h:250,s:1,v:1}, CPdrag=false;
+function hsv2hex(h,s,v){h/=360;let i=Math.floor(h*6),f=h*6-i,p=v*(1-s),q=v*(1-f*s),t=v*(1-(1-f)*s),r,g,b;
+  switch(i%6){case 0:r=v,g=t,b=p;break;case 1:r=q,g=v,b=p;break;case 2:r=p,g=v,b=t;break;
+    case 3:r=p,g=q,b=v;break;case 4:r=t,g=p,b=v;break;default:r=v,g=p,b=q;}
+  const z=x=>('0'+Math.round(x*255).toString(16)).slice(-2); return '#'+z(r)+z(g)+z(b);}
+function hex2hsv(hex){hex=(hex||'').replace('#',''); if(hex.length===3)hex=hex.split('').map(c=>c+c).join('');
+  let r=parseInt(hex.substr(0,2),16)/255,g=parseInt(hex.substr(2,2),16)/255,b=parseInt(hex.substr(4,2),16)/255;
+  if(isNaN(r))return{h:250,s:1,v:1};
+  let mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn,h=0;
+  if(d){if(mx===r)h=((g-b)/d+6)%6;else if(mx===g)h=(b-r)/d+2;else h=(r-g)/d+4;h*=60;}
+  return {h:h, s:mx?d/mx:0, v:mx};}
+function cpHex(){return hsv2hex(CP.h,CP.s,CP.v);}
+function cpRender(){
+  const sv=document.getElementById('cp-sv'); if(!sv)return;
+  sv.style.background='hsl('+CP.h+',100%,50%)';
+  const dot=document.getElementById('cp-sv-dot');
+  dot.style.left=(CP.s*100)+'%'; dot.style.top=((1-CP.v)*100)+'%';
+  const hex=cpHex();
+  document.getElementById('cp-prev').style.background=hex;
+  document.getElementById('cp-hex').value=hex;
+  document.getElementById('cp-hue').value=CP.h;
+}
+function cpPick(e){const sv=document.getElementById('cp-sv'),r=sv.getBoundingClientRect();
+  CP.s=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
+  CP.v=Math.max(0,Math.min(1,1-(e.clientY-r.top)/r.height)); cpRender();}
+function cpDown(e){CPdrag=true; cpPick(e);}
+function cpHexIn(v){const x=hex2hsv(v); CP.h=x.h; CP.s=x.s; CP.v=x.v; cpRender();}
 
 /* ---- Umbenennen ---- */
 function openRename(){const s=getSel(); if(!s)return;
@@ -1259,7 +1354,7 @@ async function toggleHome(el){const on=!el.classList.contains('on');
   ingest(await api.update_setting('hide_home',on)); render(); renderSettings();}
 async function unhide(path){ingest(await api.remove_hidden_folder(path)); render(); renderSettings();}
 async function hideCurrent(){const s=getSel();
-  if(!s||!s.cwd){alert('Erst im Tab „Sessions“ eine Session auswählen.');return;}
+  if(!s||!s.cwd){toast('Erst im Tab „Sessions" eine Session auswählen.');return;}
   ingest(await api.add_hidden_folder(s.cwd)); render(); renderSettings(); }
 async function setAccent(c){applyAccent(c); ingest(await api.update_setting('accent',c)); renderSettings();}
 
@@ -1332,7 +1427,7 @@ async function doInstall(){
   if(r && !r.ok){   // Fehler -> zurueck zur Info-Ansicht
     const pop=document.getElementById('upd-pop');
     pop.classList.remove('installing','ready');
-    alert('Update fehlgeschlagen: '+((r&&r.error)||'unbekannt'));
+    toast('Update fehlgeschlagen: '+((r&&r.error)||'unbekannt'));
   }
   // bei Erfolg schliesst Python das Fenster nach der Animation
 }
@@ -1358,6 +1453,8 @@ document.addEventListener('keydown',e=>{
   }
 });
 document.getElementById('search').addEventListener('input',render);
+document.addEventListener('pointermove',e=>{ if(CPdrag) cpPick(e); });
+document.addEventListener('pointerup',()=>{ CPdrag=false; });
 
 function whenReady(){
   if(window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_state === 'function'){

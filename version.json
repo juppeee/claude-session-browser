@@ -1,6 +1,6 @@
 {
-  "version": "1.0.3",
-  "notes": "Selbst-Installation: einfach herunterladen und doppelklicken – die App richtet sich selbst ein (richtiger Ordner, Verknüpfung, keine Web-Blockade). Updates danach komplett automatisch.",
+  "version": "1.0.4",
+  "notes": "Detail-Panel jetzt rechts neben der Liste (nur bei Auswahl). Eigener Farbwähler statt Windows-Dialog. Aufgeräumte Oberfläche: dunkle Felder, In-App-Meldungen statt Popup-Boxen.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
