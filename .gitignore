@@ -1,0 +1,15 @@
+# Build-Artefakte
+build/
+dist/
+*.spec
+*.exe
+
+# Python
+__pycache__/
+*.pyc
+
+# Lokale Daten / Streudateien (nichts Persoenliches ins Repo)
+webview_debug.txt
+session_browser_settings.json
+session_titles.json
+*_backup.py
