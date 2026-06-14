@@ -391,8 +391,14 @@ class Api:
 
     @staticmethod
     def _ssl_ctx():
-        # Echte TLS-Verifizierung mit dem certifi-CA-Bundle (sicher – der Updater
-        # laedt eine ausfuehrbare Datei, daher darf TLS nicht abgeschaltet werden).
+        # Echte TLS-Verifizierung (der Updater laedt eine ausfuehrbare Datei, daher
+        # darf TLS nicht abgeschaltet werden). Bevorzugt den Windows-Zertifikat-
+        # speicher (funktioniert auch hinter TLS-Inspektion/Firewalls), sonst certifi.
+        try:
+            import truststore
+            return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        except Exception:
+            pass
         try:
             import certifi
             return ssl.create_default_context(cafile=certifi.where())
