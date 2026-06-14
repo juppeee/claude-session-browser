@@ -15,8 +15,10 @@ import os
 import sys
 import ssl
 import json
+import shutil
 import base64
 import logging
+import tempfile
 import webbrowser
 import datetime as dt
 import subprocess
@@ -77,6 +79,9 @@ DEFAULT_SETTINGS = {
         {"key": "msgs", "on": True}, {"key": "when", "on": True},
         {"key": "id", "on": False}, {"key": "first", "on": False},
     ],
+    "win_w": 0, "win_h": 0,      # gemerkte Fenstergroesse (0 = noch nicht gesetzt)
+    "win_x": None, "win_y": None,  # gemerkte Position
+    "win_max": False,            # war das Fenster maximiert?
 }
 
 
@@ -249,6 +254,47 @@ class Api:
     def _win():
         return webview.windows[0] if webview.windows else None
 
+    def bind_window(self, win):
+        """Merkt sich Fenstergroesse/-position/Maximierung – ressourcenschonend:
+        waehrend der Nutzung nur In-Memory, gespeichert wird nur beim Schliessen."""
+        s = self.settings
+        self._max = bool(s.get("win_max"))
+        self._geo = {
+            "w": s.get("win_w") or 1180, "h": s.get("win_h") or 760,
+            "x": s.get("win_x"), "y": s.get("win_y"),
+        }
+
+        def on_resized(*a):
+            if len(a) >= 2 and not self._max:
+                self._geo["w"], self._geo["h"] = a[0], a[1]
+
+        def on_moved(*a):
+            if len(a) >= 2 and not self._max:
+                self._geo["x"], self._geo["y"] = a[0], a[1]
+
+        def on_max(*a):
+            self._max = True
+
+        def on_restore(*a):
+            self._max = False
+
+        def on_closing(*a):
+            self.settings["win_w"] = int(self._geo["w"])
+            self.settings["win_h"] = int(self._geo["h"])
+            if self._geo["x"] is not None:
+                self.settings["win_x"] = int(self._geo["x"])
+            if self._geo["y"] is not None:
+                self.settings["win_y"] = int(self._geo["y"])
+            self.settings["win_max"] = bool(self._max)
+            save_json(SETTINGS_FILE, self.settings)
+
+        win.events.resized += on_resized
+        win.events.moved += on_moved
+        win.events.maximized += on_max
+        win.events.restored += on_restore
+        win.events.closing += on_closing
+        win.events.closed += on_closing   # Fallback, falls 'closing' nicht feuert
+
     # -- intern --
     def _projects_dir(self):
         p = self.settings.get("projects_dir")
@@ -274,6 +320,7 @@ class Api:
             "projects_dir": pdir,
             "found": bool(pdir and os.path.isdir(pdir)),
             "home": HOME,
+            "version": VERSION,
         }
 
     # -- von JS aufgerufen --
@@ -342,23 +389,86 @@ class Api:
         except OSError:
             return False
 
+    @staticmethod
+    def _ssl_ctx():
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE  # nur oeffentliche Downloads/Versions-Checks
+        return ctx
+
+    def _remote_info(self, timeout=4):
+        req = urllib.request.Request(
+            UPDATE_URL, headers={"User-Agent": "ClaudeSessionBrowser"})
+        with urllib.request.urlopen(req, timeout=timeout, context=self._ssl_ctx()) as r:
+            return json.loads(r.read().decode("utf-8"))
+
     def check_update(self):
         """Fragt bei GitHub nach einer neueren Version. Ohne Internet -> still."""
+        frozen = bool(getattr(sys, "frozen", False))
         try:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE  # nur ein oeffentlicher Versions-Check
-            req = urllib.request.Request(
-                UPDATE_URL, headers={"User-Agent": "ClaudeSessionBrowser"})
-            with urllib.request.urlopen(req, timeout=3, context=ctx) as r:
-                data = json.loads(r.read().decode("utf-8"))
+            data = self._remote_info()
+            self._update_info = data
             latest = data.get("version", "0")
-            if _vtuple(latest) > _vtuple(VERSION):
-                return {"available": True, "latest": latest, "current": VERSION,
-                        "url": data.get("url", ""), "notes": data.get("notes", "")}
+            avail = _vtuple(latest) > _vtuple(VERSION)
+            return {"available": avail, "latest": latest, "current": VERSION,
+                    "url": data.get("url", ""), "notes": data.get("notes", ""),
+                    "frozen": frozen}
         except Exception:
-            pass  # offline / Repo nicht erreichbar -> kein Update-Hinweis
-        return {"available": False, "current": VERSION}
+            return {"available": False, "current": VERSION, "frozen": frozen}
+
+    def install_update(self):
+        """Laedt die neue .exe, ersetzt die laufende und startet neu.
+        Einstellungen/Daten in ~/.claude bleiben unberuehrt."""
+        try:
+            data = getattr(self, "_update_info", None) or self._remote_info()
+        except Exception:
+            return {"ok": False, "error": "Kein Internet / Repo nicht erreichbar."}
+        page = data.get("url") or \
+            "https://github.com/juppeee/claude-session-browser/releases/latest"
+        exe_url = data.get("exe_url") or ""
+
+        # Im Entwicklungsmodus (.py, keine .exe): nur Release-Seite oeffnen
+        if not getattr(sys, "frozen", False):
+            webbrowser.open(page)
+            return {"ok": False, "reason": "dev", "opened": True}
+        if not exe_url:
+            webbrowser.open(page)
+            return {"ok": False, "reason": "no_exe_url", "opened": True}
+
+        try:
+            cur = sys.executable
+            new = cur + ".new"
+            req = urllib.request.Request(
+                exe_url, headers={"User-Agent": "ClaudeSessionBrowser"})
+            with urllib.request.urlopen(req, timeout=120, context=self._ssl_ctx()) as r, \
+                    open(new, "wb") as f:
+                shutil.copyfileobj(r, f)
+            if os.path.getsize(new) < 500000:   # offensichtlich kaputter Download
+                os.remove(new)
+                return {"ok": False, "error": "Download unvollstaendig."}
+
+            # Batch wartet, bis die laufende .exe entsperrt ist, tauscht & startet neu
+            bat = os.path.join(tempfile.gettempdir(), "csb_update.bat")
+            with open(bat, "w", encoding="utf-8") as f:
+                f.write(
+                    "@echo off\r\n"
+                    'set "CUR=' + cur + '"\r\n'
+                    'set "NEW=' + new + '"\r\n'
+                    ":wait\r\n"
+                    "ping -n 2 127.0.0.1 >nul\r\n"
+                    'move /y "%NEW%" "%CUR%" >nul 2>&1\r\n'
+                    "if errorlevel 1 goto wait\r\n"
+                    'start "" "%CUR%"\r\n'
+                    'del "%~f0"\r\n'
+                )
+            subprocess.Popen(["cmd", "/c", bat],
+                             creationflags=0x00000008 | 0x00000200)  # DETACHED|NEW_GROUP
+            win = self._win()
+            if win:
+                win.destroy()   # entsperrt die .exe -> Batch tauscht & startet neu
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def open_url(self, url):
         try:
@@ -458,6 +568,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .updatebar.show{display:flex}
   .updatebar .utext{font-weight:700; color:var(--fg)}
   .updatebar .unotes{color:var(--muted); font-size:12.5px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  #upd-notes{color:var(--fg); font-size:13.5px; line-height:1.65; margin-bottom:12px;
+    max-height:260px; overflow:auto; white-space:pre-wrap; background:var(--bg);
+    border:1px solid var(--border); border-radius:10px; padding:12px 14px}
+  .upd-keep{color:var(--muted); font-size:12px; margin-bottom:16px; display:flex; gap:7px; align-items:center}
 
   .view{flex:1; overflow:hidden; display:none; flex-direction:column; padding:14px 18px 16px}
   .view.active{display:flex}
@@ -501,7 +615,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* ---- Tabelle ---- */
   .table{
-    flex:1; display:flex; flex-direction:column; background:var(--row);
+    flex:1; min-height:140px; display:flex; flex-direction:column; background:var(--row);
     border:1px solid var(--border); border-radius:14px; overflow:hidden;
   }
   .thead{
@@ -529,9 +643,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .row .ic svg{flex:none; opacity:.65}
   .row:nth-child(even){background:var(--row-alt)}
   .row:hover{background:var(--surface)}
-  /* Auswahl: kraeftiger Hintergrund + Akzentbalken links (auch auf farbigen Zeilen sichtbar) */
-  .row.sel{background:var(--select); box-shadow:inset 4px 0 0 var(--accent), inset 0 0 0 1.5px var(--accent)}
-  .row.sel .title{color:#fff}
+  /* Auswahl: heller Ring + schwebender Schatten -> hebt sich auf jeder Zeilenfarbe ab */
+  .row.sel{background:var(--select); z-index:2;
+    box-shadow:inset 0 0 0 2px rgba(255,255,255,.92), 0 6px 20px rgba(0,0,0,.55)}
+  .row.sel .title{font-weight:700}
   .row.colored{margin:1px 0}
   .row.colored .dim{color:inherit; opacity:.85}
   .row.colored .ic svg{opacity:.8}
@@ -543,8 +658,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .detail{
     margin-top:12px; background:var(--surface); border:1px solid var(--border);
     border-radius:12px; padding:12px 14px; font-family:"Cascadia Code",Consolas,monospace;
-    font-size:12.5px; color:var(--muted); min-height:78px; white-space:pre-wrap;
-    line-height:1.7; user-select:text;
+    font-size:12.5px; color:var(--muted); height:96px; overflow:auto;
+    white-space:pre-wrap; line-height:1.7; user-select:text; flex:none;
   }
   .detail b{color:var(--fg); font-weight:600}
   .actions{display:flex; align-items:center; gap:9px; margin-top:12px}
@@ -657,7 +772,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
     <span class="utext"></span>
     <span class="unotes"></span>
-    <button class="btn accent mini" onclick="openUpdate()">Herunterladen</button>
+    <button class="btn accent mini" onclick="openUpdateDialog()">Details ansehen</button>
     <button class="btn mini" onclick="dismissUpdate()">Später</button>
   </div>
 
@@ -735,6 +850,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <button class="btn" onclick="resetTitle()">Auto-Titel</button>
       <button class="btn" onclick="closeOverlay('overlay-rename')">Abbrechen</button>
       <button class="btn accent" onclick="saveRename()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay-update">
+  <div class="pop" style="width:460px">
+    <h3 id="upd-title">Update verfügbar</h3>
+    <div id="upd-notes"></div>
+    <div class="upd-keep">Deine Einstellungen, Farben und Titel bleiben dabei vollständig erhalten.</div>
+    <div class="actions2">
+      <button class="btn" onclick="closeOverlay('overlay-update')">Später</button>
+      <button class="btn accent" id="upd-install" onclick="doInstall()">Jetzt installieren</button>
     </div>
   </div>
 </div>
@@ -871,9 +998,10 @@ function updateDetail(){
   ['btn-resume','btn-rename','btn-color','btn-copy'].forEach(b=>document.getElementById(b).disabled=!en);
   const d=document.getElementById('detail');
   if(!s){d.textContent='Wähle eine Session aus, um Details zu sehen.';return;}
+  const start=(s.first_user||'—').replace(/\s+/g,' ').trim().slice(0,260);
   d.innerHTML=`<b>ID</b>      ${esc(s.id)}\n<b>Ordner</b>  ${esc(s.cwd||'(unbekannt)')}\n`
     +`<b>Verlauf</b> ${s.user_msgs} von dir · ${s.assistant_msgs} von Claude\n`
-    +`<b>Start</b>   ${esc((s.first_user||'—').slice(0,260))}`;
+    +`<b>Start</b>   ${esc(start)}`;
 }
 
 function sortBy(c){
@@ -987,6 +1115,15 @@ function renderSettings(){
           onchange="api.update_setting('claude_cmd',this.value)">
       </div>
     </div>
+
+    <div class="card">
+      <h2>Updates</h2>
+      <div class="sub">Aktuelle Version: v${esc(STATE.version||'?')} — beim Start wird automatisch nach Updates gesucht (ohne Internet wird das übersprungen).</div>
+      <div class="field">
+        <button class="btn" onclick="manualCheck(this)">Nach Updates suchen</button>
+        <span id="upd-status" class="badge"></span>
+      </div>
+    </div>
   `;
 }
 
@@ -1008,21 +1145,44 @@ function moveCol(i,dir){ const cols=normCols(); const j=i+dir; if(j<0||j>=cols.l
   const t=cols[i]; cols[i]=cols[j]; cols[j]=t; persistCols(cols); }
 
 /* ---- Update ---- */
-async function checkUpdate(){
-  try{
-    const u = await api.check_update();
-    if(u && u.available){
-      const bar=document.getElementById('updatebar');
-      bar.querySelector('.utext').textContent='Update verfügbar: v'+u.latest;
-      bar.querySelector('.unotes').textContent=u.notes? ('— '+u.notes) : ('(aktuell v'+u.current+')');
-      bar.dataset.url=u.url||'';
-      bar.classList.add('show');
-    }
-  }catch(_){}
+let UPD=null;
+function showUpdateBar(u){
+  UPD=u;
+  const bar=document.getElementById('updatebar');
+  bar.querySelector('.utext').textContent='Update verfügbar: v'+u.latest;
+  bar.querySelector('.unotes').textContent=u.notes? ('— '+u.notes) : '';
+  bar.classList.add('show');
 }
-function openUpdate(){ const url=document.getElementById('updatebar').dataset.url;
-  if(url) api.open_url(url); }
+async function checkUpdate(){
+  try{ const u=await api.check_update(); if(u&&u.available) showUpdateBar(u); }catch(_){}
+}
+function openUpdateDialog(){
+  if(!UPD) return;
+  document.getElementById('upd-title').textContent='Update auf v'+UPD.latest+' (aktuell v'+UPD.current+')';
+  document.getElementById('upd-notes').textContent=UPD.notes||'Verbesserungen und Fehlerbehebungen.';
+  const b=document.getElementById('upd-install');
+  b.disabled=false; b.textContent= UPD.frozen ? 'Jetzt installieren' : 'Zur Download-Seite';
+  document.getElementById('overlay-update').classList.add('show');
+}
+async function doInstall(){
+  const b=document.getElementById('upd-install');
+  b.disabled=true; b.textContent= UPD && UPD.frozen ? 'Lädt herunter…' : 'Öffne…';
+  let r=null; try{ r=await api.install_update(); }catch(_){}
+  if(r && r.ok){ b.textContent='Installiere & starte neu…'; }
+  else if(r && r.opened){ closeOverlay('overlay-update'); }
+  else { b.disabled=false; b.textContent='Jetzt installieren';
+    alert('Update fehlgeschlagen: '+((r&&r.error)||'unbekannt')); }
+}
 function dismissUpdate(){ document.getElementById('updatebar').classList.remove('show'); }
+async function manualCheck(btn){
+  btn.disabled=true; const s=document.getElementById('upd-status');
+  s.className='badge'; s.textContent='Prüfe…';
+  let u=null; try{ u=await api.check_update(); }catch(_){}
+  if(u && u.available){ showUpdateBar(u); s.className='badge no'; s.textContent='v'+u.latest+' verfügbar';
+    openUpdateDialog(); }
+  else { s.className='badge ok'; s.textContent='Aktuell ✓'; }
+  btn.disabled=false;
+}
 
 /* ---- Tastatur ---- */
 document.addEventListener('keydown',e=>{
@@ -1052,14 +1212,19 @@ whenReady();
 # --------------------------------------------------------------------------- #
 def main():
     api = Api()
-    webview.create_window(
-        "Claude Session Browser",
-        html=build_html(),
-        js_api=api,
-        width=1180, height=760, min_size=(820, 520),
-        resizable=True,
-        background_color="#14100e",
+    s = api.settings
+    kw = dict(
+        html=build_html(), js_api=api, min_size=(820, 520),
+        resizable=True, background_color="#14100e",
+        width=int(s.get("win_w") or 1180),
+        height=int(s.get("win_h") or 760),
+        maximized=bool(s.get("win_max")),
     )
+    if s.get("win_x") is not None and s.get("win_y") is not None:
+        kw["x"] = int(s["win_x"])
+        kw["y"] = int(s["win_y"])
+    win = webview.create_window("Claude Session Browser", **kw)
+    api.bind_window(win)
     webview.start()
 
 
