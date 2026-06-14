@@ -12,6 +12,7 @@ Bauen:   pyinstaller --onefile --noconsole --name ClaudeSessionBrowser \
 """
 
 import os
+import re
 import sys
 import ssl
 import json
@@ -30,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -142,6 +143,23 @@ def _first_text(content):
     return ""
 
 
+def clean_user_text(t):
+    """Entfernt System-/Befehls-Wrapper (z. B. <local-command-caveat>,
+    <command-name>, <system-reminder>), damit die echte erste Frage uebrig bleibt."""
+    if not t:
+        return ""
+    # bekannte Bloecke komplett entfernen (auch mehrzeilig)
+    for tag in ("local-command-caveat", "local-command-stdout", "system-reminder",
+                "command-name", "command-message", "command-args", "command-contents"):
+        t = re.sub(r"<%s>.*?</%s>" % (tag, tag), " ", t, flags=re.S | re.I)
+        t = re.sub(r"</?%s>" % tag, " ", t, flags=re.I)  # auch unvollstaendige
+    # die typische Caveat-Warnung als Klartext entfernen, falls ohne Tags
+    t = re.sub(r"Caveat:.*?unless the user explicitly asks.*?\.", " ", t, flags=re.S | re.I)
+    # restliche spitzklammer-Tags raus
+    t = re.sub(r"</?[a-zA-Z][\w-]*>", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def parse_session(path):
     session_id = os.path.splitext(os.path.basename(path))[0]
     ai_title = first_user = cwd = last_ts = None
@@ -166,9 +184,9 @@ def parse_session(path):
                 elif t == "user":
                     user_msgs += 1
                     if first_user is None:
-                        txt = _first_text(d.get("message", {}).get("content"))
+                        txt = clean_user_text(_first_text(d.get("message", {}).get("content")))
                         if txt:
-                            first_user = txt.strip()
+                            first_user = txt
                 elif t == "assistant":
                     assistant_msgs += 1
     except OSError:

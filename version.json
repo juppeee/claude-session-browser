@@ -1,6 +1,6 @@
 {
-  "version": "1.0.0",
-  "notes": "Erste Version.",
+  "version": "1.0.1",
+  "notes": "Fenstergröße/-position wird gemerkt. Auswahl besser sichtbar. Detail-Box & erste Frage aufgeräumt (kein System-Text mehr).",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
