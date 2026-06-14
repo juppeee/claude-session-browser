@@ -1,6 +1,6 @@
 {
-  "version": "1.0.5",
-  "notes": "Update-Tausch komplett unsichtbar (keine Ping-Fenster mehr), kaputte Downloads werden erkannt, kein Endlos-Prozess, Neustart immer als normaler Nutzer. Außerdem stabilere Sitzungs-Erkennung und kleinere Fehlerbehebungen.",
+  "version": "1.0.6",
+  "notes": "Neuer Einrichtungs-Assistent beim ersten Start: Begrüßung, Akzentfarbe wählen (mit Live-Vorschau) und kurze Voreinstellungen.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }

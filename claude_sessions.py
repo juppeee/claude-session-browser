@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -83,6 +83,7 @@ DEFAULT_SETTINGS = {
     "win_w": 0, "win_h": 0,      # gemerkte Fenstergroesse (0 = noch nicht gesetzt)
     "win_x": None, "win_y": None,  # gemerkte Position
     "win_max": False,            # war das Fenster maximiert?
+    "onboarded": False,          # Erst-Einrichtung schon durchlaufen?
 }
 
 
@@ -105,7 +106,15 @@ def save_json(path, data):
 
 def load_settings():
     data = dict(DEFAULT_SETTINGS)
-    data.update(load_json(SETTINGS_FILE, {}))
+    raw = load_json(SETTINGS_FILE, None)
+    if raw:
+        data.update(raw)
+        # Bestandsnutzer (Datei existiert) sehen kein Onboarding,
+        # ausser der Schluessel ist bereits gesetzt.
+        if "onboarded" not in raw:
+            data["onboarded"] = True
+    else:
+        data["onboarded"] = False   # echte Erstinstallation
     return data
 
 
@@ -890,6 +899,36 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   ::-webkit-scrollbar-thumb{background:var(--surface2); border-radius:8px; border:3px solid var(--bg)}
   ::-webkit-scrollbar-thumb:hover{background:#2c3450}
 
+  /* Onboarding */
+  .onboard{position:fixed; inset:0; z-index:100; display:none; place-items:center;
+    background:radial-gradient(120% 120% at 50% 0%, #1d1612, #0d0a09)}
+  .onboard.show{display:grid; animation:obfade .3s ease}
+  @keyframes obfade{from{opacity:0}to{opacity:1}}
+  .ob-card{width:460px; max-width:88vw; background:var(--surface); border:1px solid var(--border);
+    border-radius:20px; padding:30px 32px 24px; text-align:center;
+    box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  .ob-logo{width:72px; height:72px; margin-bottom:14px}
+  .ob-step h2{font-size:23px; font-weight:700; margin-bottom:10px}
+  .ob-step p{color:var(--muted); font-size:14px; line-height:1.6; margin-bottom:6px}
+  .ob-swatches{display:flex; flex-wrap:wrap; gap:12px; justify-content:center; margin-top:20px}
+  .ob-sw{width:42px; height:42px; border-radius:12px; cursor:pointer; border:3px solid transparent;
+    transition:transform .1s}
+  .ob-sw:hover{transform:scale(1.12)}
+  .ob-sw.active{border-color:#fff; transform:scale(1.12)}
+  .ob-line{display:flex; align-items:center; justify-content:space-between; gap:14px;
+    text-align:left; background:var(--bg); border:1px solid var(--border);
+    border-radius:12px; padding:14px 16px; margin-top:18px}
+  .ob-lbl{font-weight:600}
+  .ob-desc{color:var(--muted); font-size:12.5px; margin-top:2px}
+  .ob-folder{margin-top:14px; color:var(--muted); font-size:12.5px; text-align:left;
+    background:var(--bg); border:1px solid var(--border); border-radius:12px; padding:12px 16px;
+    word-break:break-all}
+  .ob-dots{display:flex; gap:8px; justify-content:center; margin:24px 0 18px}
+  .ob-dots i{width:8px; height:8px; border-radius:50%; background:var(--surface2); transition:all .2s}
+  .ob-dots i.on{background:var(--accent); width:22px; border-radius:5px}
+  .ob-nav{display:flex; gap:10px; justify-content:space-between}
+  .ob-nav .btn{flex:1; justify-content:center}
+
   /* Toast (statt nativer alert-Box) */
   .toast{position:fixed; left:50%; bottom:26px; transform:translate(-50%,20px);
     background:var(--surface2); color:var(--fg); border:1px solid var(--border);
@@ -1032,6 +1071,40 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div class="toast" id="toast"></div>
 
+<!-- Onboarding (nur beim ersten Start) -->
+<div class="onboard" id="onboard">
+  <div class="ob-card">
+    <svg class="ob-logo" viewBox="0 0 1024 1024"><g class="l-spin"><use href="#rays"/></g></svg>
+
+    <div class="ob-step" data-step="0">
+      <h2>Willkommen 👋</h2>
+      <p>Dein Browser für alle lokalen Claude-Code-Sessions – durchsuchen, einfärben und per Klick wieder einsteigen. Lass uns kurz einrichten.</p>
+    </div>
+
+    <div class="ob-step" data-step="1" hidden>
+      <h2>Wähle deine Farbe</h2>
+      <p>Die Akzentfarbe der Oberfläche. Du kannst sie später jederzeit in den Einstellungen ändern.</p>
+      <div class="ob-swatches" id="ob-swatches"></div>
+    </div>
+
+    <div class="ob-step" data-step="2" hidden>
+      <h2>Fast geschafft</h2>
+      <div class="ob-line">
+        <div><div class="ob-lbl">Heimatordner ausblenden</div>
+          <div class="ob-desc">Sessions, die direkt im Benutzerordner laufen, verstecken.</div></div>
+        <div class="toggle on" id="ob-home" onclick="obToggleHome(this)"></div>
+      </div>
+      <div class="ob-folder" id="ob-folder"></div>
+    </div>
+
+    <div class="ob-dots" id="ob-dots"></div>
+    <div class="ob-nav">
+      <button class="btn" id="ob-back" onclick="obPrev()" style="visibility:hidden">Zurück</button>
+      <button class="btn accent" id="ob-next" onclick="obNext()">Weiter</button>
+    </div>
+  </div>
+</div>
+
 <!-- Overlays -->
 <div class="overlay" id="overlay-color">
   <div class="pop">
@@ -1152,6 +1225,7 @@ async function boot(){
     renderHead();
     render();
     renderSettings();
+    if(!STATE.settings.onboarded) obShow();   // Erst-Einrichtung
     checkUpdate();   // im Hintergrund, blockiert nichts
   }catch(e){
     BOOTED=false; bootTries=(bootTries||0)+1;
@@ -1490,6 +1564,46 @@ async function manualCheck(btn){
     openUpdateDialog(); }
   else { s.className='badge ok'; s.textContent='Aktuell ✓'; }
   btn.disabled=false;
+}
+
+/* ---- Onboarding (erster Start) ---- */
+const OB_ACCENTS=['#ec7456','#6c6cff','#3ecf8e','#4aa3ff','#ffb454','#ff6b6b','#c08cff','#34d6c8','#ffe066','#ff8fcf'];
+const OB_STEPS=3;
+let obStep=0;
+function obShow(){
+  const cur=STATE.settings.accent;
+  document.getElementById('ob-swatches').innerHTML=OB_ACCENTS.map(c=>
+    `<div class="ob-sw ${c===cur?'active':''}" style="background:${c}" onclick="obPickAccent('${c}',this)"></div>`).join('');
+  document.getElementById('ob-home').classList.toggle('on', STATE.settings.hide_home!==false);
+  const f=document.getElementById('ob-folder');
+  f.innerHTML = STATE.found
+    ? ('📁 Sessions-Ordner gefunden:<br>'+esc(STATE.projects_dir))
+    : '⚠️ Kein Sessions-Ordner gefunden – du kannst ihn später in den Einstellungen festlegen.';
+  obStep=0; obRender();
+  document.getElementById('onboard').classList.add('show');
+}
+function obPickAccent(c,el){
+  applyAccent(c); api.update_setting('accent',c);
+  document.querySelectorAll('.ob-sw').forEach(s=>s.classList.remove('active'));
+  el.classList.add('active');
+}
+function obToggleHome(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  api.update_setting('hide_home',on);
+}
+function obRender(){
+  document.querySelectorAll('.ob-step').forEach(s=>{ s.hidden = (+s.dataset.step!==obStep); });
+  let dots=''; for(let i=0;i<OB_STEPS;i++) dots+=`<i class="${i===obStep?'on':''}"></i>`;
+  document.getElementById('ob-dots').innerHTML=dots;
+  document.getElementById('ob-back').style.visibility = obStep===0?'hidden':'visible';
+  document.getElementById('ob-next').textContent = obStep===OB_STEPS-1 ? "Los geht's! 🎉" : 'Weiter';
+}
+function obNext(){ if(obStep<OB_STEPS-1){ obStep++; obRender(); } else obFinish(); }
+function obPrev(){ if(obStep>0){ obStep--; obRender(); } }
+async function obFinish(){
+  ingest(await api.update_setting('onboarded',true));
+  document.getElementById('onboard').classList.remove('show');
+  render(); renderSettings();
 }
 
 /* ---- Tastatur ---- */
