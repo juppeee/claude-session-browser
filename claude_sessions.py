@@ -391,10 +391,13 @@ class Api:
 
     @staticmethod
     def _ssl_ctx():
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE  # nur oeffentliche Downloads/Versions-Checks
-        return ctx
+        # Echte TLS-Verifizierung mit dem certifi-CA-Bundle (sicher – der Updater
+        # laedt eine ausfuehrbare Datei, daher darf TLS nicht abgeschaltet werden).
+        try:
+            import certifi
+            return ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            return ssl.create_default_context()
 
     def _remote_info(self, timeout=4):
         req = urllib.request.Request(
