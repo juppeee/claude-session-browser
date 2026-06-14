@@ -1,6 +1,6 @@
 {
-  "version": "1.0.4",
-  "notes": "Detail-Panel jetzt rechts neben der Liste (nur bei Auswahl). Eigener Farbwähler statt Windows-Dialog. Aufgeräumte Oberfläche: dunkle Felder, In-App-Meldungen statt Popup-Boxen.",
+  "version": "1.0.5",
+  "notes": "Update-Tausch komplett unsichtbar (keine Ping-Fenster mehr), kaputte Downloads werden erkannt, kein Endlos-Prozess, Neustart immer als normaler Nutzer. Außerdem stabilere Sitzungs-Erkennung und kleinere Fehlerbehebungen.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }

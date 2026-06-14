@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -174,6 +174,8 @@ def parse_session(path):
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(d, dict):
+                    continue   # valides JSON, aber kein Objekt -> ueberspringen
                 t = d.get("type")
                 if d.get("cwd"):
                     cwd = d["cwd"]
@@ -189,6 +191,7 @@ def parse_session(path):
                             first_user = txt
                 elif t == "assistant":
                     assistant_msgs += 1
+        mtime = os.path.getmtime(path)
     except OSError:
         return None
     if user_msgs == 0 and assistant_msgs == 0 and not ai_title:
@@ -199,7 +202,7 @@ def parse_session(path):
         "auto_title": auto_title,
         "first_user": first_user or "",
         "cwd": cwd or "",
-        "mtime": os.path.getmtime(path),
+        "mtime": mtime,
         "user_msgs": user_msgs,
         "assistant_msgs": assistant_msgs,
         "total_msgs": user_msgs + assistant_msgs,
@@ -297,6 +300,9 @@ class Api:
             self._max = False
 
         def on_closing(*a):
+            if getattr(self, "_geo_saved", False):
+                return   # nur einmal speichern (closing UND closed feuern)
+            self._geo_saved = True
             self.settings["win_w"] = int(self._geo["w"])
             self.settings["win_h"] = int(self._geo["h"])
             if self._geo["x"] is not None:
@@ -462,6 +468,10 @@ class Api:
             webbrowser.open(page)
             return {"ok": False, "reason": "no_exe_url", "opened": True}
 
+        if getattr(self, "_installing", False):
+            return {"ok": False, "error": "Update läuft bereits."}
+        self._installing = True
+
         win = self._win()
 
         def js(code):
@@ -471,17 +481,19 @@ class Api:
                 except Exception:
                     pass
 
+        part = os.path.join(tempfile.gettempdir(), "ClaudeSessionBrowser_update.exe.part")
         try:
             import time
             cur = sys.executable
             target_dir = os.path.dirname(cur) or "."
-            # Download in einen IMMER beschreibbaren Temp-Ordner (nicht neben die .exe,
-            # die kann an geschuetzten Orten wie C:\ liegen -> kein Schreibrecht).
+            # Download zuerst in eine .part-Datei in einem IMMER beschreibbaren Temp-
+            # Ordner; erst nach vollstaendiger Pruefung in die finale .new umbenennen.
             new = os.path.join(tempfile.gettempdir(), "ClaudeSessionBrowser_update.exe")
+            part = new + ".part"
             req = urllib.request.Request(
                 exe_url, headers={"User-Agent": "ClaudeSessionBrowser"})
             with urllib.request.urlopen(req, timeout=120, context=self._ssl_ctx()) as r, \
-                    open(new, "wb") as f:
+                    open(part, "wb") as f:
                 total = int(r.headers.get("Content-Length") or 0)
                 done = 0
                 last = -1
@@ -496,11 +508,27 @@ class Api:
                         if p != last:
                             last = p
                             js("window.updateProgress&&updateProgress(%d)" % p)
-            if os.path.getsize(new) < 500000:   # offensichtlich kaputter Download
-                os.remove(new)
-                return {"ok": False, "error": "Download unvollstaendig."}
 
-            # Ist der Zielordner ueberhaupt beschreibbar? (C:\ etc. brauchen Admin)
+            # Vollstaendigkeit pruefen: heruntergeladene Groesse muss exakt passen,
+            # sonst wuerde eine kaputte .exe getauscht -> "Failed to load Python DLL".
+            size = os.path.getsize(part)
+            if (total and size != total) or size < 2_000_000:
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+                return {"ok": False,
+                        "error": "Download unvollständig – bitte erneut versuchen."}
+            # MZ-Header pruefen (gueltige .exe?)
+            with open(part, "rb") as f:
+                if f.read(2) != b"MZ":
+                    os.remove(part)
+                    return {"ok": False, "error": "Heruntergeladene Datei ist keine gültige .exe."}
+            if os.path.exists(new):
+                os.remove(new)
+            os.replace(part, new)   # atomar
+
+            # Ist der Zielordner beschreibbar? (C:\ etc. brauchen Admin)
             writable = True
             try:
                 _t = os.path.join(target_dir, ".csb_write_test")
@@ -510,38 +538,54 @@ class Api:
             except OSError:
                 writable = False
 
-            # Batch: wartet bis die laufende .exe frei ist, tauscht aus, startet neu
+            # Batch: wartet bis die laufende .exe frei ist, tauscht aus, startet neu.
+            # Laeuft komplett unsichtbar (CREATE_NO_WINDOW) -> kein Ping-Fenster.
+            # Bricht nach ~60 Versuchen ab und startet die App trotzdem wieder
+            # (kein Endlos-Geist-Prozess). Relaunch ueber explorer.exe -> laeuft
+            # als normaler Nutzer (auch wenn der Tausch elevated lief).
             bat = os.path.join(tempfile.gettempdir(), "csb_update.bat")
             with open(bat, "w", encoding="utf-8") as f:
                 f.write(
                     "@echo off\r\n"
                     'set "CUR=' + cur + '"\r\n'
                     'set "NEW=' + new + '"\r\n'
+                    "set /a n=0\r\n"
                     ":wait\r\n"
                     "ping -n 2 127.0.0.1 >nul\r\n"
                     'move /y "%NEW%" "%CUR%" >nul 2>&1\r\n'
-                    'if exist "%NEW%" goto wait\r\n'   # solange noch da: weiter versuchen
-                    'start "" "%CUR%"\r\n'
+                    'if not exist "%NEW%" goto done\r\n'
+                    "set /a n+=1\r\n"
+                    "if %n% lss 60 goto wait\r\n"   # Abbruch nach ~2 Min
+                    ":done\r\n"
+                    "ping -n 2 127.0.0.1 >nul\r\n"  # kurz setzen lassen
+                    'explorer.exe "%CUR%"\r\n'
                     'del "%~f0"\r\n'
                 )
 
             js("window.downloadDone&&downloadDone()")
             time.sleep(2.6)        # die "Bereit!"-Animation abspielen lassen
 
-            DET = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            NOWIN = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
             if writable:
-                subprocess.Popen(["cmd", "/c", bat], creationflags=DET)
+                subprocess.Popen(["cmd", "/c", bat], creationflags=NOWIN)
             else:
-                # Geschuetzter Ort -> Tausch mit Adminrechten (einmal UAC bestaetigen)
+                # Geschuetzter Ort -> Tausch mit Adminrechten (einmal UAC), unsichtbar
                 ps = ("Start-Process -FilePath cmd.exe "
                       "-ArgumentList '/c','\"%s\"' -Verb RunAs -WindowStyle Hidden" % bat)
-                subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
-                                 creationflags=DET)
+                subprocess.Popen(["powershell", "-NoProfile", "-WindowStyle", "Hidden",
+                                  "-Command", ps], creationflags=NOWIN)
             if win:
                 win.destroy()      # entsperrt die .exe -> Batch tauscht & startet neu
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+        finally:
+            self._installing = False
+            try:
+                if os.path.exists(part):
+                    os.remove(part)   # angefangenen Download aufraeumen
+            except OSError:
+                pass
 
     def open_url(self, url):
         try:
@@ -1110,10 +1154,13 @@ async function boot(){
     renderSettings();
     checkUpdate();   // im Hintergrund, blockiert nichts
   }catch(e){
-    BOOTED=false;
-    const c=document.getElementById('count'); if(c) c.textContent='Fehler: '+e;
+    BOOTED=false; bootTries=(bootTries||0)+1;
+    const c=document.getElementById('count');
+    if(bootTries<5){ if(c)c.textContent='Lädt erneut…'; setTimeout(()=>{ if(!BOOTED) boot(); }, 700); }
+    else if(c){ c.textContent='Fehler beim Laden: '+e; }
   }
 }
+let bootTries=0;
 
 function ingest(st){STATE=st; sessions=st.sessions||[];}
 
@@ -1127,12 +1174,12 @@ function toast(msg){
 function visible(){
   const q=document.getElementById('search').value.toLowerCase().trim();
   const hideHome=STATE.settings.hide_home, home=(STATE.home||'').toLowerCase();
-  const hidden=(STATE.settings.hidden_folders||[]).map(f=>f.toLowerCase().replace(/\\\\/g,'\\'));
+  const hidden=(STATE.settings.hidden_folders||[]).map(f=>(f||'').toLowerCase());
   let rows=sessions.filter(s=>{
     const cwd=(s.cwd||'').toLowerCase();
     if(hideHome && cwd===home) return false;
     if(hidden.some(h=>cwd===h)) return false;
-    if(q){const hay=(s.display_title+' '+s.project+' '+s.cwd+' '+s.first_user+' '+s.id).toLowerCase();
+    if(q){const hay=((s.display_title||'')+' '+(s.project||'')+' '+(s.cwd||'')+' '+(s.first_user||'')+' '+(s.id||'')).toLowerCase();
       if(!hay.includes(q)) return false;}
     return true;
   });
@@ -1160,6 +1207,8 @@ function render(){
     document.getElementById('count').textContent='';
     return;
   }
+  // Auswahl loeschen, wenn die Zeile (durch Suche/Filter) nicht mehr sichtbar ist
+  if(selected && !rows.some(s=>s.id===selected)) selected=null;
   if(rows.length===0){
     tb.innerHTML=`<div class="empty"><div><div class="big">Keine Sessions</div>Nichts gefunden.</div></div>`;
   } else {
@@ -1177,9 +1226,10 @@ function render(){
   const total=sessions.length, q=document.getElementById('search').value.trim();
   let txt = q ? `${rows.length} Treffer` : `${rows.length} Sessions`;
   document.getElementById('count').textContent=txt;
+  updateDetail();   // Panel/Buttons immer synchron zur Auswahl halten
 }
 
-function selectRow(id){selected=id; render(); updateDetail();}
+function selectRow(id){selected=id; render();}
 function getSel(){return sessions.find(s=>s.id===selected);}
 
 function updateDetail(){
@@ -1252,7 +1302,7 @@ function cpRender(){
 function cpPick(e){const sv=document.getElementById('cp-sv'),r=sv.getBoundingClientRect();
   CP.s=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));
   CP.v=Math.max(0,Math.min(1,1-(e.clientY-r.top)/r.height)); cpRender();}
-function cpDown(e){CPdrag=true; cpPick(e);}
+function cpDown(e){CPdrag=true; try{e.target.setPointerCapture(e.pointerId);}catch(_){} cpPick(e);}
 function cpHexIn(v){const x=hex2hsv(v); CP.h=x.h; CP.s=x.s; CP.v=x.v; cpRender();}
 
 /* ---- Umbenennen ---- */
@@ -1455,6 +1505,8 @@ document.addEventListener('keydown',e=>{
 document.getElementById('search').addEventListener('input',render);
 document.addEventListener('pointermove',e=>{ if(CPdrag) cpPick(e); });
 document.addEventListener('pointerup',()=>{ CPdrag=false; });
+document.addEventListener('pointercancel',()=>{ CPdrag=false; });
+window.addEventListener('blur',()=>{ CPdrag=false; });
 
 function whenReady(){
   if(window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_state === 'function'){
