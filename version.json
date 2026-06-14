@@ -1,6 +1,6 @@
 {
-  "version": "1.0.6",
-  "notes": "Neuer Einrichtungs-Assistent beim ersten Start: Begrüßung, Akzentfarbe wählen (mit Live-Vorschau) und kurze Voreinstellungen.",
+  "version": "1.0.7",
+  "notes": "Hintergrund-Ton in den Einstellungen wählbar (Warm, Kühl, Ozean, Violett u. a.). Erneuter Klick auf eine ausgewählte Session hebt die Auswahl auf (Panel verschwindet).",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }

@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -73,6 +73,7 @@ DEFAULT_SETTINGS = {
     "sort_rev": True,
     "projects_dir": "",          # leer = automatisch suchen
     "accent": "#ec7456",         # Akzentfarbe der Oberflaeche (Koralle, passend zum Logo)
+    "bg_base": "#4a3a30",        # Grundton -> daraus wird die Hintergrund-Palette abgeleitet (warm)
     "terminal": "auto",          # auto | wt | cmd
     "claude_cmd": "claude",      # Befehl/Pfad zur Claude-CLI
     "columns": [                 # sichtbare Spalten + Reihenfolge
@@ -787,7 +788,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
   .thead{
     display:grid; grid-template-columns:var(--cols); gap:0; padding:0 6px;
-    background:#0d0f17; border-bottom:1px solid var(--border); flex:none;
+    background:var(--bg); border-bottom:1px solid var(--border); flex:none;
   }
   .th{
     padding:13px 12px; font-size:11.5px; font-weight:700; color:var(--muted);
@@ -1206,6 +1207,29 @@ let api = window.pywebview ? window.pywebview.api : null;
 function lum(hex){const h=hex.replace('#','');const r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16);return .299*r+.587*g+.114*b;}
 function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
+// Hintergrund-Palette aus einem Grundton ableiten (alle Dunkelstufen)
+const BG_TONES=[
+  {key:'warm',  name:'Warm',    base:'#4a3a30'},
+  {key:'neutral',name:'Neutral', base:'#3a3a3a'},
+  {key:'cool',  name:'Kühl',    base:'#333c4f'},
+  {key:'ocean', name:'Ozean',   base:'#2c4452'},
+  {key:'violet',name:'Violett', base:'#3f3556'},
+  {key:'forest',name:'Wald',    base:'#324a3a'},
+  {key:'black', name:'Schwarz', base:'#2a2a2a'},
+];
+function shade(base,f){const h=base.replace('#','');
+  let r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16);
+  const z=x=>('0'+Math.max(0,Math.min(255,Math.round(x*f))).toString(16)).slice(-2);
+  return '#'+z(r)+z(g)+z(b);}
+function applyBg(base){const S=document.documentElement.style;
+  S.setProperty('--bg',      shade(base,0.30));
+  S.setProperty('--row',     shade(base,0.38));
+  S.setProperty('--row-alt', shade(base,0.46));
+  S.setProperty('--surface', shade(base,0.50));
+  S.setProperty('--surface2',shade(base,0.74));
+  S.setProperty('--border',  shade(base,0.62));
+  S.setProperty('--select',  shade(base,0.92));}
+
 function applyAccent(c){document.documentElement.style.setProperty('--accent',c);
   // helle Variante
   const h=c.replace('#','');let r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16);
@@ -1220,6 +1244,7 @@ async function boot(){
     sortCol = STATE.settings.sort_col || "when";
     sortRev = STATE.settings.sort_rev !== false;
     applyAccent(STATE.settings.accent || "#ec7456");
+    applyBg(STATE.settings.bg_base || "#4a3a30");
     ingest(STATE);
     buildSwatches();
     renderHead();
@@ -1294,7 +1319,7 @@ function render(){
       if(selected===s.id) cls+=' sel';
       const cells=visCols().map(c=>cellHtml(s,c.key)).join('');
       return `<div class="${cls}" ${style} data-id="${s.id}"
-        onclick="selectRow('${s.id}')" ondblclick="doResume()">${cells}</div>`;
+        onclick="selectRow('${s.id}')" ondblclick="doResumeRow('${s.id}')">${cells}</div>`;
     }).join('');
   }
   const total=sessions.length, q=document.getElementById('search').value.trim();
@@ -1303,7 +1328,7 @@ function render(){
   updateDetail();   // Panel/Buttons immer synchron zur Auswahl halten
 }
 
-function selectRow(id){selected=id; render();}
+function selectRow(id){ selected = (selected===id ? null : id); render(); }   // erneuter Klick = abwählen
 function getSel(){return sessions.find(s=>s.id===selected);}
 
 function updateDetail(){
@@ -1336,6 +1361,7 @@ function switchView(v){
 
 async function doRefresh(btn){if(btn)btn.disabled=true; ingest(await api.refresh()); render(); updateDetail(); if(btn)btn.disabled=false;}
 async function doResume(){const s=getSel(); if(!s)return; await api.resume(s.id,s.cwd);}
+async function doResumeRow(id){const s=sessions.find(x=>x.id===id); if(!s)return; selected=id; render(); await api.resume(s.id,s.cwd);}
 async function doCopy(){const s=getSel(); if(!s)return; await api.copy(s.id); toast('Session-ID kopiert ✓');}
 
 /* ---- Farbe ---- */
@@ -1392,10 +1418,11 @@ function closeOverlay(id){document.getElementById(id).classList.remove('show');}
 function renderSettings(){
   const st=STATE.settings, found=STATE.found, pdir=STATE.projects_dir||'(nicht gesetzt)';
   const hidden=st.hidden_folders||[];
-  const hl = hidden.length ? hidden.map(f=>`<li>${esc(f)}<span class="x" onclick="unhide('${esc(f).replace(/\\\\/g,'\\\\\\\\')}')">✕</span></li>`).join('')
+  const hl = hidden.length ? hidden.map((f,i)=>`<li>${esc(f)}<span class="x" onclick="unhideIdx(${i})">✕</span></li>`).join('')
     : '<li class="none">Keine</li>';
   const ACCENTS = ['#ec7456','#6c6cff','#3ecf8e','#4aa3ff','#ffb454','#ff6b6b','#c08cff','#34d6c8'];
   const swl = ACCENTS.map(c=>`<div class="sw ${st.accent===c?'active':''}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('');
+  const bgl = BG_TONES.map(t=>`<div class="sw ${st.bg_base===t.base?'active':''}" style="background:${shade(t.base,0.42)}" title="${t.name}" onclick="setBg('${t.base}')"></div>`).join('');
   document.getElementById('settings').innerHTML=`
     <div class="card">
       <h2>Sessions-Ordner</h2>
@@ -1428,6 +1455,12 @@ function renderSettings(){
       <h2>Akzentfarbe</h2>
       <div class="sub">Farbe für Buttons, Auswahl und Hervorhebungen.</div>
       <div class="swatches">${swl}</div>
+    </div>
+
+    <div class="card">
+      <h2>Hintergrund</h2>
+      <div class="sub">Grundton der Oberfläche – Flächen, Zeilen und Ränder werden daraus abgeleitet.</div>
+      <div class="swatches">${bgl}</div>
     </div>
 
     <div class="card">
@@ -1476,11 +1509,13 @@ async function browseFolder(){ingest(await api.browse_folder()); render(); rende
 async function autoDetect(){ingest(await api.update_setting('projects_dir','')); render(); renderSettings();}
 async function toggleHome(el){const on=!el.classList.contains('on');
   ingest(await api.update_setting('hide_home',on)); render(); renderSettings();}
-async function unhide(path){ingest(await api.remove_hidden_folder(path)); render(); renderSettings();}
+async function unhideIdx(i){const f=(STATE.settings.hidden_folders||[])[i]; if(f===undefined)return;
+  ingest(await api.remove_hidden_folder(f)); render(); renderSettings();}
 async function hideCurrent(){const s=getSel();
   if(!s||!s.cwd){toast('Erst im Tab „Sessions" eine Session auswählen.');return;}
   ingest(await api.add_hidden_folder(s.cwd)); render(); renderSettings(); }
 async function setAccent(c){applyAccent(c); ingest(await api.update_setting('accent',c)); renderSettings();}
+async function setBg(base){applyBg(base); ingest(await api.update_setting('bg_base',base)); renderSettings();}
 
 async function persistCols(arr){ ingest(await api.update_setting('columns',arr)); renderHead(); render(); renderSettings(); }
 function toggleCol(key){ const cols=normCols(); const t=cols.find(c=>c.key===key);
