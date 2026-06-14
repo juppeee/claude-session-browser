@@ -462,14 +462,37 @@ class Api:
             webbrowser.open(page)
             return {"ok": False, "reason": "no_exe_url", "opened": True}
 
+        win = self._win()
+
+        def js(code):
+            if win:
+                try:
+                    win.evaluate_js(code)
+                except Exception:
+                    pass
+
         try:
+            import time
             cur = sys.executable
             new = cur + ".new"
             req = urllib.request.Request(
                 exe_url, headers={"User-Agent": "ClaudeSessionBrowser"})
             with urllib.request.urlopen(req, timeout=120, context=self._ssl_ctx()) as r, \
                     open(new, "wb") as f:
-                shutil.copyfileobj(r, f)
+                total = int(r.headers.get("Content-Length") or 0)
+                done = 0
+                last = -1
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        p = int(done * 100 / total)
+                        if p != last:
+                            last = p
+                            js("window.updateProgress&&updateProgress(%d)" % p)
             if os.path.getsize(new) < 500000:   # offensichtlich kaputter Download
                 os.remove(new)
                 return {"ok": False, "error": "Download unvollstaendig."}
@@ -490,9 +513,10 @@ class Api:
                 )
             subprocess.Popen(["cmd", "/c", bat],
                              creationflags=0x00000008 | 0x00000200)  # DETACHED|NEW_GROUP
-            win = self._win()
+            js("window.downloadDone&&downloadDone()")
+            time.sleep(2.6)        # die "Bereit!"-Animation abspielen lassen
             if win:
-                win.destroy()   # entsperrt die .exe -> Batch tauscht & startet neu
+                win.destroy()      # entsperrt die .exe -> Batch tauscht & startet neu
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -599,6 +623,47 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     max-height:260px; overflow:auto; white-space:pre-wrap; background:var(--bg);
     border:1px solid var(--border); border-radius:10px; padding:12px 14px}
   .upd-keep{color:var(--muted); font-size:12px; margin-bottom:16px; display:flex; gap:7px; align-items:center}
+
+  /* ---- Update-Animation ---- */
+  #upd-progress{display:none; text-align:center; padding:4px 4px 6px}
+  #upd-pop.installing #upd-info{display:none}
+  #upd-pop.installing #upd-progress{display:block}
+  .inst-stage{height:128px; display:grid; place-items:center; position:relative}
+  .inst-logo{width:104px; height:104px; animation:l-spin 2.6s linear infinite;
+    transition:opacity .35s, transform .45s}
+  .inst-check{width:104px; height:104px; position:absolute; opacity:0; transform:scale(.4)}
+  .inst-check circle{fill:none; stroke:var(--accent2); stroke-width:3;
+    stroke-dasharray:145; stroke-dashoffset:145}
+  .inst-check path{fill:none; stroke:#fff; stroke-width:4.5; stroke-linecap:round;
+    stroke-linejoin:round; stroke-dasharray:40; stroke-dashoffset:40}
+  #upd-pop.ready .inst-logo{opacity:0; transform:scale(.3)}
+  #upd-pop.ready .inst-check{opacity:1; transform:scale(1);
+    transition:opacity .3s, transform .55s cubic-bezier(.2,1.5,.4,1)}
+  #upd-pop.ready .inst-check circle{animation:draw-c .5s ease forwards}
+  #upd-pop.ready .inst-check path{animation:draw-p .4s .35s ease forwards}
+  @keyframes draw-c{to{stroke-dashoffset:0}}
+  @keyframes draw-p{to{stroke-dashoffset:0}}
+
+  .bar{height:12px; background:var(--bg); border:1px solid var(--border); border-radius:20px;
+    overflow:hidden; margin:16px 0 9px; position:relative}
+  .bar-fill{height:100%; width:0%; border-radius:20px;
+    background:linear-gradient(90deg,var(--accent),var(--accent2));
+    box-shadow:0 0 14px var(--accent); transition:width .25s ease}
+  .bar-shine{position:absolute; inset:0; border-radius:20px;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);
+    background-size:40% 100%; background-repeat:no-repeat; animation:shine 1.1s linear infinite}
+  #upd-pop.ready .bar-shine{display:none}
+  @keyframes shine{from{background-position:-45% 0}to{background-position:145% 0}}
+  .inst-state{font-weight:700; font-size:15.5px; margin-top:6px}
+  #upd-pop.ready .inst-state{color:var(--accent2)}
+  .inst-pct{color:var(--muted); font-size:13px; font-variant-numeric:tabular-nums; margin-top:3px}
+  #upd-pop.ready .inst-pct{opacity:0}
+
+  .confetti{position:absolute; inset:0; pointer-events:none; overflow:visible}
+  .confetti i{position:absolute; left:50%; top:46%; width:9px; height:9px; border-radius:2px; opacity:0}
+  #upd-pop.ready .confetti i{animation:cfetti .95s ease-out forwards}
+  @keyframes cfetti{0%{opacity:1; transform:translate(-50%,-50%) scale(1) rotate(0)}
+    100%{opacity:0; transform:translate(calc(-50% + var(--dx)),calc(-50% + var(--dy))) scale(.3) rotate(220deg)}}
 
   .view{flex:1; overflow:hidden; display:none; flex-direction:column; padding:14px 18px 16px}
   .view.active{display:flex}
@@ -882,13 +947,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <div class="overlay" id="overlay-update">
-  <div class="pop" style="width:460px">
-    <h3 id="upd-title">Update verfügbar</h3>
-    <div id="upd-notes"></div>
-    <div class="upd-keep">Deine Einstellungen, Farben und Titel bleiben dabei vollständig erhalten.</div>
-    <div class="actions2">
-      <button class="btn" onclick="closeOverlay('overlay-update')">Später</button>
-      <button class="btn accent" id="upd-install" onclick="doInstall()">Jetzt installieren</button>
+  <div class="pop" id="upd-pop" style="width:460px">
+    <div id="upd-info">
+      <h3 id="upd-title">Update verfügbar</h3>
+      <div id="upd-notes"></div>
+      <div class="upd-keep">Deine Einstellungen, Farben und Titel bleiben dabei vollständig erhalten.</div>
+      <div class="actions2">
+        <button class="btn" onclick="closeOverlay('overlay-update')">Später</button>
+        <button class="btn accent" id="upd-install" onclick="doInstall()">Jetzt installieren</button>
+      </div>
+    </div>
+    <div id="upd-progress">
+      <div class="inst-stage">
+        <div class="confetti" id="confetti"></div>
+        <svg class="inst-logo" viewBox="0 0 1024 1024"><use href="#rays"/></svg>
+        <svg class="inst-check" viewBox="0 0 52 52"><circle cx="26" cy="26" r="23"/><path d="M15 27l7 7 15-16"/></svg>
+      </div>
+      <div class="inst-state" id="inst-state">Lädt herunter…</div>
+      <div class="bar"><div class="bar-fill" id="bar-fill"></div><div class="bar-shine"></div></div>
+      <div class="inst-pct" id="inst-pct">0%</div>
     </div>
   </div>
 </div>
@@ -1191,14 +1268,51 @@ function openUpdateDialog(){
   b.disabled=false; b.textContent= UPD.frozen ? 'Jetzt installieren' : 'Zur Download-Seite';
   document.getElementById('overlay-update').classList.add('show');
 }
+function buildConfetti(){
+  const cols=['#ec7456','#f5926f','#4aa3ff','#3ecf8e','#ffe066','#c08cff','#34d6c8'];
+  let h='';
+  for(let i=0;i<18;i++){
+    const a=(i/18)*6.2832, r=80+(i%3)*26;
+    const dx=Math.cos(a)*r, dy=Math.sin(a)*r-18;
+    h+=`<i style="--dx:${dx.toFixed(0)}px;--dy:${dy.toFixed(0)}px;background:${cols[i%cols.length]}"></i>`;
+  }
+  document.getElementById('confetti').innerHTML=h;
+}
+function setProgress(p){
+  p=Math.max(0,Math.min(100, p|0));
+  document.getElementById('bar-fill').style.width=p+'%';
+  document.getElementById('inst-pct').textContent=p+'%';
+}
+function startInstallUI(){
+  const pop=document.getElementById('upd-pop');
+  pop.classList.add('installing'); pop.classList.remove('ready');
+  setProgress(0); document.getElementById('inst-state').textContent='Lädt herunter…';
+  buildConfetti();
+  document.getElementById('overlay-update').classList.add('show');
+}
+// von Python aufgerufen
+window.updateProgress=function(p){
+  setProgress(p);
+  if(p>=100) document.getElementById('inst-state').textContent='Fast fertig…';
+};
+window.downloadDone=function(){
+  setProgress(100);
+  document.getElementById('upd-pop').classList.add('ready');
+  document.getElementById('inst-state').textContent='Bereit! Programm startet neu…';
+};
 async function doInstall(){
-  const b=document.getElementById('upd-install');
-  b.disabled=true; b.textContent= UPD && UPD.frozen ? 'Lädt herunter…' : 'Öffne…';
+  if(!(UPD && UPD.frozen)){   // Dev/keine .exe -> nur Release-Seite oeffnen
+    try{ await api.install_update(); }catch(_){}
+    closeOverlay('overlay-update'); return;
+  }
+  startInstallUI();
   let r=null; try{ r=await api.install_update(); }catch(_){}
-  if(r && r.ok){ b.textContent='Installiere & starte neu…'; }
-  else if(r && r.opened){ closeOverlay('overlay-update'); }
-  else { b.disabled=false; b.textContent='Jetzt installieren';
-    alert('Update fehlgeschlagen: '+((r&&r.error)||'unbekannt')); }
+  if(r && !r.ok){   // Fehler -> zurueck zur Info-Ansicht
+    const pop=document.getElementById('upd-pop');
+    pop.classList.remove('installing','ready');
+    alert('Update fehlgeschlagen: '+((r&&r.error)||'unbekannt'));
+  }
+  // bei Erfolg schliesst Python das Fenster nach der Animation
 }
 function dismissUpdate(){ document.getElementById('updatebar').classList.remove('show'); }
 async function manualCheck(btn){
