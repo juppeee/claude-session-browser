@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -474,7 +474,10 @@ class Api:
         try:
             import time
             cur = sys.executable
-            new = cur + ".new"
+            target_dir = os.path.dirname(cur) or "."
+            # Download in einen IMMER beschreibbaren Temp-Ordner (nicht neben die .exe,
+            # die kann an geschuetzten Orten wie C:\ liegen -> kein Schreibrecht).
+            new = os.path.join(tempfile.gettempdir(), "ClaudeSessionBrowser_update.exe")
             req = urllib.request.Request(
                 exe_url, headers={"User-Agent": "ClaudeSessionBrowser"})
             with urllib.request.urlopen(req, timeout=120, context=self._ssl_ctx()) as r, \
@@ -497,7 +500,17 @@ class Api:
                 os.remove(new)
                 return {"ok": False, "error": "Download unvollstaendig."}
 
-            # Batch wartet, bis die laufende .exe entsperrt ist, tauscht & startet neu
+            # Ist der Zielordner ueberhaupt beschreibbar? (C:\ etc. brauchen Admin)
+            writable = True
+            try:
+                _t = os.path.join(target_dir, ".csb_write_test")
+                with open(_t, "w") as _f:
+                    _f.write("x")
+                os.remove(_t)
+            except OSError:
+                writable = False
+
+            # Batch: wartet bis die laufende .exe frei ist, tauscht aus, startet neu
             bat = os.path.join(tempfile.gettempdir(), "csb_update.bat")
             with open(bat, "w", encoding="utf-8") as f:
                 f.write(
@@ -507,14 +520,23 @@ class Api:
                     ":wait\r\n"
                     "ping -n 2 127.0.0.1 >nul\r\n"
                     'move /y "%NEW%" "%CUR%" >nul 2>&1\r\n'
-                    "if errorlevel 1 goto wait\r\n"
+                    'if exist "%NEW%" goto wait\r\n'   # solange noch da: weiter versuchen
                     'start "" "%CUR%"\r\n'
                     'del "%~f0"\r\n'
                 )
-            subprocess.Popen(["cmd", "/c", bat],
-                             creationflags=0x00000008 | 0x00000200)  # DETACHED|NEW_GROUP
+
             js("window.downloadDone&&downloadDone()")
             time.sleep(2.6)        # die "Bereit!"-Animation abspielen lassen
+
+            DET = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            if writable:
+                subprocess.Popen(["cmd", "/c", bat], creationflags=DET)
+            else:
+                # Geschuetzter Ort -> Tausch mit Adminrechten (einmal UAC bestaetigen)
+                ps = ("Start-Process -FilePath cmd.exe "
+                      "-ArgumentList '/c','\"%s\"' -Verb RunAs -WindowStyle Hidden" % bat)
+                subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                                 creationflags=DET)
             if win:
                 win.destroy()      # entsperrt die .exe -> Batch tauscht & startet neu
             return {"ok": True}
