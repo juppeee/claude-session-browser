@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.7"
+VERSION = "1.0.8"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -187,8 +187,10 @@ def parse_session(path):
                 if not isinstance(d, dict):
                     continue   # valides JSON, aber kein Objekt -> ueberspringen
                 t = d.get("type")
-                if d.get("cwd"):
-                    cwd = d["cwd"]
+                if d.get("cwd") and cwd is None:
+                    cwd = d["cwd"]   # ERSTES cwd = Start-Verzeichnis (passt zum
+                    #                  Projektordner; 'claude --resume' findet die
+                    #                  Session nur dort, nicht in spaeteren Unterordnern)
                 if d.get("timestamp"):
                     last_ts = d["timestamp"]
                 if t == "ai-title":
@@ -252,8 +254,23 @@ def fmt_time(mtime):
 # --------------------------------------------------------------------------- #
 #  Resume
 # --------------------------------------------------------------------------- #
-def resume_session(session_id, cwd, settings):
-    workdir = cwd if cwd and os.path.isdir(cwd) else HOME
+def decode_project(folder):
+    """Rekonstruiert das Verzeichnis aus dem Projektordner-Namen.
+    Achtung: verlustbehaftet (ein '-' im echten Ordnernamen ist nicht von einem
+    Pfadtrenner unterscheidbar) -> nur als Notfall-Fallback verwenden."""
+    if not folder:
+        return ""
+    return folder.replace("--", ":\\", 1).replace("-", "\\")
+
+
+def resume_session(session_id, cwd, settings, project=""):
+    # 1. das gespeicherte (Start-)Verzeichnis, wenn es existiert
+    if cwd and os.path.isdir(cwd):
+        workdir = cwd
+    else:
+        # 2. Notfall: aus dem Projektordner-Namen rekonstruieren (falls existent)
+        dec = decode_project(project)
+        workdir = dec if dec and os.path.isdir(dec) else HOME   # 3. HOME
     claude = settings.get("claude_cmd") or "claude"
     term = settings.get("terminal", "auto")
     try:
@@ -364,8 +381,8 @@ class Api:
     def refresh(self):
         return self._state(force=True)
 
-    def resume(self, sid, cwd):
-        return resume_session(sid, cwd, self.settings)
+    def resume(self, sid, cwd, project=""):
+        return resume_session(sid, cwd, self.settings, project)
 
     def rename(self, sid, title):
         title = (title or "").strip()
@@ -1360,8 +1377,8 @@ function switchView(v){
 }
 
 async function doRefresh(btn){if(btn)btn.disabled=true; ingest(await api.refresh()); render(); updateDetail(); if(btn)btn.disabled=false;}
-async function doResume(){const s=getSel(); if(!s)return; await api.resume(s.id,s.cwd);}
-async function doResumeRow(id){const s=sessions.find(x=>x.id===id); if(!s)return; selected=id; render(); await api.resume(s.id,s.cwd);}
+async function doResume(){const s=getSel(); if(!s)return; await api.resume(s.id,s.cwd,s.project||'');}
+async function doResumeRow(id){const s=sessions.find(x=>x.id===id); if(!s)return; selected=id; render(); await api.resume(s.id,s.cwd,s.project||'');}
 async function doCopy(){const s=getSel(); if(!s)return; await api.copy(s.id); toast('Session-ID kopiert ✓');}
 
 /* ---- Farbe ---- */

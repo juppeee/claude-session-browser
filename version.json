@@ -1,6 +1,6 @@
 {
-  "version": "1.0.7",
-  "notes": "Hintergrund-Ton in den Einstellungen wählbar (Warm, Kühl, Ozean, Violett u. a.). Erneuter Klick auf eine ausgewählte Session hebt die Auswahl auf (Panel verschwindet).",
+  "version": "1.0.8",
+  "notes": "Wichtiger Fix: „In Session einsteigen\" öffnet jetzt zuverlässig die richtige Session (vorher schlug es bei Sessions fehl, in denen während der Arbeit das Verzeichnis gewechselt wurde – „No conversation found\").",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
