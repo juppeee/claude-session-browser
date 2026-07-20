@@ -1,6 +1,6 @@
 {
-  "version": "1.0.10",
-  "notes": "Fix: 'Auto-Titel'-Button im Umbenennen-Dialog setzt den Titel jetzt wirklich zurück (vorher wurde nur das Eingabefeld befüllt – ohne 'Speichern' passierte nichts).",
+  "version": "1.0.11",
+  "notes": "Umbenennen-Dialog: Button 'Auto-Titel' heißt jetzt 'Standard-Titel' – verständlicher (setzt die manuelle Umbenennung zurück).",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }

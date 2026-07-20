@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.10"
+VERSION = "1.0.11"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -1197,7 +1197,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <h3>Titel ändern</h3>
     <input class="modal-input" id="rename-input" placeholder="Neuer Titel">
     <div class="actions2">
-      <button class="btn" onclick="resetTitle()">Auto-Titel</button>
+      <button class="btn" onclick="resetTitle()" title="Umbenennung rückgängig – zeigt wieder den automatisch erzeugten Titel">Standard-Titel</button>
       <button class="btn" onclick="closeOverlay('overlay-rename')">Abbrechen</button>
       <button class="btn accent" onclick="saveRename()">Speichern</button>
     </div>
@@ -1482,7 +1482,7 @@ async function resetTitle(){
   const s=getSel(); if(!s) return;
   ingest(await api.rename(s.id,''));   // leerer Titel = Override loeschen -> Auto-Titel
   render(); updateDetail(); closeOverlay('overlay-rename');
-  toast('Auto-Titel wiederhergestellt');
+  toast('Standard-Titel wiederhergestellt');
 }
 function closeOverlay(id){document.getElementById(id).classList.remove('show');}
 
