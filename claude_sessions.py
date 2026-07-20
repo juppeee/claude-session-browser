@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.9"
+VERSION = "1.0.10"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -1478,7 +1478,12 @@ function openRename(){const s=getSel(); if(!s)return;
   document.getElementById('overlay-rename').classList.add('show'); setTimeout(()=>{i.focus();i.select();},50);}
 async function saveRename(){const s=getSel(); if(!s)return;
   ingest(await api.rename(s.id,document.getElementById('rename-input').value)); render(); updateDetail(); closeOverlay('overlay-rename');}
-function resetTitle(){const s=getSel(); if(s)document.getElementById('rename-input').value=s.auto_title;}
+async function resetTitle(){
+  const s=getSel(); if(!s) return;
+  ingest(await api.rename(s.id,''));   // leerer Titel = Override loeschen -> Auto-Titel
+  render(); updateDetail(); closeOverlay('overlay-rename');
+  toast('Auto-Titel wiederhergestellt');
+}
 function closeOverlay(id){document.getElementById(id).classList.remove('show');}
 
 /* ---- Einstellungen ---- */

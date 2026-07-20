@@ -1,6 +1,6 @@
 {
-  "version": "1.0.9",
-  "notes": "• Datums-Fix: 'heute' und 'gestern' beruhen jetzt auf dem Kalendertag – nicht mehr auf einem 24-Stunden-Fenster (Sessions von gestern Abend wurden fälschlich als 'heute' markiert).\n• Heimatordner-Filter ist standardmäßig aus – kann in den Einstellungen jederzeit eingeschaltet werden.\n• Deutlich ausführlicheres Onboarding: erklärt Spalten, Doppelklick zum Öffnen, F2 zum Umbenennen, Rechtsklick-Menü und Tastaturkürzel.",
+  "version": "1.0.10",
+  "notes": "Fix: 'Auto-Titel'-Button im Umbenennen-Dialog setzt den Titel jetzt wirklich zurück (vorher wurde nur das Eingabefeld befüllt – ohne 'Speichern' passierte nichts).",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
