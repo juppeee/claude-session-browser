@@ -85,7 +85,13 @@ DEFAULT_SETTINGS = {
     "win_x": None, "win_y": None,  # gemerkte Position
     "win_max": False,            # war das Fenster maximiert?
     "onboarded": False,          # Erst-Einrichtung schon durchlaufen?
+    "onboarded_version": "",     # zuletzt gesehene Onboarding-Version (fuer Re-Onboarding nach Updates)
 }
+
+# Wenn diese Konstante sich aendert, sehen bestehende Nutzer das Onboarding erneut
+# (ohne dass ihre Einstellungen ueberschrieben werden – die Schritte zeigen die
+# aktuellen Werte an, ein Klick auf "Weiter" ohne Aenderung laesst alles wie es ist).
+ONBOARDING_VERSION = "1.0.9"
 
 
 def load_json(path, fallback):
@@ -373,6 +379,7 @@ class Api:
             "found": bool(pdir and os.path.isdir(pdir)),
             "home": HOME,
             "version": VERSION,
+            "onboarding_version": ONBOARDING_VERSION,
         }
 
     # -- von JS aufgerufen --
@@ -1106,8 +1113,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <svg class="ob-logo" viewBox="0 0 1024 1024"><g class="l-spin"><use href="#rays"/></g></svg>
 
     <div class="ob-step" data-step="0">
-      <h2>Willkommen 👋</h2>
-      <p>Dein Browser für alle lokalen Claude-Code-Sessions – durchsuchen, einfärben und per Klick wieder einsteigen. Lass uns kurz einrichten – dauert nur eine Minute.</p>
+      <h2 id="ob-title">Willkommen 👋</h2>
+      <p id="ob-intro">Dein Browser für alle lokalen Claude-Code-Sessions – durchsuchen, einfärben und per Klick wieder einsteigen. Lass uns kurz einrichten – dauert nur eine Minute.</p>
     </div>
 
     <div class="ob-step" data-step="1" hidden>
@@ -1304,7 +1311,13 @@ async function boot(){
     renderHead();
     render();
     renderSettings();
-    if(!STATE.settings.onboarded) obShow();   // Erst-Einrichtung
+    // Onboarding zeigen bei Erstinstallation ODER wenn seit dem letzten Anzeigen
+    // eine neue Onboarding-Version hinzugekommen ist (nach Update). Einstellungen
+    // werden dabei nicht angetastet – die Schritte spiegeln nur die aktuellen Werte.
+    if(!STATE.settings.onboarded ||
+       (STATE.onboarding_version && STATE.settings.onboarded_version !== STATE.onboarding_version)){
+      obShow();
+    }
     checkUpdate();   // im Hintergrund, blockiert nichts
   }catch(e){
     BOOTED=false; bootTries=(bootTries||0)+1;
@@ -1660,6 +1673,14 @@ const OB_ACCENTS=['#ec7456','#6c6cff','#3ecf8e','#4aa3ff','#ffb454','#ff6b6b','#
 const OB_STEPS=5;
 let obStep=0;
 function obShow(){
+  const returning = !!STATE.settings.onboarded;
+  if(returning){
+    document.getElementById('ob-title').textContent = 'Neu in dieser Version ✨';
+    document.getElementById('ob-intro').innerHTML =
+      'Kurzer Rundgang – deine Einstellungen bleiben unberührt.<br><br>' +
+      '<b>Neu:</b> Doppelklick öffnet Sessions direkt · ausführliche Spalten-Erklärung · ' +
+      'Heimatordner-Filter jetzt standardmäßig aus · Datums-Fix für "heute"/"gestern".';
+  }
   const cur=STATE.settings.accent;
   document.getElementById('ob-swatches').innerHTML=OB_ACCENTS.map(c=>
     `<div class="ob-sw ${c===cur?'active':''}" style="background:${c}" onclick="obPickAccent('${c}',this)"></div>`).join('');
@@ -1690,7 +1711,8 @@ function obRender(){
 function obNext(){ if(obStep<OB_STEPS-1){ obStep++; obRender(); } else obFinish(); }
 function obPrev(){ if(obStep>0){ obStep--; obRender(); } }
 async function obFinish(){
-  ingest(await api.update_setting('onboarded',true));
+  await api.update_setting('onboarded',true);
+  ingest(await api.update_setting('onboarded_version', STATE.onboarding_version || ''));
   document.getElementById('onboard').classList.remove('show');
   render(); renderSettings();
 }
