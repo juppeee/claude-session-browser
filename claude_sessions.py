@@ -31,7 +31,7 @@ import webview
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.8"
+VERSION = "1.0.9"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -66,7 +66,7 @@ def norm(p):
 
 
 DEFAULT_SETTINGS = {
-    "hide_home": True,
+    "hide_home": False,
     "hidden_folders": [],
     "session_colors": {},
     "sort_col": "when",
@@ -241,13 +241,14 @@ def collect_sessions(projects_dir):
 
 def fmt_time(mtime):
     d = dt.datetime.fromtimestamp(mtime)
-    delta = dt.datetime.now() - d
-    if delta.days == 0:
+    today = dt.date.today()
+    diff = (today - d.date()).days
+    if diff == 0:
         return "heute " + d.strftime("%H:%M")
-    if delta.days == 1:
+    if diff == 1:
         return "gestern " + d.strftime("%H:%M")
-    if delta.days < 7:
-        return f"vor {delta.days} Tagen"
+    if diff < 7:
+        return f"vor {diff} Tagen"
     return d.strftime("%d.%m.%Y")
 
 
@@ -941,6 +942,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .ob-folder{margin-top:14px; color:var(--muted); font-size:12.5px; text-align:left;
     background:var(--bg); border:1px solid var(--border); border-radius:12px; padding:12px 16px;
     word-break:break-all}
+  .ob-list{text-align:left; background:var(--bg); border:1px solid var(--border);
+    border-radius:12px; padding:12px 14px; margin-top:14px; font-size:13px; max-height:260px;
+    overflow-y:auto}
+  .ob-list .row{display:grid; grid-template-columns:110px 1fr; gap:10px; padding:7px 4px;
+    border-bottom:1px dashed var(--border)}
+  .ob-list .row:last-child{border-bottom:none}
+  .ob-list .k{color:var(--fg); font-weight:600}
+  .ob-list .v{color:var(--muted); line-height:1.45}
+  .ob-list kbd{display:inline-block; background:var(--surface2); border:1px solid var(--border);
+    border-radius:5px; padding:1px 6px; font-size:11px; font-family:inherit; color:var(--fg)}
   .ob-dots{display:flex; gap:8px; justify-content:center; margin:24px 0 18px}
   .ob-dots i{width:8px; height:8px; border-radius:50%; background:var(--surface2); transition:all .2s}
   .ob-dots i.on{background:var(--accent); width:22px; border-radius:5px}
@@ -1096,7 +1107,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     <div class="ob-step" data-step="0">
       <h2>Willkommen 👋</h2>
-      <p>Dein Browser für alle lokalen Claude-Code-Sessions – durchsuchen, einfärben und per Klick wieder einsteigen. Lass uns kurz einrichten.</p>
+      <p>Dein Browser für alle lokalen Claude-Code-Sessions – durchsuchen, einfärben und per Klick wieder einsteigen. Lass uns kurz einrichten – dauert nur eine Minute.</p>
     </div>
 
     <div class="ob-step" data-step="1" hidden>
@@ -1106,11 +1117,37 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
 
     <div class="ob-step" data-step="2" hidden>
+      <h2>Die Spalten</h2>
+      <p>Das siehst du für jede Session. Alle Spalten kannst du in den Einstellungen ein-/ausblenden und die Reihenfolge ändern.</p>
+      <div class="ob-list">
+        <div class="row"><div class="k">Titel</div><div class="v">Automatisch erzeugte Kurzbeschreibung der Session – oder dein selbst vergebener Name.</div></div>
+        <div class="row"><div class="k">Ordner</div><div class="v">Das Arbeitsverzeichnis, in dem die Session gestartet wurde.</div></div>
+        <div class="row"><div class="k">Nachrichten</div><div class="v">Anzahl ausgetauschter Nachrichten – gute Anhaltszahl für den Umfang.</div></div>
+        <div class="row"><div class="k">Zuletzt aktiv</div><div class="v">Wann du zuletzt mit der Session gearbeitet hast (heute / gestern / Datum).</div></div>
+        <div class="row"><div class="k">Session-ID</div><div class="v">Interne ID (standardmäßig ausgeblendet). Praktisch zum Suchen.</div></div>
+        <div class="row"><div class="k">Erste Frage</div><div class="v">Deine allererste Nachricht der Session (standardmäßig ausgeblendet).</div></div>
+      </div>
+    </div>
+
+    <div class="ob-step" data-step="3" hidden>
+      <h2>So geht's schnell</h2>
+      <p>Die wichtigsten Handgriffe – der Rest ergibt sich beim Ausprobieren.</p>
+      <div class="ob-list">
+        <div class="row"><div class="k">Doppelklick</div><div class="v">Öffnet die Session direkt in Claude Code – der schnellste Weg zurück in ein Gespräch.</div></div>
+        <div class="row"><div class="k"><kbd>Enter</kbd></div><div class="v">Öffnet die aktuell markierte Session (wenn das Suchfeld nicht aktiv ist).</div></div>
+        <div class="row"><div class="k"><kbd>F2</kbd></div><div class="v">Session umbenennen – der Titel bleibt dauerhaft dein eigener.</div></div>
+        <div class="row"><div class="k">Rechtsklick</div><div class="v">Öffnet das Menü mit Farbe, Umbenennen und Ordner ausblenden.</div></div>
+        <div class="row"><div class="k">Suche</div><div class="v">Filtert live nach Titel, Ordner, ID oder erster Frage – auch mit mehreren Wörtern.</div></div>
+        <div class="row"><div class="k"><kbd>F11</kbd></div><div class="v">Vollbild an/aus.</div></div>
+      </div>
+    </div>
+
+    <div class="ob-step" data-step="4" hidden>
       <h2>Fast geschafft</h2>
       <div class="ob-line">
         <div><div class="ob-lbl">Heimatordner ausblenden</div>
-          <div class="ob-desc">Sessions, die direkt im Benutzerordner laufen, verstecken.</div></div>
-        <div class="toggle on" id="ob-home" onclick="obToggleHome(this)"></div>
+          <div class="ob-desc">Sessions, die direkt in deinem Benutzerordner (<code>C:\Users\...</code>) laufen, verstecken. Standardmäßig aus – aktiviere es nur, wenn dich diese Sessions stören.</div></div>
+        <div class="toggle" id="ob-home" onclick="obToggleHome(this)"></div>
       </div>
       <div class="ob-folder" id="ob-folder"></div>
     </div>
@@ -1620,7 +1657,7 @@ async function manualCheck(btn){
 
 /* ---- Onboarding (erster Start) ---- */
 const OB_ACCENTS=['#ec7456','#6c6cff','#3ecf8e','#4aa3ff','#ffb454','#ff6b6b','#c08cff','#34d6c8','#ffe066','#ff8fcf'];
-const OB_STEPS=3;
+const OB_STEPS=5;
 let obStep=0;
 function obShow(){
   const cur=STATE.settings.accent;

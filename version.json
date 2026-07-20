@@ -1,6 +1,6 @@
 {
-  "version": "1.0.8",
-  "notes": "Wichtiger Fix: „In Session einsteigen\" öffnet jetzt zuverlässig die richtige Session (vorher schlug es bei Sessions fehl, in denen während der Arbeit das Verzeichnis gewechselt wurde – „No conversation found\").",
+  "version": "1.0.9",
+  "notes": "• Datums-Fix: 'heute' und 'gestern' beruhen jetzt auf dem Kalendertag – nicht mehr auf einem 24-Stunden-Fenster (Sessions von gestern Abend wurden fälschlich als 'heute' markiert).\n• Heimatordner-Filter ist standardmäßig aus – kann in den Einstellungen jederzeit eingeschaltet werden.\n• Deutlich ausführlicheres Onboarding: erklärt Spalten, Doppelklick zum Öffnen, F2 zum Umbenennen, Rechtsklick-Menü und Tastaturkürzel.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
