@@ -1,6 +1,6 @@
 {
-  "version": "1.0.11",
-  "notes": "Umbenennen-Dialog: Button 'Auto-Titel' heißt jetzt 'Standard-Titel' – verständlicher (setzt die manuelle Umbenennung zurück).",
+  "version": "1.0.12",
+  "notes": "Großes Update: Neuer Clawd-Buddy als animiertes Desktop-Maskottchen (Tab „Buddy"), zeigt live was Claude gerade macht (schreibt Code, denkt, Limit erreicht, schläft). Konfigurierbar: Größe, Deckkraft, Sichtbarkeits-Regeln (nur wenn Claude Code läuft / nur wenn bestimmtes Fenster vorne / immer), pro-Monitor-Schnellwahl, Feinraster-Positionierung und optionaler Cam-Rahmen. Außerdem: X schließt jetzt in den System-Tray (Icon rechts unten, Klick öffnet wieder); komplett beenden über Einstellungen. Bestehende Einstellungen bleiben unverändert.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }

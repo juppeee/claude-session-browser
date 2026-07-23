@@ -16,10 +16,15 @@ import re
 import sys
 import ssl
 import json
+import time
+import zlib
+import queue
 import shutil
 import base64
+import ctypes
 import logging
 import tempfile
+import threading
 import webbrowser
 import datetime as dt
 import subprocess
@@ -27,11 +32,19 @@ import urllib.request
 
 import webview
 
+# Nur damit PyInstaller die Tcl/Tk-Daten mit-buendelt (der eigentliche Import
+# passiert lazy im BuddyController-Thread).
+try:
+    import tkinter as _tk_probe  # noqa: F401
+    import _tkinter as _tkc_probe  # noqa: F401
+except Exception:
+    pass
+
 # pywebview-Introspektions-Geschwaetz daempfen (harmlose COM-/Rekursionswarnungen)
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.11"
+VERSION = "1.0.12"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -84,14 +97,120 @@ DEFAULT_SETTINGS = {
     "win_w": 0, "win_h": 0,      # gemerkte Fenstergroesse (0 = noch nicht gesetzt)
     "win_x": None, "win_y": None,  # gemerkte Position
     "win_max": False,            # war das Fenster maximiert?
+    "close_to_tray": True,       # X = App verstecken (Tray-Icon) statt beenden
     "onboarded": False,          # Erst-Einrichtung schon durchlaufen?
     "onboarded_version": "",     # zuletzt gesehene Onboarding-Version (fuer Re-Onboarding nach Updates)
+    "buddy": {                   # Clawd-Buddy: kleines animiertes Desktop-Maskottchen
+        "enabled": False,
+        "size": 4,               # Skalierung: 20 px * size -> tatsaechliche Kantenlaenge
+        "visibility": "when_claude",  # "when_claude" | "always" | "when_window"
+        "target_window": "",     # Titel-Substring (Kleinschreibung) fuer visibility=when_window
+        "x": 200, "y": 200,      # gemerkte Position auf dem Desktop
+        "opacity": 100,          # 20..100 (Prozent) – 100 = voll deckend
+        "party": False,          # Party-Modus: nur Tanz-Animation
+        "frame": False,          # (legacy) duenner Rahmen um den Buddy
+        "frame_style": "off",    # "off" | "line" | "webcam"
+        "frame_color": "#ec7456",
+        "frame_label": "CLAWD",
+    },
 }
 
 # Wenn diese Konstante sich aendert, sehen bestehende Nutzer das Onboarding erneut
 # (ohne dass ihre Einstellungen ueberschrieben werden – die Schritte zeigen die
 # aktuellen Werte an, ein Klick auf "Weiter" ohne Aenderung laesst alles wie es ist).
-ONBOARDING_VERSION = "1.0.9"
+ONBOARDING_VERSION = "1.0.12"
+
+# --------------------------------------------------------------------------- #
+#  Buddy (Clawd-Maskottchen) – Sprite-Daten + Steuerung
+# --------------------------------------------------------------------------- #
+# Komprimierte 20x20-Pixel-Sprites aus dem Clawdmeter-Projekt
+# (zlib + base64). 14 Animationen, entpackt ~192 KB. Ausgelagert in ein
+# eigenes Modul, weil der Blob 3 KB gross ist.
+try:
+    from clawd_sprites import BLOB as BUDDY_BLOB
+except Exception:
+    BUDDY_BLOB = ""
+
+def _decode_buddy_anims():
+    """Entpackt die eingebetteten Sprites zu einer Dict-Struktur:
+       {name: {"palette": [10 hex-Farben], "frames": [[400 ints], ...]}}"""
+    try:
+        raw = zlib.decompress(base64.b64decode(BUDDY_BLOB))
+        arr = json.loads(raw.decode("utf-8"))
+        return {a["n"]: {"palette": a["p"], "frames": a["f"]} for a in arr}
+    except Exception:
+        return {}
+
+
+BUDDY_ANIMS = _decode_buddy_anims()
+
+# Mapping von "detektiertem Zustand" -> Animations-Name.
+BUDDY_STATE_MAP = {
+    "limit":    "limit",             # Rate/Usage-Limit erreicht (sauer!)
+    "active":   "work coding",       # Claude schreibt gerade (mtime < 3 s)
+    "thinking": "work think",        # kurz danach, wenn's noch zappelt
+    "recent":   "idle blink",        # zwischendurch mal blinzeln
+    "idle":     "idle breathe",      # entspannt atmen
+    "sleep":    "expression sleep",  # lange nichts los -> schlaeft
+    "none":     "idle look around",  # kein Claude installiert / kein Projekt
+    "party":    "dance bounce",      # Party-Modus
+    "surprise": "expression surprise",
+}
+
+# Muster im letzten Stueck der neuesten .jsonl-Datei, die auf ein erreichtes
+# Limit hindeuten.
+_LIMIT_PATTERNS = re.compile(
+    r"(rate.?limit|usage.?limit|5.?hour.?limit|weekly.?limit|"
+    r"limit.{0,20}(reached|exceeded)|"
+    r"resets? at|too many requests)",
+    re.IGNORECASE,
+)
+
+
+def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
+    """Liest die neuesten Zeilen der zuletzt geaenderten .jsonl-Datei und
+    prueft ob dort ein Limit-Hinweis steht. Rueckgabe: True/False. Wird nur
+    aufgerufen wenn ohnehin frische Aktivitaet erkannt wurde – bleibt billig."""
+    if not projects_dir or not os.path.isdir(projects_dir):
+        return False
+    newest_path = None
+    newest_mtime = 0.0
+    count = 0
+    try:
+        for entry in os.scandir(projects_dir):
+            if not entry.is_dir():
+                continue
+            try:
+                for sub in os.scandir(entry.path):
+                    if sub.is_file() and sub.name.endswith(".jsonl"):
+                        try:
+                            m = sub.stat().st_mtime
+                            if m > newest_mtime:
+                                newest_mtime = m
+                                newest_path = sub.path
+                        except OSError:
+                            pass
+                        count += 1
+                        if count >= max_files:
+                            break
+            except OSError:
+                pass
+            if count >= max_files:
+                break
+    except OSError:
+        pass
+    if not newest_path:
+        return False
+    try:
+        with open(newest_path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - tail_kb * 1024))
+            chunk = fh.read()
+        text = chunk.decode("utf-8", errors="replace")
+        return bool(_LIMIT_PATTERNS.search(text))
+    except OSError:
+        return False
 
 
 def load_json(path, fallback):
@@ -113,9 +232,17 @@ def save_json(path, data):
 
 def load_settings():
     data = dict(DEFAULT_SETTINGS)
+    # verschachtelte Defaults muessen als Kopie in `data` — sonst teilen sich
+    # alle Instanzen dieselbe Referenz.
+    data["buddy"] = dict(DEFAULT_SETTINGS["buddy"])
     raw = load_json(SETTINGS_FILE, None)
     if raw:
+        raw_buddy = raw.get("buddy") if isinstance(raw.get("buddy"), dict) else None
         data.update(raw)
+        if raw_buddy:
+            merged = dict(DEFAULT_SETTINGS["buddy"])
+            merged.update(raw_buddy)
+            data["buddy"] = merged
         # Bestandsnutzer (Datei existiert) sehen kein Onboarding,
         # ausser der Schluessel ist bereits gesetzt.
         if "onboarded" not in raw:
@@ -297,6 +424,1220 @@ def resume_session(session_id, cwd, settings, project=""):
 
 
 # --------------------------------------------------------------------------- #
+#  Buddy-Controller (Tkinter-Fenster in eigenem Daemon-Thread)
+# --------------------------------------------------------------------------- #
+_IS_WIN = sys.platform == "win32"
+
+
+def _win_enum_monitors():
+    """Liste aller Monitore mit Arbeitsbereich, primaer-Flag, Kurzlabel.
+    Rueckgabe: [{'idx': 0, 'left': ..., 'top': ..., 'right': ..., 'bottom': ...,
+    'primary': True/False, 'label': 'Primär 1920×1080'}]"""
+    if not _IS_WIN:
+        return []
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                    ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong),
+                    ("rcMonitor", RECT),
+                    ("rcWork", RECT),
+                    ("dwFlags", ctypes.c_ulong)]
+
+    u = ctypes.windll.user32
+    result = []
+    MONITORENUMPROC = ctypes.WINFUNCTYPE(
+        ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(RECT), ctypes.c_void_p)
+
+    def cb(hmon, _hdc, _lprect, _lparam):
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if u.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            result.append({
+                "left": mi.rcWork.l, "top": mi.rcWork.t,
+                "right": mi.rcWork.r, "bottom": mi.rcWork.b,
+                "primary": bool(mi.dwFlags & 1),
+            })
+        return True
+
+    try:
+        u.EnumDisplayMonitors(0, 0, MONITORENUMPROC(cb), 0)
+    except Exception:
+        return []
+
+    # Primaeren nach vorne, Rest links->rechts oben->unten
+    result.sort(key=lambda m: (0 if m["primary"] else 1, m["top"], m["left"]))
+    for i, m in enumerate(result):
+        w = m["right"] - m["left"]
+        h = m["bottom"] - m["top"]
+        tag = "Primär" if m["primary"] else f"Monitor {i+1}"
+        m["idx"] = i
+        m["label"] = f"{tag} · {w}×{h}"
+    return result
+
+
+def _win_monitor_work_from_point(x, y):
+    """Arbeitsbereich (ohne Taskleiste) des Monitors, auf dem Punkt (x,y)
+    liegt. Rueckgabe: (left, top, right, bottom) oder None."""
+    if not _IS_WIN:
+        return None
+    try:
+        u = ctypes.windll.user32
+
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class RECT(ctypes.Structure):
+            _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                        ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong),
+                        ("rcMonitor", RECT),
+                        ("rcWork", RECT),
+                        ("dwFlags", ctypes.c_ulong)]
+
+        MonitorFromPoint = u.MonitorFromPoint
+        MonitorFromPoint.restype = ctypes.c_void_p
+        MonitorFromPoint.argtypes = [POINT, ctypes.c_ulong]
+        hmon = MonitorFromPoint(POINT(int(x), int(y)), 2)  # NEAREST
+        if not hmon:
+            return None
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        GetMonitorInfoW = u.GetMonitorInfoW
+        GetMonitorInfoW.restype = ctypes.c_bool
+        GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        if GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            return (mi.rcWork.l, mi.rcWork.t, mi.rcWork.r, mi.rcWork.b)
+    except Exception:
+        pass
+    return None
+
+
+def _snap_position(x, y, size_px, grid=8, edge=32):
+    """Rastert (x,y) auf ein feines Raster und schnappt an Bildschirmraender.
+    `size_px` ist die Kantenlaenge des Buddy-Fensters. Rueckgabe: (nx, ny)."""
+    # Feines Raster (8 px) – rundet auf naechsten Rasterpunkt statt abzuschneiden
+    def _snap(v, g):
+        return int(round(v / g)) * g
+    nx = _snap(x, grid)
+    ny = _snap(y, grid)
+    # Bildschirmrand-Snap (dominiert das Feinraster wenn nah dran)
+    rect = _win_monitor_work_from_point(x + size_px // 2, y + size_px // 2)
+    if rect:
+        l, t, r, b = rect
+        if abs(nx - l) < edge:
+            nx = l
+        elif abs((nx + size_px) - r) < edge:
+            nx = r - size_px
+        if abs(ny - t) < edge:
+            ny = t
+        elif abs((ny + size_px) - b) < edge:
+            ny = b - size_px
+    return int(nx), int(ny)
+
+
+def _anchor_position(anchor, size_px, current_x, current_y, monitor_idx=None):
+    """Springt zu einem benannten Ankerpunkt eines Monitors. anchor: tl,tc,tr,
+    ml,c,mr,bl,bc,br. Wenn `monitor_idx` gesetzt ist, wird der Monitor aus
+    `_win_enum_monitors()` gewaehlt; sonst der aktuelle Monitor unterm Buddy."""
+    rect = None
+    if monitor_idx is not None:
+        mons = _win_enum_monitors()
+        if 0 <= monitor_idx < len(mons):
+            m = mons[monitor_idx]
+            rect = (m["left"], m["top"], m["right"], m["bottom"])
+    if rect is None:
+        rect = _win_monitor_work_from_point(current_x + size_px // 2,
+                                            current_y + size_px // 2)
+    if not rect:
+        return current_x, current_y
+    l, t, r, b = rect
+    m = 16
+    xmid = (l + r - size_px) // 2
+    ymid = (t + b - size_px) // 2
+    pos = {
+        "tl": (l + m, t + m),
+        "tc": (xmid, t + m),
+        "tr": (r - size_px - m, t + m),
+        "ml": (l + m, ymid),
+        "c":  (xmid, ymid),
+        "mr": (r - size_px - m, ymid),
+        "bl": (l + m, b - size_px - m),
+        "bc": (xmid, b - size_px - m),
+        "br": (r - size_px - m, b - size_px - m),
+    }
+    return pos.get(anchor, (current_x, current_y))
+
+
+def _win_foreground_title():
+    """Titel des aktuell fokussierten Fensters (nur Windows). Leerer String
+    wenn nicht ermittelbar."""
+    if not _IS_WIN:
+        return ""
+    try:
+        u = ctypes.windll.user32
+        hwnd = u.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        n = u.GetWindowTextLengthW(hwnd)
+        if n <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(n + 1)
+        u.GetWindowTextW(hwnd, buf, n + 1)
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
+def _win_process_names():
+    """Liste aller aktuell laufenden Prozessnamen (lowercase). Nutzt die
+    Toolhelp-Snapshot-API von Windows."""
+    if not _IS_WIN:
+        return []
+    try:
+        from ctypes import wintypes
+        TH32CS_SNAPPROCESS = 0x2
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        k = ctypes.windll.kernel32
+        h = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if h in (0, -1):
+            return []
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        names = []
+        if k.Process32First(h, ctypes.byref(pe)):
+            while True:
+                names.append(pe.szExeFile.decode("utf-8", errors="replace").lower())
+                if not k.Process32Next(h, ctypes.byref(pe)):
+                    break
+        k.CloseHandle(h)
+        return names
+    except Exception:
+        return []
+
+
+# Cache fuer den Prozess-/Fenster-Scan – wird alle 2 s neu berechnet.
+_CLAUDE_CACHE = {"t": 0.0, "active": False}
+_OWN_APP_TITLE_SUBSTR = "claude session browser"
+
+
+def _claude_context_active():
+    """True wenn ein echtes Claude-CLI-Terminal offen ist. Streng gefasst,
+    damit der Session Browser nicht mitzaehlt:
+      - Prozess 'claude.exe' laeuft irgendwo, ODER
+      - ein sichtbares Fenster hat 'claude' im Titel UND ist offensichtlich
+        ein Terminal/Editor (nicht der Session Browser, kein Browser-Tab).
+    Cache 2 s."""
+    now = time.time()
+    if now - _CLAUDE_CACHE["t"] < 2.0:
+        return _CLAUDE_CACHE["active"]
+    _CLAUDE_CACHE["t"] = now
+    active = False
+    try:
+        # 1) claude.exe direkt? (funktioniert bei nativer Installation)
+        for n in _win_process_names():
+            if n == "claude.exe":
+                active = True
+                break
+        # 2) Fenster-Titel-Check nur mit klaren Terminal-Indikatoren
+        if not active:
+            # Substrings, die typisch nur bei echten CLI-Sessions vorkommen
+            terminal_hints = (
+                "windows powershell", "powershell", "cmd.exe",
+                "command prompt", "eingabeaufforderung",
+                "windows-terminal", "windows terminal", " · claude",
+                " - claude", "wsl", "ubuntu", "bash",
+            )
+            for title in _win_list_windows():
+                t = title.lower()
+                if _OWN_APP_TITLE_SUBSTR in t:
+                    continue
+                # Browser-Tabs raus (die zeigen den Seitentitel + Browsernamen)
+                if any(b in t for b in (" — google chrome", " — firefox",
+                                        " - google chrome", " - firefox",
+                                        " — brave", " - brave",
+                                        " — microsoft edge", " - microsoft edge",
+                                        " and 1 more page", " and 2 more page")):
+                    continue
+                if "claude" not in t:
+                    continue
+                if any(h in t for h in terminal_hints):
+                    active = True
+                    break
+    except Exception:
+        pass
+    _CLAUDE_CACHE["active"] = active
+    return active
+
+
+def _win_list_windows():
+    """Liste sichtbarer Fenstertitel (Duplikate raus). Fuer den Picker im
+    Buddy-Tab."""
+    if not _IS_WIN:
+        return []
+    try:
+        u = ctypes.windll.user32
+        seen = []
+        seen_set = set()
+
+        EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool,
+                                      ctypes.c_void_p, ctypes.c_void_p)
+
+        def cb(hwnd, _lparam):
+            if not u.IsWindowVisible(hwnd):
+                return True
+            n = u.GetWindowTextLengthW(hwnd)
+            if n <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(n + 1)
+            u.GetWindowTextW(hwnd, buf, n + 1)
+            t = (buf.value or "").strip()
+            if t and t not in seen_set and len(t) < 200:
+                seen_set.add(t)
+                seen.append(t)
+            return True
+
+        u.EnumWindows(EnumProc(cb), 0)
+        return sorted(seen, key=str.lower)
+    except Exception:
+        return []
+
+
+def _latest_session_mtime(projects_dir, max_files=200):
+    """Neueste mtime aller .jsonl-Dateien unter projects_dir. 0 wenn nichts
+    gefunden. Bricht nach `max_files` ab um die Latenz klein zu halten."""
+    if not projects_dir or not os.path.isdir(projects_dir):
+        return 0.0
+    latest = 0.0
+    count = 0
+    try:
+        for entry in os.scandir(projects_dir):
+            if not entry.is_dir():
+                continue
+            try:
+                for sub in os.scandir(entry.path):
+                    if sub.is_file() and sub.name.endswith(".jsonl"):
+                        try:
+                            m = sub.stat().st_mtime
+                            if m > latest:
+                                latest = m
+                        except OSError:
+                            pass
+                        count += 1
+                        if count >= max_files:
+                            return latest
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return latest
+
+
+def _draw_frame_on_canvas(canvas, style, w, h, pad, color, label, chroma):
+    """Zeichnet Rahmen-Layer auf einem tk.Canvas und gibt die IDs zurueck.
+    Zerlegt in eine Funktion pro Design."""
+    if style == "off":
+        return []
+    if style in ("classic", "webcam"):
+        return _draw_frame_classic(canvas, w, h, pad, color, label)
+    if style == "neon":
+        return _draw_frame_neon(canvas, w, h, pad, color, label)
+    if style == "panel":
+        return _draw_frame_panel(canvas, w, h, pad, color, label)
+    return []
+
+
+def _draw_frame_classic(canvas, w, h, pad, color, label):
+    """Tech-Rahmen mit achteckigen Ecken, Nameplate unten, LIVE-Dot."""
+    ids = []
+    cut = max(4, pad["l"] // 2)
+    dark = "#14100e"
+    darker = _shade_hex(color, 0.55)
+    accent_dim = _shade_hex(color, 0.75)
+    cream = "#F1EBDD"
+
+    outer = [cut, 0, w - cut, 0, w, cut, w, h - cut,
+             w - cut, h, cut, h, 0, h - cut, 0, cut]
+    ids.append(canvas.create_polygon(outer, fill=color, outline=""))
+
+    cam_l = pad["l"]; cam_t = pad["t"]
+    cam_r = w - pad["r"]; cam_b = h - pad["b"] + 2
+    ids.append(canvas.create_rectangle(cam_l, cam_t, cam_r, cam_b,
+                                       fill=dark, outline=""))
+
+    corner_len = max(4, pad["l"] // 2)
+    for cx, cy, dx, dy in (
+        (cam_l, cam_t,  1,  1), (cam_r, cam_t, -1,  1),
+        (cam_l, cam_b,  1, -1), (cam_r, cam_b, -1, -1),
+    ):
+        ids.append(canvas.create_line(cx, cy, cx + dx * corner_len, cy,
+                                      fill=color, width=2))
+        ids.append(canvas.create_line(cx, cy, cx, cy + dy * corner_len,
+                                      fill=color, width=2))
+
+    stripe_w = max(6, w // 8)
+    top_y = pad["t"] // 2
+    for dx in (-stripe_w - 4, 0, stripe_w + 4):
+        cx = w // 2 + dx
+        ids.append(canvas.create_line(cx - 3, top_y, cx + 3, top_y,
+                                      fill=darker, width=2))
+
+    plate_top = h - pad["b"] + 3
+    plate_bot = h - 3
+    plate_half = min(w // 2 - 6, max(24, int(w * 0.36)))
+    plate_cx = w // 2
+    trap = [plate_cx - plate_half + 6, plate_top,
+            plate_cx + plate_half - 6, plate_top,
+            plate_cx + plate_half, plate_bot,
+            plate_cx - plate_half, plate_bot]
+    ids.append(canvas.create_polygon(trap, fill=darker, outline=""))
+    ids.append(canvas.create_line(
+        plate_cx - plate_half + 8, plate_top + 1,
+        plate_cx + plate_half - 8, plate_top + 1,
+        fill=accent_dim, width=1))
+    font_size = max(6, min(11, (plate_bot - plate_top) - 4))
+    ids.append(canvas.create_text(
+        plate_cx, (plate_top + plate_bot) // 2,
+        text=(label or "CLAWD").upper()[:7],
+        fill=cream, font=("Segoe UI", font_size, "bold")))
+
+    dot_r = max(2, pad["t"] // 3)
+    dot_cx = w - pad["r"] - dot_r - 2
+    dot_cy = pad["t"] // 2
+    ids.append(canvas.create_oval(
+        dot_cx - dot_r, dot_cy - dot_r,
+        dot_cx + dot_r, dot_cy + dot_r,
+        fill="#ff3a5a", outline=""))
+    return ids
+
+
+def _draw_frame_neon(canvas, w, h, pad, color, label):
+    """Doppelte leuchtende Kontur, transparent innen, kein Nameplate.
+    Ausserer Ring in dunklerem Ton, innerer in Vollton – wirkt wie Glow."""
+    ids = []
+    dim = _shade_hex(color, 0.45)
+    # Aeussere weite duenne Linie
+    ids.append(canvas.create_rectangle(0, 0, w - 1, h - 1,
+                                       outline=dim, width=2))
+    # Innere dickere leuchtende Linie
+    inset = max(2, pad["l"] // 2)
+    ids.append(canvas.create_rectangle(inset, inset, w - 1 - inset, h - 1 - inset,
+                                       outline=color, width=2))
+    # Kleine Ecken-Akzente (Diagonal-Striche)
+    corner = max(3, pad["l"] // 2)
+    for cx, cy, dx, dy in (
+        (0, 0, 1, 1), (w - 1, 0, -1, 1),
+        (0, h - 1, 1, -1), (w - 1, h - 1, -1, -1),
+    ):
+        ids.append(canvas.create_line(
+            cx, cy, cx + dx * corner, cy + dy * corner,
+            fill=color, width=2))
+    return ids
+
+
+def _draw_frame_panel(canvas, w, h, pad, color, label):
+    """Flache Titelleiste oben mit Live-Dot + Text, dunkle Cam-Flaeche,
+    schmaler Akzentrand unten."""
+    ids = []
+    dark = "#14100e"
+    darker = _shade_hex(color, 0.35)
+    cream = "#F1EBDD"
+
+    # Hauptrahmen als voll gefuelltes Rechteck
+    ids.append(canvas.create_rectangle(0, 0, w - 1, h - 1,
+                                       fill=darker, outline=""))
+    # Titelleiste oben in Akzentfarbe
+    title_h = pad["t"]
+    ids.append(canvas.create_rectangle(0, 0, w, title_h,
+                                       fill=color, outline=""))
+    # Cam-Flaeche
+    ids.append(canvas.create_rectangle(pad["l"], pad["t"],
+                                       w - pad["r"], h - pad["b"],
+                                       fill=dark, outline=""))
+    # LIVE-Dot ganz links in der Titelleiste
+    dot_r = max(2, title_h // 4)
+    dot_cx = pad["l"] + dot_r + 2
+    dot_cy = title_h // 2
+    ids.append(canvas.create_oval(
+        dot_cx - dot_r, dot_cy - dot_r,
+        dot_cx + dot_r, dot_cy + dot_r,
+        fill="#ff3a5a", outline=""))
+    # Titel-Text daneben
+    font_size = max(6, min(10, title_h - 4))
+    ids.append(canvas.create_text(
+        dot_cx + dot_r + 5, dot_cy,
+        anchor="w",
+        text=(label or "CLAWD").upper()[:10],
+        fill=cream, font=("Segoe UI", font_size, "bold")))
+    return ids
+
+
+def _resolved_frame_style(bud):
+    """Frame-Style aus Config lesen. Migration: webcam/neon/panel -> classic."""
+    st = bud.get("frame_style")
+    if st in ("webcam", "neon", "panel"):
+        return "classic"
+    if st in ("off", "classic"):
+        return st
+    return "off"
+
+
+def _frame_pad(style, scale):
+    """Padding pro Kante fuer die verschiedenen Rahmen-Styles."""
+    if style == "classic":
+        b = max(9, scale * 3)
+        return {"l": b, "r": b, "t": b, "b": b + max(12, scale * 3), "style": "classic"}
+    if style == "neon":
+        b = max(6, scale * 2)
+        return {"l": b, "r": b, "t": b, "b": b, "style": "neon"}
+    if style == "panel":
+        b = max(6, scale * 2)
+        return {"l": b, "r": b, "t": b + max(12, scale * 3), "b": b, "style": "panel"}
+    return {"l": 0, "r": 0, "t": 0, "b": 0, "style": "off"}
+
+
+def _shade_hex(hex_color, factor):
+    """Multipliziert alle RGB-Kanaele mit `factor`. Fuer dunklere Toene."""
+    try:
+        c = hex_color.lstrip("#")
+        r = min(255, max(0, int(int(c[0:2], 16) * factor)))
+        g = min(255, max(0, int(int(c[2:4], 16) * factor)))
+        b = min(255, max(0, int(int(c[4:6], 16) * factor)))
+        return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception:
+        return hex_color
+
+
+class BuddyController:
+    """Zeigt einen kleinen Clawd-Buddy als frameloses, transparentes,
+    always-on-top Tkinter-Fenster. Laeuft in einem Daemon-Thread. Wechselt
+    die Animation abhaengig von der Aktivitaet in ~/.claude/projects/*."""
+
+    _TRANSPARENT = "magenta"        # Chroma-Key (unwahrscheinlich in Sprites)
+    _FRAME_MS = 120                 # ~8 fps – reicht fuer 8-24 Frame-Anims, spart CPU
+    _POLL_MS = 300                  # Zustands-/Fokus-Check-Rate
+    _MTIME_CACHE_S = 2.0            # nur alle 2s Dateisystem abfragen
+    _FG_CHECK_EVERY = 3             # foreground-title nur alle N ticks (~360 ms)
+
+    def __init__(self, api):
+        self.api = api              # -> hat .settings und ._projects_dir()
+        self._thread = None
+        self._alive = False
+        self._q = queue.Queue()     # Commands aus dem UI-Thread
+        self._pulse = 0             # fuer die kurzen "surprise"-Momente
+
+    # ---- oeffentliche API (aus Api heraus aufgerufen) ----
+    def is_alive(self):
+        return bool(self._thread and self._thread.is_alive())
+
+    def start(self):
+        if self.is_alive():
+            return
+        if not BUDDY_ANIMS:
+            return                  # Sprites konnten nicht dekodiert werden
+        self._alive = True
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="BuddyThread")
+        self._thread.start()
+
+    def stop(self):
+        if not self.is_alive():
+            return
+        self._q.put(("quit", None))
+
+    def push(self, key=None):
+        """Buddy weiss von aussen dass sich was geaendert hat (Groesse,
+        Sichtbarkeit, ...). Bei disabled -> stop, bei enabled+aus -> start."""
+        s = self.api.settings.get("buddy", {})
+        if not s.get("enabled"):
+            self.stop()
+            return
+        if not self.is_alive():
+            self.start()
+            return
+        self._q.put(("refresh", key))
+
+    def surprise(self):
+        """Kurze 'surprise'-Animation ausloesen (z.B. Test-Button)."""
+        if self.is_alive():
+            self._q.put(("pulse", "surprise"))
+
+    def preview_anim(self, name, seconds=3.0):
+        """Zeigt eine bestimmte Animation fuer `seconds` Sekunden – ueberschreibt
+        die Auto-Erkennung waehrenddessen."""
+        if self.is_alive():
+            self._q.put(("preview", (name, float(seconds))))
+
+    def jump_to(self, x, y):
+        """Buddy exakt auf (x,y) setzen."""
+        if self.is_alive():
+            self._q.put(("jump", (int(x), int(y))))
+
+    def place_mode(self, on_done=None):
+        """Positionier-Modus: Buddy pulsiert damit man ihn leicht findet,
+        und der `on_done`-Callback wird nach dem ersten Drop aufgerufen
+        (typisch: Hauptfenster wiederherstellen)."""
+        self._on_place_done = on_done
+        if self.is_alive():
+            self._q.put(("place", True))
+
+    # ---- interner Thread ----
+    def _run(self):
+        try:
+            import tkinter as tk
+        except Exception:
+            self._alive = False
+            return
+
+        s = dict(self.api.settings.get("buddy", {}))
+        scale = max(2, min(10, int(s.get("size", 4))))
+        opacity = max(20, min(100, int(s.get("opacity", 100)))) / 100.0
+        x, y = int(s.get("x", 200)), int(s.get("y", 200))
+
+        root = tk.Tk()
+        root.withdraw()  # spaeter deiconify, damit initial kein Flackern
+        try:
+            root.title("Clawd")
+        except Exception:
+            pass
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        try:
+            root.attributes("-transparentcolor", self._TRANSPARENT)
+        except Exception:
+            pass
+        try:
+            root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        root.configure(bg=self._TRANSPARENT)
+
+        # Rahmen einlesen und Fenstermaße daraus ableiten. Sprite bleibt
+        # immer 20*scale, das Fenster wird um Padding groesser.
+        frame_style = _resolved_frame_style(s)
+        frame_pad = _frame_pad(frame_style, scale)
+        px_sprite = 20 * scale
+        px_w = px_sprite + frame_pad["l"] + frame_pad["r"]
+        px_h = px_sprite + frame_pad["t"] + frame_pad["b"]
+        root.geometry(f"{px_w}x{px_h}+{x}+{y}")
+
+        canvas = tk.Canvas(root, width=px_w, height=px_h,
+                           bg=self._TRANSPARENT,
+                           highlightthickness=0, bd=0)
+        canvas.pack(fill="both", expand=True)
+
+        # Rahmen (Layer 0) und Sprite-Image (Layer 1) auf Canvas.
+        frame_items = _draw_frame_on_canvas(
+            canvas, frame_style, px_w, px_h, frame_pad,
+            s.get("frame_color") or "#ec7456",
+            s.get("frame_label") or "CLAWD",
+            self._TRANSPARENT)
+
+        # PhotoImage als Zeichenflaeche – Sprite zentriert im Innenbereich
+        img = tk.PhotoImage(width=px_sprite, height=px_sprite)
+        sprite_id = canvas.create_image(frame_pad["l"], frame_pad["t"],
+                                        anchor="nw", image=img)
+        canvas.image = img
+        # Positionier-Highlight (unsichtbar bis place_mode)
+        place_ring = canvas.create_rectangle(
+            1, 1, px_w - 1, px_h - 1,
+            outline="#ffd66b", width=3, state="hidden")
+
+        def rebuild_frame(new_style, new_color, new_label, new_scale):
+            """Loescht alle Frame-Layer und zeichnet sie neu; passt Fenster-,
+            Canvas- und Bildgroesse an."""
+            nonlocal frame_style, frame_pad, px_sprite, px_w, px_h, frame_items
+            # Sprite-Zeichenflaeche und Fenster neu dimensionieren
+            frame_style = new_style
+            frame_pad = _frame_pad(new_style, new_scale)
+            px_sprite = 20 * new_scale
+            px_w = px_sprite + frame_pad["l"] + frame_pad["r"]
+            px_h = px_sprite + frame_pad["t"] + frame_pad["b"]
+            try:
+                img.configure(width=px_sprite, height=px_sprite)
+                canvas.configure(width=px_w, height=px_h)
+                root.geometry(f"{px_w}x{px_h}")
+                canvas.coords(sprite_id, frame_pad["l"], frame_pad["t"])
+                canvas.coords(place_ring, 1, 1, px_w - 1, px_h - 1)
+            except Exception:
+                pass
+            # Alte Frame-Layer weg, neue drauf
+            for fid in frame_items:
+                try: canvas.delete(fid)
+                except Exception: pass
+            frame_items = _draw_frame_on_canvas(
+                canvas, frame_style, px_w, px_h, frame_pad,
+                new_color, new_label, self._TRANSPARENT)
+            # Sprite und place_ring wieder in den Vordergrund heben
+            try:
+                canvas.tag_raise(sprite_id)
+                canvas.tag_raise(place_ring)
+            except Exception:
+                pass
+            state["px_w"] = px_w
+            state["px_h"] = px_h
+            state["frame_style"] = frame_style
+            state["frame_color"] = new_color
+            state["frame_label"] = new_label
+            # Render-Cache wegwerfen – neuer BG oder Groesse.
+            render_cache.clear()
+            last_drawn["key"] = None
+
+        state = {
+            "scale": scale,
+            "opacity": opacity,
+            "anim": "idle breathe",
+            "frame": 0,
+            "frame_style": frame_style,
+            "frame_color": s.get("frame_color") or "#ec7456",
+            "frame_label": s.get("frame_label") or "CLAWD",
+            "px_w": px_w,
+            "px_h": px_h,
+            "live_pulse": 0.0,
+            "last_mtime_check": 0.0,
+            "last_mtime": 0.0,
+            "activity_state": "idle",
+            "surprise_until": 0.0,
+            "placing": False,          # Position-Modus: dickes Highlight-Rechteck
+            "place_pulse": 0.0,
+            "preview_until": 0.0,
+            "preview_anim": "",
+            "overlay": None,           # Vollflaechen-Toplevel im Platzier-Modus
+            "current_alpha": 0.0,      # tatsaechliche Fenster-Deckkraft (fuer Fade)
+            "target_alpha": 0.0,
+            "was_visible": False,      # letzter apply_visibility-Zustand
+            "tick": 0,
+        }
+
+        # ---- Drag & Drop ----
+        drag = {"x": 0, "y": 0, "moved": False}
+
+        def on_press(e):
+            drag["x"] = e.x
+            drag["y"] = e.y
+            drag["moved"] = False
+
+        def on_drag(e):
+            nx = root.winfo_x() + e.x - drag["x"]
+            ny = root.winfo_y() + e.y - drag["y"]
+            # Raster + Bildschirmrand-Snap
+            size_px = state.get("px_w", 20 * state["scale"])
+            nx, ny = _snap_position(nx, ny, size_px)
+            root.geometry(f"+{nx}+{ny}")
+            drag["moved"] = True
+
+        def on_release(e):
+            if drag["moved"]:
+                nx, ny = root.winfo_x(), root.winfo_y()
+                bud = self.api.settings.setdefault("buddy", {})
+                bud["x"], bud["y"] = nx, ny
+                try:
+                    save_json(SETTINGS_FILE, self.api.settings)
+                except Exception:
+                    pass
+            if state["placing"] and drag["moved"]:
+                end_place_mode()
+
+        canvas.bind("<Button-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        # Doppelklick oder Rechtsklick -> ausblenden
+        canvas.bind("<Double-Button-1>",
+                    lambda e: self._q.put(("hide_toggle", None)))
+        canvas.bind("<Button-3>",
+                    lambda e: self._q.put(("hide_toggle", None)))
+
+        # ---- Overlay fuer Platzier-Modus ----
+        def virtual_desktop_bounds():
+            if _IS_WIN:
+                try:
+                    u = ctypes.windll.user32
+                    return (u.GetSystemMetrics(76), u.GetSystemMetrics(77),
+                            u.GetSystemMetrics(78), u.GetSystemMetrics(79))
+                except Exception:
+                    pass
+            return (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
+
+        def end_place_mode(save_pos=True):
+            if not state["placing"]:
+                return
+            state["placing"] = False
+            try:
+                canvas.itemconfigure(place_ring, state="hidden")
+            except Exception:
+                pass
+            ov = state.get("overlay")
+            if ov is not None:
+                try:
+                    ov.destroy()
+                except Exception:
+                    pass
+                state["overlay"] = None
+            cb = getattr(self, "_on_place_done", None)
+            if cb:
+                try:
+                    cb()
+                except Exception:
+                    pass
+
+        def build_overlay():
+            try:
+                vx, vy, vw, vh = virtual_desktop_bounds()
+                ov = tk.Toplevel(root)
+                ov.overrideredirect(True)
+                ov.attributes("-topmost", True)
+                ov.attributes("-alpha", 0.42)
+                ov.configure(bg="#0a0b0d")
+                ov.geometry(f"{vw}x{vh}+{vx}+{vy}")
+                cv = tk.Canvas(ov, bg="#0a0b0d",
+                               highlightthickness=0, bd=0)
+                cv.pack(fill="both", expand=True)
+                # Feinraster
+                for xi in range(0, vw, 20):
+                    cv.create_line(xi, 0, xi, vh, fill="#3a3d42")
+                for yi in range(0, vh, 20):
+                    cv.create_line(0, yi, vw, yi, fill="#3a3d42")
+                # 100er-Raster kraeftiger
+                for xi in range(0, vw, 100):
+                    cv.create_line(xi, 0, xi, vh, fill="#5c6068", width=1)
+                for yi in range(0, vh, 100):
+                    cv.create_line(0, yi, vw, yi, fill="#5c6068", width=1)
+                # Nur ESC bricht ab – ein Klick soll den Buddy greifen koennen,
+                # nicht das Overlay treffen.
+                ov.bind("<Escape>",
+                        lambda e: end_place_mode(save_pos=False))
+                cv.bind("<Escape>",
+                        lambda e: end_place_mode(save_pos=False))
+                # Overlay unter dem Buddy halten (kein Click-Stealing) – erst
+                # das Overlay bauen, dann den Buddy re-topmost setzen und
+                # explizit anheben. Beide bleiben topmost; der zuletzt
+                # angehobene liegt vorn.
+                try:
+                    ov.update_idletasks()
+                    root.attributes("-topmost", False)
+                    root.attributes("-topmost", True)
+                    root.lift()
+                except Exception:
+                    pass
+                return ov
+            except Exception:
+                return None
+
+        # ---- Sichtbarkeits-Logik (mit throttled foreground-check) ----
+        fg_cache = {"title": "", "tick": -999}
+
+        def _fg_title(tick_count):
+            if tick_count - fg_cache["tick"] >= self._FG_CHECK_EVERY:
+                fg_cache["title"] = _win_foreground_title().lower()
+                fg_cache["tick"] = tick_count
+            return fg_cache["title"]
+
+        def desired_visible():
+            bud = self.api.settings.get("buddy", {})
+            if not bud.get("enabled"):
+                return False
+            # Buddy-Tab: immer sichtbar (auch waehrend Foreground-Racing).
+            if getattr(self.api, "_current_view", "") == "buddy":
+                return True
+            fg = _fg_title(state.get("tick", 0))
+            # Session Browser vorne (auf anderem Tab) -> Buddy weg.
+            if _OWN_APP_TITLE_SUBSTR in fg:
+                return False
+            mode = bud.get("visibility", "when_claude")
+            if mode == "always":
+                return True
+            if mode == "when_window":
+                needle = (bud.get("target_window") or "").lower().strip()
+                if not needle:
+                    return True
+                return needle in fg
+            if mode == "when_claude":
+                return _claude_context_active()
+            return True
+
+        _visible = {"v": None}
+
+        def apply_visibility():
+            want = desired_visible()
+            # Fade-Ziel aktualisieren – nicht sofort withdraw/deiconify.
+            state["target_alpha"] = state["opacity"] if want else 0.0
+            if want and not state["was_visible"]:
+                # Reingekommen -> Fenster zeigen (transparent) und Fade starten
+                try:
+                    root.attributes("-alpha", 0.0)
+                    state["current_alpha"] = 0.0
+                    root.deiconify()
+                except Exception:
+                    pass
+            state["was_visible"] = want
+            _visible["v"] = want
+
+        def step_fade():
+            # Naehert current_alpha an target_alpha an. ~180 ms Total.
+            cur = state["current_alpha"]
+            tgt = state["target_alpha"]
+            if abs(cur - tgt) < 0.02:
+                if cur != tgt:
+                    state["current_alpha"] = tgt
+                    try:
+                        root.attributes("-alpha", tgt)
+                    except Exception:
+                        pass
+                    if tgt <= 0.001 and not state["was_visible"]:
+                        try:
+                            root.withdraw()
+                        except Exception:
+                            pass
+                return
+            step = 0.12 if tgt > cur else -0.12
+            new = cur + step
+            if (step > 0 and new > tgt) or (step < 0 and new < tgt):
+                new = tgt
+            state["current_alpha"] = new
+            try:
+                root.attributes("-alpha", max(0.0, min(1.0, new)))
+            except Exception:
+                pass
+
+        # ---- Aktivitaets-Detection ----
+        # Wir checken zeitgesteuert:
+        #   - alle 2 s: Datei-Modifikationszeiten (billig)
+        #   - alle 8 s bei frischer Aktivitaet: Tail-Read auf Limit-Muster
+        state["last_limit_check"] = 0.0
+        state["is_limited"] = False
+
+        def detect_state():
+            now = time.time()
+            if now - state["last_mtime_check"] > self._MTIME_CACHE_S:
+                state["last_mtime_check"] = now
+                pdir = ""
+                try:
+                    pdir = self.api._projects_dir()
+                except Exception:
+                    pdir = ""
+                state["last_mtime"] = _latest_session_mtime(pdir)
+            if state["last_mtime"] <= 0:
+                return "none"
+            age = now - state["last_mtime"]
+            # Limit-Check nur bei relativ frischer Aktivitaet, hoechstens alle 8 s
+            if age < 300 and now - state["last_limit_check"] > 8:
+                state["last_limit_check"] = now
+                try:
+                    pdir = self.api._projects_dir()
+                    state["is_limited"] = _latest_jsonl_hits_limit(pdir)
+                except Exception:
+                    state["is_limited"] = False
+            if state["is_limited"] and age < 900:
+                return "limit"
+            if age < 3:
+                return "active"
+            if age < 15:
+                return "thinking"
+            if age < 90:
+                return "recent"
+            if age < 600:
+                return "idle"
+            return "sleep"
+
+        # ---- Anim wechseln ----
+        def choose_anim():
+            bud = self.api.settings.get("buddy", {})
+            now = time.time()
+            if now < state["preview_until"] and state["preview_anim"] in BUDDY_ANIMS:
+                return state["preview_anim"]
+            if now < state["surprise_until"]:
+                return BUDDY_STATE_MAP["surprise"]
+            if bud.get("party"):
+                return BUDDY_STATE_MAP["party"]
+            act = detect_state()
+            state["activity_state"] = act
+            return BUDDY_STATE_MAP.get(act, "idle breathe")
+
+        # ---- Rendering (mit Frame-Cache) ----
+        # Cache-Key = (anim_name, frame_idx, scale, bg_fill) -> list[20] row-strings.
+        # Da Animationen loopen und Groesse/BG-Farbe konstant bleiben, sparen
+        # wir nach einem vollen Zyklus 100% der Zeichenkosten pro Frame.
+        render_cache = {}
+        # Merkmale des zuletzt geschriebenen Frames, damit wir bei unveraenderter
+        # Zeichnung gar nichts machen.
+        last_drawn = {"key": None}
+
+        def render_frame():
+            name = state["anim"]
+            anim = BUDDY_ANIMS.get(name) or next(iter(BUDDY_ANIMS.values()))
+            frames = anim["frames"]
+            if not frames:
+                return
+            frame_idx = state["frame"] % len(frames)
+            sc = state["scale"]
+            bg_fill = "#14100e" if state.get("frame_style", "off") != "off" else self._TRANSPARENT
+            key = (name, frame_idx, sc, bg_fill)
+
+            if key == last_drawn["key"]:
+                state["frame"] += 1
+                return
+
+            rows_data = render_cache.get(key)
+            if rows_data is None:
+                palette = anim["palette"]
+                f = frames[frame_idx]
+                rows_data = []
+                for row in range(20):
+                    cells = []
+                    ridx = row * 20
+                    for col in range(20):
+                        idx = f[ridx + col]
+                        if idx <= 0:
+                            cells.append(bg_fill)
+                        elif idx < len(palette):
+                            cells.append(palette[idx])
+                        else:
+                            cells.append(bg_fill)
+                    row_str = "{" + " ".join(
+                        (" ".join([c] * sc)) for c in cells) + "}"
+                    rows_data.append(row_str)
+                # Cache begrenzen (nicht boesartig wachsen lassen)
+                if len(render_cache) > 400:
+                    render_cache.clear()
+                render_cache[key] = rows_data
+
+            try:
+                for row in range(20):
+                    y1 = row * sc
+                    img.put(rows_data[row], to=(0, y1, 20 * sc, y1 + sc))
+                last_drawn["key"] = key
+            except Exception:
+                pass
+            state["frame"] += 1
+
+        # ---- Command-Queue ----
+        def process_cmds():
+            try:
+                while True:
+                    cmd, val = self._q.get_nowait()
+                    if cmd == "quit":
+                        self._alive = False
+                        try:
+                            root.destroy()
+                        except Exception:
+                            pass
+                        return False
+                    elif cmd == "refresh":
+                        # Buddy-Einstellungen neu einlesen
+                        new = self.api.settings.get("buddy", {})
+                        new_scale = max(2, min(10, int(new.get("size", 4))))
+                        new_op = max(20, min(100, int(new.get("opacity", 100)))) / 100.0
+                        new_style = _resolved_frame_style(new)
+                        new_color = new.get("frame_color") or "#ec7456"
+                        new_label = new.get("frame_label") or "CLAWD"
+                        # Sprite-/Fenster-/Frame-Rebuild wenn irgendwas
+                        # dimensions- oder styleaenderndes anliegt.
+                        if (new_scale != state["scale"] or
+                                new_style != state["frame_style"] or
+                                new_color != state["frame_color"] or
+                                new_label != state["frame_label"]):
+                            state["scale"] = new_scale
+                            rebuild_frame(new_style, new_color, new_label, new_scale)
+                        if abs(new_op - state["opacity"]) > 0.001:
+                            state["opacity"] = new_op
+                            if state["was_visible"]:
+                                state["target_alpha"] = new_op
+                        _visible["v"] = None
+                    elif cmd == "hide_toggle":
+                        # Rechtsklick -> Buddy ausblenden (in Settings)
+                        bud = self.api.settings.setdefault("buddy", {})
+                        bud["enabled"] = False
+                        try:
+                            save_json(SETTINGS_FILE, self.api.settings)
+                        except Exception:
+                            pass
+                        self._alive = False
+                        try:
+                            root.destroy()
+                        except Exception:
+                            pass
+                        return False
+                    elif cmd == "pulse":
+                        state["surprise_until"] = time.time() + 1.6
+                    elif cmd == "place":
+                        state["placing"] = True
+                        state["place_pulse"] = 0.0
+                        try:
+                            canvas.itemconfigure(place_ring, state="normal")
+                            root.attributes("-topmost", True)
+                        except Exception:
+                            pass
+                        # Vollflaechen-Overlay mit Grid einblenden
+                        if state.get("overlay") is None:
+                            state["overlay"] = build_overlay()
+                    elif cmd == "preview":
+                        name, seconds = val
+                        if name in BUDDY_ANIMS:
+                            state["preview_anim"] = name
+                            state["preview_until"] = time.time() + seconds
+                    elif cmd == "jump":
+                        nx, ny = val
+                        size_px = 20 * state["scale"]
+                        nx, ny = _snap_position(nx, ny, size_px)
+                        try:
+                            root.geometry(f"+{nx}+{ny}")
+                        except Exception:
+                            pass
+                        bud = self.api.settings.setdefault("buddy", {})
+                        bud["x"], bud["y"] = nx, ny
+                        try:
+                            save_json(SETTINGS_FILE, self.api.settings)
+                        except Exception:
+                            pass
+            except queue.Empty:
+                pass
+            return True
+
+        # ---- Haupt-Loop (via after()) ----
+        def tick():
+            if not self._alive:
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+                return
+            state["tick"] += 1
+            if not process_cmds():
+                return
+            apply_visibility()
+            step_fade()
+            chosen = choose_anim()
+            if chosen != state["anim"]:
+                state["anim"] = chosen
+                state["frame"] = 0
+            if state["current_alpha"] > 0.01:
+                render_frame()
+            # Place-Mode: Rahmen pulsieren fuer bessere Sichtbarkeit
+            if state["placing"]:
+                state["place_pulse"] = (state["place_pulse"] + 0.14) % 6.283
+                import math
+                intensity = int(2 + 3 * (0.5 + 0.5 * math.sin(state["place_pulse"])))
+                try:
+                    canvas.itemconfigure(place_ring, width=intensity)
+                except Exception:
+                    pass
+            root.after(self._FRAME_MS, tick)
+
+        try:
+            root.after(50, tick)
+            root.mainloop()
+        except Exception:
+            pass
+        finally:
+            self._alive = False
+
+
+# --------------------------------------------------------------------------- #
+#  System-Tray (X = App in Hintergrund)
+# --------------------------------------------------------------------------- #
+class TrayManager:
+    """System-Tray-Icon damit die App im Hintergrund weiterlaeuft wenn der
+    User auf X klickt. Rechtsklick → Menue mit Oeffnen/Beenden. Linksklick
+    → App wieder zeigen."""
+
+    def __init__(self, get_window, on_quit):
+        self.get_window = get_window
+        self.on_quit = on_quit
+        self.icon = None
+        self._thread = None
+
+    def start(self):
+        if self.icon:
+            return
+        try:
+            import pystray
+            from PIL import Image
+        except Exception:
+            return
+
+        icon_img = None
+        try:
+            icon_img = Image.open(_resource("logo.png"))
+        except Exception:
+            try:
+                icon_img = Image.new("RGB", (64, 64), "#ec7456")
+            except Exception:
+                return
+
+        def _open(icon, item):
+            self.show_main()
+
+        def _quit(icon, item):
+            try:
+                self.icon.stop()
+            except Exception:
+                pass
+            try:
+                self.on_quit()
+            except Exception:
+                pass
+
+        menu = pystray.Menu(
+            pystray.MenuItem("Öffnen", _open, default=True),
+            pystray.MenuItem("Beenden", _quit),
+        )
+        self.icon = pystray.Icon(
+            "ClaudeSessionBrowser",
+            icon=icon_img,
+            title="Claude Session Browser",
+            menu=menu,
+        )
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="TrayThread")
+        self._thread.start()
+
+    def _run(self):
+        try:
+            self.icon.run()
+        except Exception:
+            pass
+
+    def show_main(self):
+        win = self.get_window()
+        if not win:
+            return
+        try:
+            win.show()
+        except Exception:
+            pass
+        try:
+            win.restore()
+        except Exception:
+            pass
+
+    def stop(self):
+        if self.icon:
+            try:
+                self.icon.stop()
+            except Exception:
+                pass
+
+
+# --------------------------------------------------------------------------- #
 #  API (von JavaScript aufrufbar)
 # --------------------------------------------------------------------------- #
 class Api:
@@ -304,6 +1645,8 @@ class Api:
         self.overrides = load_json(TITLES_FILE, {})
         self.settings = load_settings()
         self._cache = None
+        self._current_view = "sessions"
+        self.buddy = BuddyController(self)
 
     @staticmethod
     def _win():
@@ -447,6 +1790,206 @@ class Api:
             return True
         except OSError:
             return False
+
+    # -- Buddy (Clawd-Maskottchen) --
+    def buddy_state(self):
+        """Was der Buddy-Tab braucht: aktuelle Config + verfuegbare Animationen
+        (nur Namen; Sprites werden nicht ans UI geschickt) + Preview-Palette."""
+        bud = self.settings.get("buddy", {})
+        anims = []
+        for name, data in BUDDY_ANIMS.items():
+            frames = data.get("frames", [])
+            anims.append({"name": name, "frames": len(frames)})
+        # Preview-Frame als Data-URL fuer den Tab (aktuelle Animation, erstes
+        # Frame – reicht als Icon).
+        default_name = bud.get("preview_anim") or "idle breathe"
+        preview = self._buddy_preview_gif(default_name)
+        # Warum ist er ggf. gerade nicht sichtbar?
+        reason = ""
+        if bud.get("enabled") and self.buddy.is_alive():
+            mode = bud.get("visibility", "when_claude")
+            if mode == "when_claude" and not _claude_context_active():
+                reason = "wartet auf Claude"
+            elif mode == "when_window":
+                needle = (bud.get("target_window") or "").lower().strip()
+                fg = _win_foreground_title().lower()
+                if needle and needle not in fg:
+                    reason = "wartet auf Fenster"
+        return {
+            "config": bud,
+            "anims": anims,
+            "running": self.buddy.is_alive(),
+            "reason": reason,
+            "have_sprites": bool(BUDDY_ANIMS),
+            "state_map": BUDDY_STATE_MAP,
+            "preview": preview,
+            "preview_name": default_name,
+        }
+
+    def buddy_set(self, key, value):
+        bud = self.settings.setdefault("buddy", dict(DEFAULT_SETTINGS["buddy"]))
+        bud[key] = value
+        save_json(SETTINGS_FILE, self.settings)
+        if key == "enabled":
+            if value:
+                self.buddy.start()
+            else:
+                self.buddy.stop()
+        else:
+            self.buddy.push(key)
+        return self.buddy_state()
+
+    def buddy_windows(self):
+        """Aktuelle Fensterliste fuer den Picker."""
+        return _win_list_windows()
+
+    def buddy_surprise(self):
+        self.buddy.surprise()
+        return {"ok": True}
+
+    def buddy_apply_tray(self, on):
+        """Tray-Icon starten/stoppen wenn Toggle sich aendert."""
+        tray = getattr(self, "_tray", None)
+        if not tray:
+            return {"ok": False}
+        try:
+            if on:
+                tray.start()
+            else:
+                tray.stop()
+        except Exception:
+            pass
+        return {"ok": True}
+
+    def buddy_real_quit(self):
+        """App wirklich beenden (statt in Tray verstecken)."""
+        fn = getattr(self, "_real_quit", None)
+        if fn:
+            try:
+                fn()
+            except Exception:
+                pass
+        return {"ok": True}
+
+    def buddy_notify_view(self, view):
+        """Wird beim Tab-Wechsel im UI aufgerufen. Speichert die aktuelle
+        Ansicht im Api-Objekt (nicht persistiert) – die Buddy-Loop nutzt es,
+        um den Buddy im Buddy-Tab sichtbar zu lassen, sonst zu verstecken
+        waehrend der Session Browser vorne ist."""
+        self._current_view = str(view or "sessions")
+        return {"ok": True}
+
+    def buddy_preview_anim(self, name):
+        """Zeigt eine bestimmte Animation kurz auf dem Buddy."""
+        if not self.buddy.is_alive():
+            # Falls Buddy aus: kurz anwerfen, ist nicht schlimm
+            bud = self.settings.setdefault("buddy", dict(DEFAULT_SETTINGS["buddy"]))
+            bud["enabled"] = True
+            save_json(SETTINGS_FILE, self.settings)
+            self.buddy.start()
+            time.sleep(0.3)
+        self.buddy.preview_anim(name, 3.5)
+        return {"ok": True}
+
+    def buddy_monitors(self):
+        """Alle Monitore mit Label/Groesse fuer den Picker."""
+        return _win_enum_monitors()
+
+    def buddy_anchor(self, anchor, monitor_idx=None):
+        """Springt zu einem benannten Ankerpunkt (tl,tc,tr,ml,c,mr,bl,bc,br)
+        auf einem bestimmten Monitor (oder dem aktuellen wenn None)."""
+        bud = self.settings.setdefault("buddy", dict(DEFAULT_SETTINGS["buddy"]))
+        if not bud.get("enabled"):
+            bud["enabled"] = True
+            save_json(SETTINGS_FILE, self.settings)
+            self.buddy.start()
+            time.sleep(0.4)
+        scale = max(2, min(10, int(bud.get("size", 4))))
+        # Rahmen berücksichtigen – das Fenster ist ggf. groesser als 20*scale.
+        pad = _frame_pad(_resolved_frame_style(bud), scale)
+        size_px = 20 * scale + pad["l"] + pad["r"]
+        mi = int(monitor_idx) if monitor_idx is not None else None
+        nx, ny = _anchor_position(anchor, size_px, int(bud.get("x", 200)),
+                                  int(bud.get("y", 200)), mi)
+        self.buddy.jump_to(nx, ny)
+        # Optimistisch schon merken (der Buddy-Thread persistiert nochmal
+        # nach dem Snap – kann leicht abweichen, dann gewinnt der Thread).
+        bud["x"], bud["y"] = nx, ny
+        save_json(SETTINGS_FILE, self.settings)
+        return self.buddy_state()
+
+    def buddy_place(self):
+        """Positionier-Modus: Hauptfenster minimieren, Buddy pulsieren lassen,
+        auf ersten Drop warten. Danach Hauptfenster wieder holen."""
+        bud = self.settings.setdefault("buddy", dict(DEFAULT_SETTINGS["buddy"]))
+        was_off = not bud.get("enabled")
+        if was_off:
+            bud["enabled"] = True
+            save_json(SETTINGS_FILE, self.settings)
+            self.buddy.start()
+            # kurze Wartezeit bis der Tkinter-Thread hochgefahren ist
+            for _ in range(30):
+                if self.buddy.is_alive():
+                    break
+                time.sleep(0.1)
+
+        # Fenster bleibt offen – das Grid-Overlay legt sich davor.
+        self.buddy.place_mode(on_done=None)
+        return {"ok": True}
+
+    def buddy_preview(self, name):
+        """Liefert einen Vorschau-Frame als PNG-Data-URL."""
+        return self._buddy_preview_gif(name)
+
+    def _buddy_preview_gif(self, name):
+        """Baut aus dem ersten Frame einer Animation ein 80x80 PNG-Data-URL.
+        (Fuer die Auswahl-Liste im Buddy-Tab.)"""
+        anim = BUDDY_ANIMS.get(name)
+        if not anim:
+            return ""
+        frame = anim["frames"][0]
+        palette = anim["palette"]
+        scale = 4
+        # PNG selbst bauen ist Overkill – wir generieren stattdessen ein
+        # BMP mit 4x-Scale und liefern es als data-uri.
+        w = 20 * scale
+        h = 20 * scale
+        # 24-bit BMP, unten-nach-oben.
+        row_bytes = w * 3
+        pad = (4 - row_bytes % 4) % 4
+        pixels = bytearray()
+        for row in range(19, -1, -1):
+            for _ in range(scale):
+                for col in range(20):
+                    idx = frame[row * 20 + col]
+                    if idx <= 0:
+                        r, g, b = 20, 16, 14   # dunkler App-Hintergrund
+                    else:
+                        hx = palette[idx] if idx < len(palette) else "#000000"
+                        hx = hx.lstrip("#")
+                        r = int(hx[0:2], 16); g = int(hx[2:4], 16); b = int(hx[4:6], 16)
+                    for _ in range(scale):
+                        pixels += bytes((b, g, r))
+                pixels += bytes(pad)
+        file_size = 54 + len(pixels)
+        header = bytearray()
+        header += b"BM"
+        header += file_size.to_bytes(4, "little")
+        header += b"\x00\x00\x00\x00"
+        header += (54).to_bytes(4, "little")
+        header += (40).to_bytes(4, "little")
+        header += w.to_bytes(4, "little", signed=True)
+        header += h.to_bytes(4, "little", signed=True)
+        header += (1).to_bytes(2, "little")
+        header += (24).to_bytes(2, "little")
+        header += (0).to_bytes(4, "little")
+        header += len(pixels).to_bytes(4, "little")
+        header += (2835).to_bytes(4, "little")
+        header += (2835).to_bytes(4, "little")
+        header += (0).to_bytes(4, "little")
+        header += (0).to_bytes(4, "little")
+        raw = bytes(header) + bytes(pixels)
+        return "data:image/bmp;base64," + base64.b64encode(raw).decode("ascii")
 
     @staticmethod
     def _ssl_ctx():
@@ -1005,6 +2548,92 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cp-hex{flex:1; background:var(--bg); border:1px solid var(--border); color:var(--fg);
     border-radius:9px; padding:9px 12px; font-family:Consolas,monospace; font-size:14px; outline:none}
   .cp-hex:focus{border-color:var(--accent)}
+
+  /* ---- Buddy-Tab ---- */
+  .buddy-hp{width:32px; height:32px; image-rendering:pixelated; image-rendering:crisp-edges;
+    border-radius:6px; background:var(--surface2)}
+  .ba-headline{display:flex; align-items:flex-start; gap:22px; justify-content:space-between}
+  .ba-headline > div:first-child{flex:1}
+  .ba-toggle{display:flex; flex-direction:column; align-items:center; gap:6px}
+  .ba-toggle-lbl{font-size:12px; color:var(--muted); letter-spacing:.02em}
+  .ba-vis{display:flex; flex-direction:column; gap:10px; margin-bottom:12px}
+  .ba-radio{display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; font-size:14px}
+  .ba-radio input{accent-color:var(--accent); width:16px; height:16px}
+  .ba-radio .ba-dim{color:var(--muted); font-style:normal; font-size:12px}
+  .ba-radio .ba-dim code{background:var(--bg); padding:1px 6px; border-radius:4px; border:1px solid var(--border); font-family:Consolas,monospace}
+  .ba-window{display:flex; gap:9px; margin-top:6px; transition:opacity .15s}
+  .ba-window.disabled{opacity:.4; pointer-events:none}
+  .ba-window input{flex:1; background:var(--bg); border:1px solid var(--border); color:var(--fg);
+    border-radius:9px; padding:9px 12px; font-family:inherit; font-size:13.5px; outline:none}
+  .ba-window input:focus{border-color:var(--accent)}
+  .ba-hint{color:var(--muted); font-size:12px; margin-top:8px}
+  .ba-slider{display:flex; flex-direction:column; gap:6px; margin:12px 0}
+  .ba-slider label{font-size:13px; color:var(--muted); display:flex; justify-content:space-between}
+  .ba-slider .ba-val{color:var(--fg); font-family:Consolas,monospace}
+  .ba-slider input[type=range]{width:100%; accent-color:var(--accent)}
+  .ba-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(94px, 1fr)); gap:10px;
+    margin-top:8px}
+  .ba-cell{background:var(--bg); border:1px solid var(--border); border-radius:10px;
+    padding:8px; text-align:center; cursor:pointer; transition:transform .08s, border-color .12s}
+  .ba-cell:hover{transform:translateY(-1px); border-color:var(--accent)}
+  .ba-cell.active{border-color:var(--accent); box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent)}
+  .ba-cell img{width:80px; height:80px; image-rendering:pixelated; image-rendering:crisp-edges;
+    display:block; margin:0 auto; border-radius:6px; background:#14100e}
+  .ba-name{font-size:11px; color:var(--muted); margin-top:6px; text-transform:lowercase; letter-spacing:.02em}
+  .ba-actions{display:flex; justify-content:space-between; align-items:center; gap:16px; margin-top:14px}
+  .ba-party{display:flex; align-items:center; gap:10px; font-size:13.5px; color:var(--muted)}
+  .ba-wlist{overflow:auto; max-height:50vh; border:1px solid var(--border); border-radius:10px;
+    background:var(--bg); margin-bottom:12px}
+  .ba-wlist-row{padding:9px 12px; cursor:pointer; border-bottom:1px solid var(--border);
+    font-size:13.5px; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .ba-wlist-row:last-child{border-bottom:none}
+  .ba-wlist-row:hover{background:var(--surface2)}
+  .ba-anchor-row{margin:14px 0 8px; display:flex; align-items:center; gap:16px; flex-wrap:wrap}
+  .ba-anchor-lbl{font-size:13px; color:var(--muted); min-width:100px}
+  .ba-monitor-tabs{display:flex; gap:6px; flex-wrap:wrap}
+  .ba-monitor-tab{background:var(--bg); border:1px solid var(--border); border-radius:7px;
+    padding:6px 10px; font-size:12px; color:var(--muted); cursor:pointer; font-family:inherit;
+    transition:all .1s}
+  .ba-monitor-tab:hover{border-color:var(--accent); color:var(--fg)}
+  .ba-monitor-tab.active{background:var(--accent); color:#fff; border-color:transparent}
+  .ba-anchor-grid{display:grid; grid-template-columns:repeat(3, 26px);
+    grid-template-rows:repeat(3, 22px); gap:3px}
+  .ba-anchor{background:var(--bg); border:1px solid var(--border); border-radius:6px;
+    cursor:pointer; padding:0; position:relative; transition:all .1s}
+  .ba-anchor::after{content:""; position:absolute; width:8px; height:8px; border-radius:2px;
+    background:var(--muted); top:50%; left:50%; transform:translate(-50%,-50%); transition:background .1s}
+  .ba-anchor:hover{border-color:var(--accent)}
+  .ba-anchor:hover::after{background:var(--accent)}
+  .ba-anchor:nth-child(1)::after{left:16%; top:16%; transform:none}
+  .ba-anchor:nth-child(2)::after{left:50%; top:16%; transform:translate(-50%,0)}
+  .ba-anchor:nth-child(3)::after{left:auto; right:16%; top:16%; transform:none}
+  .ba-anchor:nth-child(4)::after{left:16%; top:50%; transform:translate(0,-50%)}
+  .ba-anchor:nth-child(5)::after{left:50%; top:50%; transform:translate(-50%,-50%)}
+  .ba-anchor:nth-child(6)::after{left:auto; right:16%; top:50%; transform:translate(0,-50%)}
+  .ba-anchor:nth-child(7)::after{left:16%; top:auto; bottom:16%; transform:none}
+  .ba-anchor:nth-child(8)::after{left:50%; top:auto; bottom:16%; transform:translate(-50%,0)}
+  .ba-anchor:nth-child(9)::after{left:auto; right:16%; top:auto; bottom:16%; transform:none}
+  .ba-pos-hint{color:var(--muted); font-size:12.5px}
+  .ba-pos-hint code{background:var(--bg); padding:2px 8px; border-radius:5px; border:1px solid var(--border); color:var(--fg)}
+  .ba-frame-row{display:flex; align-items:center; gap:20px; margin:14px 0 6px; flex-wrap:wrap}
+  .ba-frame-styles{display:flex; align-items:center; gap:8px}
+  .ba-frame-lbl{font-size:13.5px; color:var(--fg); margin-right:4px}
+  .ba-style{background:var(--bg); border:1px solid var(--border); color:var(--fg); border-radius:7px;
+    padding:6px 12px; font-family:inherit; font-size:13px; cursor:pointer; transition:all .1s}
+  .ba-style:hover{border-color:var(--accent)}
+  .ba-style.active{background:var(--accent); color:#fff; border-color:transparent}
+  .ba-frame-colors{display:flex; gap:6px; transition:opacity .15s}
+  .ba-frame-colors.dim{opacity:.35; pointer-events:none}
+  .ba-fc{width:22px; height:22px; border-radius:6px; cursor:pointer; border:2px solid transparent; transition:transform .08s}
+  .ba-fc:hover{transform:scale(1.15)}
+  .ba-fc.active{border-color:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.4)}
+  .ba-frame-label{margin:6px 0 6px; transition:opacity .15s}
+  .ba-frame-label.hidden{display:none}
+  .ba-frame-label label{font-size:13px; color:var(--muted); display:flex; align-items:center; gap:10px}
+  .ba-frame-label input{background:var(--bg); border:1px solid var(--border); color:var(--fg);
+    border-radius:8px; padding:6px 10px; font-family:Consolas,monospace; font-size:13px;
+    letter-spacing:.05em; outline:none; width:160px; text-transform:uppercase}
+  .ba-frame-label input:focus{border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -1037,6 +2666,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <!-- Tabs -->
   <div class="tabs">
     <div class="tab active" data-view="sessions" onclick="switchView('sessions')">Sessions</div>
+    <div class="tab" data-view="buddy" onclick="switchView('buddy')">Buddy</div>
     <div class="tab" data-view="settings" onclick="switchView('settings')">Einstellungen</div>
   </div>
 
@@ -1098,6 +2728,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Buddy -->
+  <div class="view" id="view-buddy">
+    <div class="head">
+      <h1 class="titlewrap">
+        <span class="hlogo" style="width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center">
+          <img id="buddy-heading-preview" class="buddy-hp" alt="">
+        </span>
+        <span><span class="g">Dein</span> Clawd-Buddy</span>
+      </h1>
+      <div class="count" id="buddy-status"></div>
+    </div>
+    <div class="settings" id="buddy-panel"></div>
+  </div>
+
   <!-- Einstellungen -->
   <div class="view" id="view-settings">
     <div class="head"><h1>Einstellungen</h1></div>
@@ -1150,6 +2794,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
 
     <div class="ob-step" data-step="4" hidden>
+      <h2>Neu: Dein Clawd-Buddy ✨</h2>
+      <p>Ein winziger animierter Clawd (20×20 Pixel) schwebt auf dem Desktop und zeigt, was gerade passiert – schreibt Claude gerade Code, denkt er nach, wurde ein Limit erreicht? Standardmäßig taucht er nur auf wenn Claude Code läuft, blendet sich weich rein und wieder aus.</p>
+      <div class="ob-list">
+        <div class="row"><div class="k">Aktivieren</div><div class="v">Tab „Buddy" → Toggle „An". Beim ersten Mal steht er in der Bildschirmmitte.</div></div>
+        <div class="row"><div class="k">Platzieren</div><div class="v">Ecken/Kanten per Schnellwahl (auf jedem Monitor) oder „Buddy platzieren…" für freies Ziehen mit Raster.</div></div>
+        <div class="row"><div class="k">Aussehen</div><div class="v">Größe 40–200 px, Deckkraft, optionaler Rahmen in deiner Wunschfarbe.</div></div>
+        <div class="row"><div class="k">Rechtsklick</div><div class="v">Buddy auf dem Desktop rechtsklicken blendet ihn schnell aus.</div></div>
+      </div>
+    </div>
+
+    <div class="ob-step" data-step="5" hidden>
       <h2>Fast geschafft</h2>
       <div class="ob-line">
         <div><div class="ob-lbl">Heimatordner ausblenden</div>
@@ -1200,6 +2855,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <button class="btn" onclick="resetTitle()" title="Umbenennung rückgängig – zeigt wieder den automatisch erzeugten Titel">Standard-Titel</button>
       <button class="btn" onclick="closeOverlay('overlay-rename')">Abbrechen</button>
       <button class="btn accent" onclick="saveRename()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay-buddy-win">
+  <div class="pop" style="width:520px; max-height:70vh; display:flex; flex-direction:column">
+    <h3>Fenster auswählen</h3>
+    <div class="sub" style="margin-bottom:10px">Der Buddy erscheint nur, wenn das gewählte Fenster gerade im Vordergrund ist.</div>
+    <div class="ba-wlist"></div>
+    <div class="actions2">
+      <button class="btn" onclick="closeOverlay('overlay-buddy-win')">Abbrechen</button>
     </div>
   </div>
 </div>
@@ -1420,10 +3086,34 @@ function sortBy(c){
   renderHead(); render();
 }
 
+let BUDDY_STATUS_TIMER = null;
 function switchView(v){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===v));
   document.getElementById('view-sessions').classList.toggle('active',v==='sessions');
   document.getElementById('view-settings').classList.toggle('active',v==='settings');
+  document.getElementById('view-buddy').classList.toggle('active',v==='buddy');
+  if(v==='buddy'){
+    renderBuddy();
+    if(!BUDDY_STATUS_TIMER) BUDDY_STATUS_TIMER = setInterval(refreshBuddyStatus, 2500);
+  } else if(BUDDY_STATUS_TIMER){
+    clearInterval(BUDDY_STATUS_TIMER); BUDDY_STATUS_TIMER = null;
+  }
+  try{ api.buddy_notify_view(v); }catch(_){}
+}
+async function refreshBuddyStatus(){
+  try{
+    const d = await api.buddy_state();
+    if(!d) return;
+    const b = d.config || {};
+    let s;
+    if (!d.have_sprites) s = 'Sprite-Daten fehlen – bitte neu installieren.';
+    else if (!b.enabled) s = 'Buddy aus';
+    else if (!d.running) s = 'Startet…';
+    else if (d.reason) s = 'Buddy läuft · ' + d.reason;
+    else s = 'Buddy läuft';
+    const el = document.getElementById('buddy-status');
+    if(el) el.textContent = s;
+  }catch(_){}
 }
 
 async function doRefresh(btn){if(btn)btn.disabled=true; ingest(await api.refresh()); render(); updateDetail(); if(btn)btn.disabled=false;}
@@ -1486,6 +3176,238 @@ async function resetTitle(){
 }
 function closeOverlay(id){document.getElementById(id).classList.remove('show');}
 
+/* ---- Buddy ---- */
+let BUDDY=null;   // wird beim ersten Oeffnen geladen
+let BUDDY_PREVIEWS={};  // {animName: dataURL} – Cache damit Vorschauen beim Rerender nicht flackern
+let BUDDY_MON_CACHE=[]; // Monitor-Liste zwischen Rerenders halten – verhindert Layout-Sprung
+async function renderBuddy(){
+  const data = await api.buddy_state();
+  BUDDY = data;
+  const b = data.config || {};
+  const anims = data.anims || [];
+  const previewName = data.preview_name || 'idle breathe';
+  const previewSrc = data.preview || '';
+  // Kopf-Vorschau (Miniatur im Titel)
+  const hp = document.getElementById('buddy-heading-preview');
+  if (hp && previewSrc) hp.src = previewSrc;
+
+  let statusTxt;
+  if (!data.have_sprites) statusTxt = 'Sprite-Daten fehlen – bitte neu installieren.';
+  else if (!b.enabled) statusTxt = 'Buddy aus';
+  else if (!data.running) statusTxt = 'Startet…';
+  else if (data.reason) statusTxt = 'Buddy läuft · ' + data.reason;
+  else statusTxt = 'Buddy läuft';
+  document.getElementById('buddy-status').textContent = statusTxt;
+
+  const size = Math.max(2, Math.min(10, +b.size||4));
+  const opacity = Math.max(20, Math.min(100, +b.opacity||100));
+  const vis = b.visibility || 'always';
+  const target = b.target_window || '';
+
+  // Animations-Vorschau-Grid (Klick = kurz auf dem echten Buddy abspielen)
+  const previewList = anims.map(a=>{
+    const cached = BUDDY_PREVIEWS[a.name] || '';
+    const srcAttr = cached ? `src="${cached}"` : '';
+    return `<div class="ba-cell" title="${esc(a.name)} · ${a.frames} Frames · Klick zum Vorspielen" onclick="buddyPickAnim('${esc(a.name)}', this)">
+      <img data-anim="${esc(a.name)}" ${srcAttr} alt="${esc(a.name)}">
+      <div class="ba-name">${esc(a.name)}</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('buddy-panel').innerHTML=`
+    <div class="card">
+      <div class="ba-headline">
+        <div>
+          <h2>Dein kleiner Buddy auf dem Desktop</h2>
+          <div class="sub">Ein winziger animierter Clawd (20×20 Pixel) schwebt auf dem Desktop – frameless, immer im Vordergrund. Zieh ihn mit der Maus wohin du magst. Rechtsklick auf ihn blendet ihn aus.</div>
+        </div>
+        <div class="ba-toggle">
+          <div class="toggle ${b.enabled?'on':''}" onclick="buddyToggle()"></div>
+          <div class="ba-toggle-lbl">${b.enabled?'An':'Aus'}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Wann sichtbar</h2>
+      <div class="sub">Der Buddy kann immer da sein oder nur wenn ein bestimmtes Programm gerade im Vordergrund ist – z.B. nur wenn Claude Code im Terminal läuft.</div>
+      <div class="ba-vis">
+        <label class="ba-radio"><input type="radio" name="ba-vis" ${vis==='when_claude'?'checked':''} onchange="buddySet('visibility','when_claude')"> <span>Nur wenn Claude Code läuft <em class="ba-dim">(erkennt Terminal + <code>claude.exe</code>)</em></span></label>
+        <label class="ba-radio"><input type="radio" name="ba-vis" ${vis==='always'?'checked':''} onchange="buddySet('visibility','always')"> <span>Immer sichtbar</span></label>
+        <label class="ba-radio"><input type="radio" name="ba-vis" ${vis==='when_window'?'checked':''} onchange="buddySet('visibility','when_window')"> <span>Nur wenn dieses Fenster vorne ist:</span></label>
+      </div>
+      <div class="ba-window ${vis==='when_window'?'':'disabled'}">
+        <input type="text" id="ba-target" placeholder="z.B. „claude" oder Titel-Ausschnitt" value="${esc(target)}"
+               onchange="buddySet('target_window', this.value)">
+        <button class="btn" onclick="buddyPickWindow()">Aus offenen Fenstern wählen…</button>
+      </div>
+      <div class="ba-hint">Passt zu jedem Fenster, dessen Titel den eingegebenen Text enthält (Groß-/Kleinschreibung egal).</div>
+    </div>
+
+    <div class="card">
+      <h2>Aussehen & Position</h2>
+      <div class="sub">Größe und Deckkraft ändern sich sofort. Für die Position wähle eine Ecke oder Kante – oder ziehe den Buddy per „Platzieren" frei hin (Bewegung rastet aufs Raster und schnappt am Bildschirmrand).</div>
+
+      <div class="ba-slider">
+        <label>Größe <span class="ba-val" id="ba-size-val">${size*20} px</span></label>
+        <input type="range" min="2" max="10" step="1" value="${size}" oninput="buddyLive('size', +this.value)" onchange="buddySet('size', +this.value)">
+      </div>
+      <div class="ba-slider">
+        <label>Deckkraft <span class="ba-val" id="ba-op-val">${opacity} %</span></label>
+        <input type="range" min="20" max="100" step="5" value="${opacity}" oninput="buddyLive('opacity', +this.value)" onchange="buddySet('opacity', +this.value)">
+      </div>
+
+      <div class="ba-frame-row">
+        <div class="ba-frame-styles">
+          <span class="ba-frame-lbl">Rahmen</span>
+          ${[
+            ['off','Aus'],
+            ['classic','Cam'],
+          ].map(([v,l])=>{
+            const cur = (b.frame_style==='webcam'?'classic':(b.frame_style||'off'));
+            const active = (cur===v)?'active':'';
+            return `<button class="ba-style ${active}" onclick="buddySet('frame_style','${v}')">${l}</button>`;
+          }).join('')}
+        </div>
+        <div class="ba-frame-colors ${(!b.frame_style || b.frame_style==='off')?'dim':''}">
+          ${['#ec7456','#6c6cff','#3ecf8e','#4aa3ff','#ffb454','#ff6b6b','#c08cff','#34d6c8','#ffffff']
+             .map(c=>`<div class="ba-fc ${b.frame_color===c?'active':''}" style="background:${c}" onclick="buddySet('frame_color','${c}')"></div>`).join('')}
+        </div>
+      </div>
+      <div class="ba-frame-label ${(b.frame_style==='classic'||b.frame_style==='webcam')?'':'hidden'}">
+        <label>Cam-Name <input type="text" maxlength="7" value="${esc(b.frame_label||'CLAWD')}" onchange="buddySet('frame_label', this.value)"></label>
+      </div>
+
+      <div class="ba-anchor-row">
+        <div class="ba-anchor-lbl">Schnellwahl</div>
+        <div class="ba-monitor-tabs" id="ba-mon-tabs"></div>
+        <div class="ba-anchor-grid">
+          <button class="ba-anchor" title="Oben links"   onclick="buddyAnchor('tl')"></button>
+          <button class="ba-anchor" title="Oben Mitte"   onclick="buddyAnchor('tc')"></button>
+          <button class="ba-anchor" title="Oben rechts"  onclick="buddyAnchor('tr')"></button>
+          <button class="ba-anchor" title="Mitte links"  onclick="buddyAnchor('ml')"></button>
+          <button class="ba-anchor" title="Mitte"        onclick="buddyAnchor('c')"></button>
+          <button class="ba-anchor" title="Mitte rechts" onclick="buddyAnchor('mr')"></button>
+          <button class="ba-anchor" title="Unten links"  onclick="buddyAnchor('bl')"></button>
+          <button class="ba-anchor" title="Unten Mitte"  onclick="buddyAnchor('bc')"></button>
+          <button class="ba-anchor" title="Unten rechts" onclick="buddyAnchor('br')"></button>
+        </div>
+      </div>
+
+      <div class="ba-actions">
+        <div class="ba-pos-hint">Aktuell bei <code>${b.x||200}, ${b.y||200}</code></div>
+        <button class="btn accent" onclick="buddyPlace()">Buddy platzieren…</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Animationen ausprobieren</h2>
+      <div class="sub">Normalerweise wählt der Buddy die Animation automatisch nach dem, was in deinen Sessions passiert. Klick eine Animation an, um sie kurz auf dem echten Buddy vorzuspielen.</div>
+      <div class="ba-grid">${previewList}</div>
+      <div class="ba-actions">
+        <button class="btn accent" onclick="buddySurprise()">Kurz „Überraschung" zeigen</button>
+        <div class="ba-party">
+          <span>Party-Modus (nur Tanz)</span>
+          <div class="toggle ${b.party?'on':''}" onclick="buddySetToggle('party')"></div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // BMP-Previews fuer alle Anims nachladen (nur wenn nicht im Cache)
+  document.querySelectorAll('#buddy-panel img[data-anim]').forEach(async img=>{
+    const n = img.dataset.anim;
+    if(img.src) return;   // schon aus Cache befuellt
+    const src = await api.buddy_preview(n);
+    BUDDY_PREVIEWS[n] = src;
+    img.src = src;
+  });
+  // Monitor-Tabs sofort aus Cache rendern damit kein Layout-Sprung entsteht
+  if(BUDDY_MON_CACHE.length){ renderMonitorTabs(BUDDY_MON_CACHE); }
+  buddyLoadMonitors();
+}
+function renderMonitorTabs(mons){
+  const box = document.getElementById('ba-mon-tabs');
+  if(!box) return;
+  if(!mons || !mons.length){ box.innerHTML=''; return; }
+  if(BUDDY_MON_IDX!==null && BUDDY_MON_IDX >= mons.length) BUDDY_MON_IDX=null;
+  const tabs = mons.map(m=>{
+    const active = (BUDDY_MON_IDX===m.idx)?'active':'';
+    return `<button class="ba-monitor-tab ${active}" onclick="buddyPickMonitor(${m.idx})">${esc(m.label)}</button>`;
+  }).join('');
+  const auto = (BUDDY_MON_IDX===null)?'active':'';
+  box.innerHTML = `<button class="ba-monitor-tab ${auto}" onclick="buddyPickMonitor(null)" title="Ecke/Kante auf dem Monitor unter dem Buddy">aktuell</button>` + tabs;
+}
+
+async function buddyToggle(){
+  const b = (BUDDY&&BUDDY.config)||{};
+  const next = !b.enabled;
+  await api.buddy_set('enabled', next);
+  await renderBuddy();
+  toast(next ? 'Buddy an ✓' : 'Buddy aus');
+}
+async function buddySet(key, value){
+  await api.buddy_set(key, value);
+  renderBuddy();
+}
+async function buddySetToggle(key){
+  const b=(BUDDY&&BUDDY.config)||{};
+  await api.buddy_set(key, !b[key]);
+  renderBuddy();
+}
+function buddyLive(key, value){
+  const v = document.getElementById(key==='size'?'ba-size-val':'ba-op-val');
+  if(v) v.textContent = (key==='size') ? (value*20)+' px' : value+' %';
+}
+async function buddySurprise(){
+  await api.buddy_surprise();
+  toast('Buddy: Überraschung!');
+}
+async function buddyPlace(){
+  await api.buddy_place();
+}
+async function buddyPickAnim(name, cell){
+  // Kurz-Feedback im Grid + Buddy spielt die Anim 3.5 s auf dem Desktop
+  document.querySelectorAll('#buddy-panel .ba-cell').forEach(el=>el.classList.remove('active'));
+  if(cell) cell.classList.add('active');
+  setTimeout(()=>{ if(cell) cell.classList.remove('active'); }, 3600);
+  const hp = document.getElementById('buddy-heading-preview');
+  if(hp){ hp.src = await api.buddy_preview(name); }
+  await api.buddy_preview_anim(name);
+  toast('Buddy zeigt: ' + name);
+}
+let BUDDY_MON_IDX = null;   // Auswahl im Monitor-Picker (null = aktueller unter Buddy)
+async function buddyAnchor(pos){
+  const st = await api.buddy_anchor(pos, BUDDY_MON_IDX);
+  BUDDY = st;
+  renderBuddy();
+}
+async function buddyLoadMonitors(){
+  const mons = await api.buddy_monitors();
+  BUDDY_MON_CACHE = mons || [];
+  renderMonitorTabs(BUDDY_MON_CACHE);
+}
+function buddyPickMonitor(idx){
+  BUDDY_MON_IDX = idx;
+  renderMonitorTabs(BUDDY_MON_CACHE);
+}
+async function buddyPickWindow(){
+  const list = await api.buddy_windows();
+  if(!list || !list.length){ toast('Keine Fenster gefunden.'); return; }
+  // Simples Overlay-Menue
+  const html = list.map(t=>`<div class="ba-wlist-row" onclick="buddyChoseWindow(this.dataset.t)" data-t="${esc(t)}">${esc(t)}</div>`).join('');
+  const box = document.getElementById('overlay-buddy-win');
+  box.querySelector('.ba-wlist').innerHTML = html;
+  box.classList.add('show');
+}
+async function buddyChoseWindow(title){
+  document.getElementById('ba-target').value = title;
+  closeOverlay('overlay-buddy-win');
+  await api.buddy_set('target_window', title);
+  await api.buddy_set('visibility', 'when_window');
+  renderBuddy();
+}
+
 /* ---- Einstellungen ---- */
 function renderSettings(){
   const st=STATE.settings, found=STATE.found, pdir=STATE.projects_dir||'(nicht gesetzt)';
@@ -1514,6 +3436,16 @@ function renderSettings(){
           <div class="desc">Sessions direkt in ${esc(STATE.home)} verstecken (Unterordner bleiben sichtbar).</div></div>
         <div class="toggle ${st.hide_home?'on':''}" onclick="toggleHome(this)"></div>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Fenster schließen</h2>
+      <div class="row2">
+        <div><div class="lbl">Im Hintergrund weiterlaufen</div>
+          <div class="desc">Wenn aktiv, versteckt der X-Button die App nur (Icon im System-Tray unten rechts, Klick öffnet sie wieder). Ausschalten wenn X wirklich beenden soll.</div></div>
+        <div class="toggle ${st.close_to_tray!==false?'on':''}" onclick="toggleTray(this)"></div>
+      </div>
+      <button class="btn" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
     </div>
 
     <div class="card">
@@ -1577,6 +3509,14 @@ function renderSettings(){
   `;
 }
 
+async function toggleTray(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  ingest(await api.update_setting('close_to_tray', on));
+  await api.buddy_apply_tray(on);
+}
+async function reallyQuit(){
+  await api.buddy_real_quit();
+}
 async function browseFolder(){ingest(await api.browse_folder()); render(); renderSettings();}
 async function autoDetect(){ingest(await api.update_setting('projects_dir','')); render(); renderSettings();}
 async function toggleHome(el){const on=!el.classList.contains('on');
@@ -1675,7 +3615,7 @@ async function manualCheck(btn){
 
 /* ---- Onboarding (erster Start) ---- */
 const OB_ACCENTS=['#ec7456','#6c6cff','#3ecf8e','#4aa3ff','#ffb454','#ff6b6b','#c08cff','#34d6c8','#ffe066','#ff8fcf'];
-const OB_STEPS=5;
+const OB_STEPS=6;
 let obStep=0;
 function obShow(){
   const returning = !!STATE.settings.onboarded;
@@ -1683,8 +3623,8 @@ function obShow(){
     document.getElementById('ob-title').textContent = 'Neu in dieser Version ✨';
     document.getElementById('ob-intro').innerHTML =
       'Kurzer Rundgang – deine Einstellungen bleiben unberührt.<br><br>' +
-      '<b>Neu:</b> Doppelklick öffnet Sessions direkt · ausführliche Spalten-Erklärung · ' +
-      'Heimatordner-Filter jetzt standardmäßig aus · Datums-Fix für "heute"/"gestern".';
+      '<b>Neu:</b> Ein animierter Clawd-Buddy für deinen Desktop, der zeigt was Claude gerade macht. ' +
+      'Neuer Tab „Buddy" mit allen Einstellungen – Position, Größe, Rahmen, Sichtbarkeit nur wenn Claude Code läuft.';
   }
   const cur=STATE.settings.accent;
   document.getElementById('ob-swatches').innerHTML=OB_ACCENTS.map(c=>
@@ -1825,7 +3765,59 @@ def main():
         kw["y"] = int(s["win_y"])
     win = webview.create_window("Claude Session Browser", **kw)
     api.bind_window(win)
-    webview.start()
+    # Buddy automatisch anwerfen, wenn er zuletzt an war.
+    if s.get("buddy", {}).get("enabled"):
+        try:
+            api.buddy.start()
+        except Exception:
+            pass
+
+    # System-Tray – aktiv wenn "close_to_tray" gesetzt ist (Default).
+    _quit_wanted = {"v": False}
+
+    def real_quit():
+        _quit_wanted["v"] = True
+        try:
+            for w in list(webview.windows):
+                w.destroy()
+        except Exception:
+            pass
+
+    tray = TrayManager(lambda: (webview.windows[0] if webview.windows else None),
+                       real_quit)
+    if s.get("close_to_tray", True):
+        tray.start()
+
+    def on_before_close():
+        # Rueckgabewert True erlaubt Schliessen, False verhindert es
+        if api.settings.get("close_to_tray", True) and not _quit_wanted["v"]:
+            try:
+                win.hide()
+            except Exception:
+                pass
+            return False
+        return True
+
+    try:
+        win.events.closing += on_before_close
+    except Exception:
+        pass
+
+    # Fuers UI erreichbar machen: echtes Beenden ueber die App
+    api._real_quit = real_quit
+    api._tray = tray
+
+    try:
+        webview.start()
+    finally:
+        try:
+            api.buddy.stop()
+        except Exception:
+            pass
+        try:
+            tray.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
