@@ -1,6 +1,6 @@
 {
   "version": "1.0.12",
-  "notes": "Großes Update: Neuer Clawd-Buddy als animiertes Desktop-Maskottchen (Tab „Buddy"), zeigt live was Claude gerade macht (schreibt Code, denkt, Limit erreicht, schläft). Konfigurierbar: Größe, Deckkraft, Sichtbarkeits-Regeln (nur wenn Claude Code läuft / nur wenn bestimmtes Fenster vorne / immer), pro-Monitor-Schnellwahl, Feinraster-Positionierung und optionaler Cam-Rahmen. Außerdem: X schließt jetzt in den System-Tray (Icon rechts unten, Klick öffnet wieder); komplett beenden über Einstellungen. Bestehende Einstellungen bleiben unverändert.",
+  "notes": "Grosses Update: Neuer Clawd-Buddy als animiertes Desktop-Maskottchen (eigener Tab), zeigt live was Claude gerade macht (schreibt Code, denkt, schlaeft). Konfigurierbar: Groesse, Deckkraft, Sichtbarkeits-Regeln (nur wenn Claude Code laeuft, immer, oder nur wenn bestimmtes Fenster vorne), Pro-Monitor-Schnellwahl, freies Ziehen mit Raster, optionaler Cam-Rahmen mit Nameplate. Ausserdem: X schliesst jetzt in den System-Tray (Icon rechts unten, Klick oeffnet wieder); Autostart per Registry. Bestehende Einstellungen bleiben unveraendert.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
