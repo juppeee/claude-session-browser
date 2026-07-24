@@ -4857,6 +4857,84 @@ def _migrate_from_selfinstall():
 
 
 # --------------------------------------------------------------------------- #
+_SINGLE_INSTANCE_MUTEX = "Global\\ClaudeSessionBrowser_SingleInstance_juppeee"
+
+
+def _acquire_single_instance():
+    """Named-Mutex-basierter Single-Instance-Guard. Rueckgabe: (owned, handle).
+    - owned=True: wir sind die erste Instanz, Mutex gehoert uns (Handle
+      halten bis App zumacht)
+    - owned=False: eine andere Instanz laeuft schon"""
+    if not _IS_WIN:
+        return True, None
+    try:
+        k = ctypes.windll.kernel32
+        ERROR_ALREADY_EXISTS = 183
+        h = k.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX)
+        if not h:
+            return True, None
+        err = ctypes.get_last_error() or k.GetLastError()
+        if err == ERROR_ALREADY_EXISTS:
+            return False, h
+        return True, h
+    except Exception:
+        return True, None
+
+
+def _restore_existing_window():
+    """Sucht das Hauptfenster der laufenden Instanz und bringt es nach vorne
+    (auch aus dem Tray heraus falls verstecked). Return True wenn was gefunden
+    und aktiviert wurde."""
+    if not _IS_WIN:
+        return False
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        found = {"hwnd": 0}
+
+        EnumWindowsProc = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+        def enum_cb(hwnd, _lparam):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            title = buf.value.strip().lower()
+            if title == _OWN_APP_TITLE_EXACT:
+                found["hwnd"] = hwnd
+                return False  # stop enum
+            return True
+
+        user32.EnumWindows(EnumWindowsProc(enum_cb), 0)
+        hwnd = found["hwnd"]
+        if not hwnd:
+            return False
+        # SW_RESTORE=9, SW_SHOW=5. IsIconic pruefen fuer Minimized.
+        SW_RESTORE = 9
+        SW_SHOW = 5
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        else:
+            user32.ShowWindow(hwnd, SW_SHOW)
+        # SetForegroundWindow ist mit Windows-Restrictions oft eingeschraenkt.
+        # Trick: kurz Fenster ganz nach oben ziehen und wieder loslassen.
+        HWND_TOPMOST = -1
+        HWND_NOTOPMOST = -2
+        SWP_NOMOVE = 0x0002
+        SWP_NOSIZE = 0x0001
+        SWP_SHOWWINDOW = 0x0040
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+        user32.SetForegroundWindow(hwnd)
+        return True
+    except Exception:
+        return False
+
+
 def main():
     if self_install():
         return  # heruntergeladene Instanz beendet sich; installierte Kopie laeuft
@@ -4864,6 +4942,18 @@ def main():
         _migrate_from_selfinstall()
     except Exception:
         pass
+    # Single-Instance-Guard: nur eine App-Instanz gleichzeitig. Weiterer
+    # Doppel-Klick bringt die bestehende (evtl. im Tray versteckte) Instanz
+    # nach vorne statt eine neue zu starten.
+    owned, mutex_handle = _acquire_single_instance()
+    if not owned:
+        if _restore_existing_window():
+            return  # bestehende Instanz wiederhergestellt -> wir sind fertig
+        # Konnte Fenster nicht finden (z.B. bestehende Instanz haengt) -
+        # dann trotzdem sauber beenden statt eine zweite parallel zu starten.
+        return
+    # Handle in Modul-Scope halten bis Prozess-Ende (Mutex faellt sonst weg)
+    globals()["_SINGLE_INSTANCE_HANDLE"] = mutex_handle
     api = Api()
     s = api.settings
     kw = dict(
