@@ -1,7 +1,7 @@
 {
-  "version": "1.0.14",
-  "notes": "Buddy erkennt jetzt auch Claude-API-Fehler und Ueberlast (API Error, overloaded, rate_limit) und zeigt dann die Limit-Animation. Zusaetzlich SHA-256-Integritaetspruefung des Update-Downloads: ab dieser Version wird die heruntergeladene .exe gegen den im Manifest hinterlegten Hash geprueft und nur bei Uebereinstimmung installiert – schuetzt vor manipulierten Downloads. Erkennt jetzt auch schon 'used 90-100% of your session limit' und 'session limit resets' aus der Claude-CLI-Statuszeile.",
+  "version": "1.0.15",
+  "notes": "Kleine Haertung aus dem UI-Code-Review: die HTML-Escape-Funktion escaped jetzt auch Apostroph und Backtick, damit Anzeigetexte auch bei ungewoehnlichen Zeichen niemals HTML/JS injizieren koennen. Sonst identisch zu v1.0.14 (SHA-256-Update-Integritaet, Buddy erkennt API-Fehler als Limit, bessere Session-Limit-Erkennung).",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
-  "sha256": "6ee0e6d839e716641ecd28dbde77ccc9ea24621eca31b07bfa7761e1012509d5"
+  "sha256": "c899ac2294424f2c563476c3b5f92148958dbad7be1b244016dd81f36df603e5"
 }
