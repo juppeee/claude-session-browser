@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.15"
+VERSION = "1.0.16"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -180,7 +180,14 @@ _LIMIT_PATTERNS = re.compile(
     r"|(?:api error[^\n]{0,40}overloaded)"
     r"|(?:\"type\":\s*\"overloaded_error\")"
     r"|(?:rate_limit_error)"
-    r"|(?:429[^\n]{0,20}too many requests)",
+    r"|(?:429[^\n]{0,20}too many requests)"
+    # Auth-Fehler (Token abgelaufen/widerrufen) – User kann nicht arbeiten
+    r"|(?:please run /login)"
+    r"|(?:401[^\n]{0,60}(?:oauth|access token|unauthori[sz]ed))"
+    r"|(?:access token has been revoked)"
+    r"|(?:\"type\":\s*\"authentication_error\")"
+    r"|(?:invalid[_ ]api[_ ]key)"
+    r"|(?:authentication[^\n]{0,20}failed)",
     re.IGNORECASE,
 )
 
@@ -1698,9 +1705,15 @@ class TrayManager:
             return
 
         icon_img = None
-        try:
-            icon_img = Image.open(_resource("logo.png"))
-        except Exception:
+        # Reihenfolge: bevorzugt .ico (App-Icon, immer im Build), dann logo.png,
+        # dann farbiges Fallback-Quadrat.
+        for candidate in ("claude_sessions.ico", "logo.png"):
+            try:
+                icon_img = Image.open(_resource(candidate))
+                break
+            except Exception:
+                continue
+        if icon_img is None:
             try:
                 icon_img = Image.new("RGB", (64, 64), "#ec7456")
             except Exception:
