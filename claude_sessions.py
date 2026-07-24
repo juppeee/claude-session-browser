@@ -847,6 +847,66 @@ def _win_process_names():
         return []
 
 
+def _win_process_names_with_path():
+    """Wie _win_process_names, gibt aber (name, path)-Tupel zurueck. Der Pfad
+    kann leer sein wenn OpenProcess/QueryFullProcessImageName fehlschlaegt
+    (Rechte-Problem bei System-Prozessen)."""
+    if not _IS_WIN:
+        return []
+    try:
+        from ctypes import wintypes
+        TH32CS_SNAPPROCESS = 0x2
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_char * 260),
+            ]
+
+        k = ctypes.windll.kernel32
+        h = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if h in (0, -1):
+            return []
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        results = []
+        if k.Process32First(h, ctypes.byref(pe)):
+            while True:
+                name = pe.szExeFile.decode("utf-8", errors="replace").lower()
+                pid = pe.th32ProcessID
+                path = ""
+                # Pfad nur fuer relevante Prozesse aufloesen (spart Zeit)
+                if name in ("claude.exe",):
+                    try:
+                        ph = k.OpenProcess(
+                            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                        if ph:
+                            buf = ctypes.create_unicode_buffer(1024)
+                            size = wintypes.DWORD(1024)
+                            if k.QueryFullProcessImageNameW(
+                                    ph, 0, buf, ctypes.byref(size)):
+                                path = buf.value
+                            k.CloseHandle(ph)
+                    except Exception:
+                        path = ""
+                results.append((name, path))
+                if not k.Process32Next(h, ctypes.byref(pe)):
+                    break
+        k.CloseHandle(h)
+        return results
+    except Exception:
+        return []
+
+
 # Cache fuer den Prozess-/Fenster-Scan – wird alle 2 s neu berechnet.
 _CLAUDE_CACHE = {"t": 0.0, "active": False}
 # Genauer Titel unseres Hauptfensters (pywebview.create_window). Wichtig:
@@ -871,11 +931,19 @@ def _claude_context_active():
     _CLAUDE_CACHE["t"] = now
     active = False
     try:
-        # 1) claude.exe direkt (native Installation)
-        for n in _win_process_names():
-            if n == "claude.exe":
-                active = True
-                break
+        # 1) claude.exe direkt (CLI-Installation). ABSICHTLICH nicht triggern
+        # fuer die Anthropic Claude Desktop-App (%LOCALAPPDATA%\AnthropicClaude\
+        # claude.exe) - das ist ein Chat-Client, kein CLI, und hat nichts mit
+        # unserer JSONL-Detection zu tun. Wir filtern nach Prozesspfad falls
+        # verfuegbar.
+        for name, path in _win_process_names_with_path():
+            if name != "claude.exe":
+                continue
+            if path and "anthropicclaude" in path.lower():
+                # Desktop-App - ignorieren
+                continue
+            active = True
+            break
         # 2) Fenster mit 'claude' im Titel (locker), Browser + Eigen-App raus
         if not active:
             browser_hints = (
