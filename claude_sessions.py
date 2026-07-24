@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.12"
+VERSION = "1.0.13"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -98,6 +98,9 @@ DEFAULT_SETTINGS = {
     "win_x": None, "win_y": None,  # gemerkte Position
     "win_max": False,            # war das Fenster maximiert?
     "close_to_tray": True,       # X = App verstecken (Tray-Icon) statt beenden
+    "autostart": True,           # Beim Windows-Start automatisch mitstarten
+    "autostart_registered": False,  # Merker: Registry-Eintrag beim ersten Mal setzen
+    "notify_limit_reset": True,  # Windows-Notification wenn Claude-Limit sich zurueckgesetzt hat
     "onboarded": False,          # Erst-Einrichtung schon durchlaufen?
     "onboarded_version": "",     # zuletzt gesehene Onboarding-Version (fuer Re-Onboarding nach Updates)
     "buddy": {                   # Clawd-Buddy: kleines animiertes Desktop-Maskottchen
@@ -157,12 +160,21 @@ BUDDY_STATE_MAP = {
     "surprise": "expression surprise",
 }
 
-# Muster im letzten Stueck der neuesten .jsonl-Datei, die auf ein erreichtes
-# Limit hindeuten.
+# Sehr spezifische Muster in der neuesten .jsonl-Datei die eindeutig auf ein
+# erreichtes Claude-Nutzungslimit hindeuten. Absichtlich streng gewaehlt
+# damit normale Chat-Erwaehnungen von „rate limit" o.ae. NICHT triggern.
 _LIMIT_PATTERNS = re.compile(
-    r"(rate.?limit|usage.?limit|5.?hour.?limit|weekly.?limit|"
-    r"limit.{0,20}(reached|exceeded)|"
-    r"resets? at|too many requests)",
+    # Klare "erreicht"-Phrasen (5h / weekly / session / max)
+    r"(?:you'?ve reached your (?:5.?hour|weekly|daily|24.?hour|max|session) limit)"
+    # Explizites "reached"
+    r"|(?:(?:5.?hour|weekly|daily|24.?hour|session|usage) limit reached)"
+    # "session limit · resets ..." wie in der Claude-CLI-Statuszeile
+    r"|(?:session limit[^\n]{0,40}(?:resets? at|resets? on|resets? in))"
+    # Ganz nah dran (>= 95% verbraucht) – triggert auch die Vorwarn-Phase
+    r"|(?:used 9[5-9]%[^\n]{0,20}session limit)"
+    r"|(?:used 100%[^\n]{0,20}session limit)"
+    # Claude Max Plan Limit
+    r"|(?:claude max plan[^\n]{0,80}limit reached)",
     re.IGNORECASE,
 )
 
@@ -221,13 +233,29 @@ def load_json(path, fallback):
         return fallback
 
 
+_SAVE_LOCK = threading.Lock()
+
+
 def save_json(path, data):
+    """Atomischer Write: erst in .tmp schreiben, dann os.replace() (atomar
+    unter Windows). Verhindert dass zwei Threads gleichzeitig eine kaputte
+    Datei hinterlassen."""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
     except OSError:
-        pass
+        return
+    tmp = path + ".tmp"
+    with _SAVE_LOCK:
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
 
 
 def load_settings():
@@ -397,27 +425,44 @@ def decode_project(folder):
     return folder.replace("--", ":\\", 1).replace("-", "\\")
 
 
-def resume_session(session_id, cwd, settings, project=""):
-    # 1. das gespeicherte (Start-)Verzeichnis, wenn es existiert
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _safe_workdir(cwd, project=""):
     if cwd and os.path.isdir(cwd):
-        workdir = cwd
-    else:
-        # 2. Notfall: aus dem Projektordner-Namen rekonstruieren (falls existent)
-        dec = decode_project(project)
-        workdir = dec if dec and os.path.isdir(dec) else HOME   # 3. HOME
+        return cwd
+    dec = decode_project(project)
+    return dec if dec and os.path.isdir(dec) else HOME
+
+
+def resume_session(session_id, cwd, settings, project=""):
+    # Session-ID hart validieren – sie fliesst in eine Terminal-Kommandozeile.
+    # Ein bloedes Zeichen (& | " `) waere sonst Command-Injection.
+    sid = str(session_id or "")
+    if not _SESSION_ID_RE.match(sid):
+        return {"ok": False, "error": "Ungültige Session-ID."}
+    workdir = _safe_workdir(cwd, project)
     claude = settings.get("claude_cmd") or "claude"
+    # `claude_cmd` kommt aus User-Settings – wir erlauben nur einen einfachen
+    # Programmnamen oder absoluten Pfad, keine Shell-Metazeichen.
+    if any(c in claude for c in '&|;<>"`$'):
+        return {"ok": False, "error": "Unsicherer claude_cmd-Wert."}
     term = settings.get("terminal", "auto")
     try:
         if term in ("auto", "wt"):
             try:
+                # argv-Form, KEIN shell=True -> keine Shell-Interpretation
                 subprocess.Popen(["wt", "-d", workdir, "cmd", "/k",
-                                  f"{claude} --resume {session_id}"])
+                                  claude, "--resume", sid])
                 return {"ok": True}
             except FileNotFoundError:
                 if term == "wt":
                     return {"ok": False, "error": "Windows Terminal (wt) nicht gefunden."}
-        cmd = f'start "Claude Code" /D "{workdir}" cmd /k {claude} --resume {session_id}'
-        subprocess.Popen(cmd, shell=True)
+        # Fallback: cmd.exe direkt starten – ohne shell=True, argv als Liste.
+        # `start` ist ein cmd-Builtin, deshalb rufen wir cmd /c start …
+        subprocess.Popen(
+            ["cmd", "/c", "start", "Claude Code", "/D", workdir,
+             "cmd", "/k", claude, "--resume", sid])
         return {"ok": True}
     except OSError as e:
         return {"ok": False, "error": str(e)}
@@ -637,15 +682,21 @@ def _win_process_names():
 
 # Cache fuer den Prozess-/Fenster-Scan – wird alle 2 s neu berechnet.
 _CLAUDE_CACHE = {"t": 0.0, "active": False}
-_OWN_APP_TITLE_SUBSTR = "claude session browser"
+# Genauer Titel unseres Hauptfensters (pywebview.create_window). Wichtig:
+# EXAKT-Match nutzen – nicht als Substring – damit z.B. das Claude-Code-CLI
+# Fenster mit Titel „⠂ Claude Session Browser Tool Development" nicht
+# faelschlich als eigener Fenster aussortiert wird.
+_OWN_APP_TITLE_EXACT = "claude session browser"
 
 
 def _claude_context_active():
-    """True wenn ein echtes Claude-CLI-Terminal offen ist. Streng gefasst,
-    damit der Session Browser nicht mitzaehlt:
-      - Prozess 'claude.exe' laeuft irgendwo, ODER
-      - ein sichtbares Fenster hat 'claude' im Titel UND ist offensichtlich
-        ein Terminal/Editor (nicht der Session Browser, kein Browser-Tab).
+    """True wenn ein echtes Claude-CLI-Terminal offen (oder sehr kuerzlich
+    aktiv) ist. Robuste Kombination:
+      1) Prozess 'claude.exe' laeuft, ODER
+      2) irgendein sichtbares Fenster hat 'claude' im Titel und ist nicht
+         der Session Browser und nicht offensichtlich ein Browser-Tab, ODER
+      3) irgendeine Session-.jsonl-Datei wurde in den letzten 5 min veraendert
+         (Claude ist frisch aktiv, selbst wenn Prozess/Fenster nicht erkennbar).
     Cache 2 s."""
     now = time.time()
     if now - _CLAUDE_CACHE["t"] < 2.0:
@@ -653,36 +704,44 @@ def _claude_context_active():
     _CLAUDE_CACHE["t"] = now
     active = False
     try:
-        # 1) claude.exe direkt? (funktioniert bei nativer Installation)
+        # 1) claude.exe direkt (native Installation)
         for n in _win_process_names():
             if n == "claude.exe":
                 active = True
                 break
-        # 2) Fenster-Titel-Check nur mit klaren Terminal-Indikatoren
+        # 2) Fenster mit 'claude' im Titel (locker), Browser + Eigen-App raus
         if not active:
-            # Substrings, die typisch nur bei echten CLI-Sessions vorkommen
-            terminal_hints = (
-                "windows powershell", "powershell", "cmd.exe",
-                "command prompt", "eingabeaufforderung",
-                "windows-terminal", "windows terminal", " · claude",
-                " - claude", "wsl", "ubuntu", "bash",
+            browser_hints = (
+                " — google chrome", " - google chrome",
+                " — firefox", " - firefox",
+                " — brave", " - brave",
+                " — microsoft edge", " - microsoft edge",
+                " — opera", " - opera",
+                " and 1 more page", " and 2 more page",
+                "chat.openai.com", "claude.ai",   # Web-Claude nicht mitzaehlen
+                "anthropic.com",
             )
             for title in _win_list_windows():
                 t = title.lower()
-                if _OWN_APP_TITLE_SUBSTR in t:
-                    continue
-                # Browser-Tabs raus (die zeigen den Seitentitel + Browsernamen)
-                if any(b in t for b in (" — google chrome", " — firefox",
-                                        " - google chrome", " - firefox",
-                                        " — brave", " - brave",
-                                        " — microsoft edge", " - microsoft edge",
-                                        " and 1 more page", " and 2 more page")):
+                if not t or t.strip() == _OWN_APP_TITLE_EXACT:
                     continue
                 if "claude" not in t:
                     continue
-                if any(h in t for h in terminal_hints):
+                if any(b in t for b in browser_hints):
+                    continue
+                active = True
+                break
+        # 3) Fallback: frische Session-Aktivitaet (Claude tippt gerade oder
+        #    hat vor kurzem gearbeitet). Deckt Windows Terminal Tabs ab, die
+        #    kein 'claude' im Titel haben.
+        if not active:
+            try:
+                pdir = detect_projects_dir()
+                latest = _latest_session_mtime(pdir, max_files=60)
+                if latest and (now - latest) < 300:
                     active = True
-                    break
+            except Exception:
+                pass
     except Exception:
         pass
     _CLAUDE_CACHE["active"] = active
@@ -981,6 +1040,21 @@ class BuddyController:
         if self.is_alive():
             self._q.put(("pulse", "surprise"))
 
+    def _notify_limit_reset(self):
+        """Zeigt eine Windows-Notification via Tray-Icon wenn das Claude-Limit
+        sich zurueckgesetzt hat. Nur wenn User es in Settings erlaubt hat."""
+        if not self.api.settings.get("notify_limit_reset", True):
+            return
+        tray = getattr(self.api, "_tray", None)
+        if not tray or not tray.icon:
+            return
+        try:
+            tray.icon.notify(
+                "Dein Claude-Limit ist zurueck – weitermachen!",
+                "Clawd")
+        except Exception:
+            pass
+
     def preview_anim(self, name, seconds=3.0):
         """Zeigt eine bestimmte Animation fuer `seconds` Sekunden – ueberschreibt
         die Auto-Erkennung waehrenddessen."""
@@ -1126,6 +1200,7 @@ class BuddyController:
             "target_alpha": 0.0,
             "was_visible": False,      # letzter apply_visibility-Zustand
             "tick": 0,
+            "hover": False,            # Maus ueber Buddy -> transparent machen
         }
 
         # ---- Drag & Drop ----
@@ -1165,6 +1240,30 @@ class BuddyController:
                     lambda e: self._q.put(("hide_toggle", None)))
         canvas.bind("<Button-3>",
                     lambda e: self._q.put(("hide_toggle", None)))
+        # Maus rein/raus -> sofort transparent damit man drunter sieht
+        def _on_enter(e):
+            state["hover"] = True
+            # Sofort auf 15% Deckkraft (kein Fade)
+            try:
+                target = min(state["opacity"], 0.15)
+                state["current_alpha"] = target
+                state["target_alpha"] = target
+                root.attributes("-alpha", target)
+            except Exception:
+                pass
+        def _on_leave(e):
+            state["hover"] = False
+            # Sofort zurueck auf normale Deckkraft (kein Fade)
+            try:
+                if state.get("was_visible"):
+                    op = state["opacity"]
+                    state["current_alpha"] = op
+                    state["target_alpha"] = op
+                    root.attributes("-alpha", op)
+            except Exception:
+                pass
+        canvas.bind("<Enter>", _on_enter)
+        canvas.bind("<Leave>", _on_leave)
 
         # ---- Overlay fuer Platzier-Modus ----
         def virtual_desktop_bounds():
@@ -1236,6 +1335,9 @@ class BuddyController:
                     root.attributes("-topmost", False)
                     root.attributes("-topmost", True)
                     root.lift()
+                    # ESC-Fokus - ohne den kommt kein Escape an
+                    cv.focus_set()
+                    ov.focus_force()
                 except Exception:
                     pass
                 return ov
@@ -1260,7 +1362,7 @@ class BuddyController:
                 return True
             fg = _fg_title(state.get("tick", 0))
             # Session Browser vorne (auf anderem Tab) -> Buddy weg.
-            if _OWN_APP_TITLE_SUBSTR in fg:
+            if fg.strip() == _OWN_APP_TITLE_EXACT:
                 return False
             mode = bud.get("visibility", "when_claude")
             if mode == "always":
@@ -1279,7 +1381,14 @@ class BuddyController:
         def apply_visibility():
             want = desired_visible()
             # Fade-Ziel aktualisieren – nicht sofort withdraw/deiconify.
-            state["target_alpha"] = state["opacity"] if want else 0.0
+            # Bei Maus-Hover deutlich transparenter (max 20% der eingest. Opacity).
+            if want:
+                if state.get("hover"):
+                    state["target_alpha"] = min(state["opacity"], 0.15)
+                else:
+                    state["target_alpha"] = state["opacity"]
+            else:
+                state["target_alpha"] = 0.0
             if want and not state["was_visible"]:
                 # Reingekommen -> Fenster zeigen (transparent) und Fade starten
                 try:
@@ -1319,9 +1428,9 @@ class BuddyController:
                 pass
 
         # ---- Aktivitaets-Detection ----
-        # Wir checken zeitgesteuert:
-        #   - alle 2 s: Datei-Modifikationszeiten (billig)
-        #   - alle 8 s bei frischer Aktivitaet: Tail-Read auf Limit-Muster
+        # Modifikationszeit alle 2 s, Limit-Check nur bei frischer Aktivitaet
+        # (max alle 15 s) und mit sehr strengen Mustern damit keine normalen
+        # Chat-Erwaehnungen von „rate limit" false positive triggern.
         state["last_limit_check"] = 0.0
         state["is_limited"] = False
 
@@ -1338,15 +1447,21 @@ class BuddyController:
             if state["last_mtime"] <= 0:
                 return "none"
             age = now - state["last_mtime"]
-            # Limit-Check nur bei relativ frischer Aktivitaet, hoechstens alle 8 s
-            if age < 300 and now - state["last_limit_check"] > 8:
+            if age < 300 and now - state["last_limit_check"] > 15:
                 state["last_limit_check"] = now
                 try:
                     pdir = self.api._projects_dir()
-                    state["is_limited"] = _latest_jsonl_hits_limit(pdir)
+                    new_limited = _latest_jsonl_hits_limit(pdir)
                 except Exception:
-                    state["is_limited"] = False
-            if state["is_limited"] and age < 900:
+                    new_limited = False
+                # Uebergang von limitiert -> frei: Notification wenn gewuenscht
+                if state["is_limited"] and not new_limited:
+                    try:
+                        self._notify_limit_reset()
+                    except Exception:
+                        pass
+                state["is_limited"] = new_limited
+            if state["is_limited"] and age < 3600:
                 return "limit"
             if age < 3:
                 return "active"
@@ -1496,7 +1611,9 @@ class BuddyController:
                             state["preview_until"] = time.time() + seconds
                     elif cmd == "jump":
                         nx, ny = val
-                        size_px = 20 * state["scale"]
+                        # Fenstergroesse inkl. Rahmen (state["px_w"]) fuer korrektes
+                        # Edge-Snap, nicht nur Sprite-Groesse.
+                        size_px = state.get("px_w", 20 * state["scale"])
                         nx, ny = _snap_position(nx, ny, size_px)
                         try:
                             root.geometry(f"+{nx}+{ny}")
@@ -1847,6 +1964,13 @@ class Api:
         self.buddy.surprise()
         return {"ok": True}
 
+    def set_autostart(self, on):
+        """Autostart im Windows-Registry setzen und Setting speichern."""
+        ok = set_autostart(bool(on))
+        self.settings["autostart"] = bool(on)
+        save_json(SETTINGS_FILE, self.settings)
+        return {"ok": ok, "enabled": bool(on)}
+
     def buddy_apply_tray(self, on):
         """Tray-Icon starten/stoppen wenn Toggle sich aendert."""
         tray = getattr(self, "_tray", None)
@@ -2013,8 +2137,23 @@ class Api:
         with urllib.request.urlopen(req, timeout=timeout, context=self._ssl_ctx()) as r:
             return json.loads(r.read().decode("utf-8"))
 
+    def consume_update_failed_marker(self):
+        """Prueft ob der letzte Update-Batch fehlgeschlagen ist (Datei-Move
+        klappte nicht). Loescht den Marker und meldet True, damit die UI
+        einen Toast zeigen kann."""
+        marker = os.path.join(tempfile.gettempdir(),
+                              "csb_update_failed.marker")
+        if os.path.isfile(marker):
+            try:
+                os.remove(marker)
+            except OSError:
+                pass
+            return True
+        return False
+
     def check_update(self):
-        """Fragt bei GitHub nach einer neueren Version. Ohne Internet -> still."""
+        """Fragt bei GitHub nach einer neueren Version. Unterscheidet zwischen
+        Netzwerk-Fehler und "wirklich aktuell" damit die UI unterscheiden kann."""
         frozen = bool(getattr(sys, "frozen", False))
         try:
             data = self._remote_info()
@@ -2023,9 +2162,12 @@ class Api:
             avail = _vtuple(latest) > _vtuple(VERSION)
             return {"available": avail, "latest": latest, "current": VERSION,
                     "url": data.get("url", ""), "notes": data.get("notes", ""),
-                    "frozen": frozen}
-        except Exception:
-            return {"available": False, "current": VERSION, "frozen": frozen}
+                    "frozen": frozen, "error": ""}
+        except Exception as e:
+            # Explizit Fehler-Info liefern, damit die UI "Netzwerkfehler"
+            # von "aktuelle Version" trennen kann.
+            return {"available": False, "current": VERSION, "frozen": frozen,
+                    "error": type(e).__name__ + ": " + str(e)[:120]}
 
     def install_update(self):
         """Laedt die neue .exe, ersetzt die laufende und startet neu.
@@ -2122,20 +2264,26 @@ class Api:
             # (kein Endlos-Geist-Prozess). Relaunch ueber explorer.exe -> laeuft
             # als normaler Nutzer (auch wenn der Tausch elevated lief).
             bat = os.path.join(tempfile.gettempdir(), "csb_update.bat")
+            marker = os.path.join(tempfile.gettempdir(),
+                                  "csb_update_failed.marker")
             with open(bat, "w", encoding="utf-8") as f:
                 f.write(
                     "@echo off\r\n"
                     'set "CUR=' + cur + '"\r\n'
                     'set "NEW=' + new + '"\r\n'
+                    'set "FAIL=' + marker + '"\r\n'
+                    'if exist "%FAIL%" del "%FAIL%"\r\n'
                     "set /a n=0\r\n"
                     ":wait\r\n"
                     "ping -n 2 127.0.0.1 >nul\r\n"
                     'move /y "%NEW%" "%CUR%" >nul 2>&1\r\n'
                     'if not exist "%NEW%" goto done\r\n'
                     "set /a n+=1\r\n"
-                    "if %n% lss 60 goto wait\r\n"   # Abbruch nach ~2 Min
+                    "if %n% lss 60 goto wait\r\n"
+                    "rem Move gescheitert – Fehler-Marker schreiben\r\n"
+                    'echo swap failed > "%FAIL%"\r\n'
                     ":done\r\n"
-                    "ping -n 2 127.0.0.1 >nul\r\n"  # kurz setzen lassen
+                    "ping -n 2 127.0.0.1 >nul\r\n"
                     'explorer.exe "%CUR%"\r\n'
                     'del "%~f0"\r\n'
                 )
@@ -3449,6 +3597,24 @@ function renderSettings(){
     </div>
 
     <div class="card">
+      <h2>Autostart</h2>
+      <div class="row2">
+        <div><div class="lbl">Mit Windows starten</div>
+          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.</div></div>
+        <div class="toggle ${st.autostart!==false?'on':''}" onclick="toggleAutostart(this)"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Benachrichtigungen</h2>
+      <div class="row2">
+        <div><div class="lbl">Bei Limit-Reset benachrichtigen</div>
+          <div class="desc">Windows-Systembenachrichtigung wenn dein Claude-Limit sich zurückgesetzt hat und du wieder loslegen kannst. Braucht den System-Tray aktiv.</div></div>
+        <div class="toggle ${st.notify_limit_reset!==false?'on':''}" onclick="toggleLimitNotif(this)"></div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Weitere ausgeblendete Ordner</h2>
       <div class="sub">Sessions in diesen Ordnern werden komplett ausgeblendet.</div>
       <ul class="hiddenlist">${hl}</ul>
@@ -3514,6 +3680,18 @@ async function toggleTray(el){
   ingest(await api.update_setting('close_to_tray', on));
   await api.buddy_apply_tray(on);
 }
+async function toggleLimitNotif(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  ingest(await api.update_setting('notify_limit_reset', on));
+  toast(on?'Limit-Benachrichtigung an ✓':'Limit-Benachrichtigung aus');
+}
+async function toggleAutostart(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  const r = await api.set_autostart(on);
+  ingest(await api.get_state());
+  if(!r || !r.ok) toast('Autostart konnte nicht gesetzt werden');
+  else toast(on?'Autostart an ✓':'Autostart aus');
+}
 async function reallyQuit(){
   await api.buddy_real_quit();
 }
@@ -3546,7 +3724,14 @@ function showUpdateBar(u){
   bar.classList.add('show');
 }
 async function checkUpdate(){
-  try{ const u=await api.check_update(); if(u&&u.available) showUpdateBar(u); }catch(_){}
+  try{
+    // Falls das letzte Update-Batch nicht durchkam, informieren.
+    if(await api.consume_update_failed_marker()){
+      toast('Update konnte nicht übernommen werden – bitte manuell installieren');
+    }
+    const u=await api.check_update();
+    if(u&&u.available) showUpdateBar(u);
+  }catch(_){}
 }
 function openUpdateDialog(){
   if(!UPD) return;
@@ -3694,9 +3879,92 @@ whenReady();
 # --------------------------------------------------------------------------- #
 #  Selbst-Installation (beim ersten Doppelklick der heruntergeladenen .exe)
 # --------------------------------------------------------------------------- #
+def _autostart_target_exe():
+    """Pfad der zu startenden EXE fuer Autostart (installierte Kopie)."""
+    if getattr(sys, "frozen", False):
+        # Installierte Version bevorzugen, sonst laufende
+        installed = os.path.join(install_dir(), "ClaudeSessionBrowser.exe")
+        if os.path.isfile(installed):
+            return installed
+        return os.path.abspath(sys.executable)
+    return None  # Dev-Modus: kein Autostart-Eintrag
+
+
+def set_autostart(enable):
+    """Windows-Autostart via HKCU\\...\\Run. `enable=False` entfernt Eintrag."""
+    if not _IS_WIN:
+        return False
+    try:
+        import winreg
+    except Exception:
+        return False
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    name = "ClaudeSessionBrowser"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
+                            winreg.KEY_ALL_ACCESS) as k:
+            if enable:
+                exe = _autostart_target_exe()
+                if not exe:
+                    return False
+                # In Anfuehrungszeichen setzen (Pfad mit Leerzeichen)
+                winreg.SetValueEx(k, name, 0, winreg.REG_SZ, f'"{exe}"')
+            else:
+                try:
+                    winreg.DeleteValue(k, name)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception:
+        return False
+
+
+def is_autostart_enabled():
+    """Liest den aktuellen Autostart-Status aus der Registry und prueft
+    dass die referenzierte .exe wirklich existiert (verwaiste Eintraege
+    werden als 'nicht aktiv' behandelt)."""
+    if not _IS_WIN:
+        return False
+    try:
+        import winreg
+    except Exception:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Run",
+                            0, winreg.KEY_READ) as k:
+            try:
+                v, _ = winreg.QueryValueEx(k, "ClaudeSessionBrowser")
+                if not v:
+                    return False
+                # Pfad extrahieren – v ist typischerweise '"C:\...\exe"'
+                path = str(v).strip().strip('"')
+                if not os.path.isfile(path):
+                    # Verwaister Eintrag – gleich entsorgen
+                    try:
+                        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                            r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                            0, winreg.KEY_ALL_ACCESS) as k2:
+                            winreg.DeleteValue(k2, "ClaudeSessionBrowser")
+                    except Exception:
+                        pass
+                    return False
+                return True
+            except FileNotFoundError:
+                return False
+    except Exception:
+        return False
+
+
 def install_dir():
     base = os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local")
     return os.path.join(base, "ClaudeSessionBrowser")
+
+
+def _ps_escape(s):
+    """Escaped einen String fuer PowerShell-Single-Quote-Literals.
+    In PS werden `'` innerhalb '...' durch '' escaped."""
+    return str(s).replace("'", "''")
 
 
 def _make_shortcuts(target):
@@ -3707,11 +3975,16 @@ def _make_shortcuts(target):
         targets.append(os.path.join(appdata, "Microsoft", "Windows", "Start Menu",
                                     "Programs", "Claude Session Browser.lnk"))
     targets.append(os.path.join(HOME, "Desktop", "Claude Session Browser.lnk"))
+    # Pfade escapen – ein `'` in einem Username (z.B. "O'Brien") wuerde sonst
+    # aus dem String ausbrechen und PowerShell-Code injizieren.
+    t_e = _ps_escape(target)
+    wd_e = _ps_escape(wd)
     for lnk in targets:
+        lnk_e = _ps_escape(lnk)
         ps = ("$w=New-Object -ComObject WScript.Shell; "
-              "$s=$w.CreateShortcut('%s'); $s.TargetPath='%s'; "
-              "$s.WorkingDirectory='%s'; $s.IconLocation='%s,0'; $s.Save()"
-              % (lnk, target, wd, target))
+              f"$s=$w.CreateShortcut('{lnk_e}'); $s.TargetPath='{t_e}'; "
+              f"$s.WorkingDirectory='{wd_e}'; $s.IconLocation='{t_e},0'; "
+              "$s.Save()")
         try:
             subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                            creationflags=0x08000000)  # CREATE_NO_WINDOW
@@ -3765,6 +4038,19 @@ def main():
         kw["y"] = int(s["win_y"])
     win = webview.create_window("Claude Session Browser", **kw)
     api.bind_window(win)
+
+    # Autostart: beim ersten Start eintragen wenn Default aktiv ist.
+    # Der Nutzer kann in den Einstellungen abschalten.
+    if getattr(sys, "frozen", False):
+        want_autostart = bool(s.get("autostart", True))
+        already = is_autostart_enabled()
+        if want_autostart and not already:
+            if set_autostart(True):
+                s["autostart_registered"] = True
+                save_json(SETTINGS_FILE, s)
+        elif not want_autostart and already:
+            set_autostart(False)
+
     # Buddy automatisch anwerfen, wenn er zuletzt an war.
     if s.get("buddy", {}).get("enabled"):
         try:
@@ -3789,8 +4075,13 @@ def main():
         tray.start()
 
     def on_before_close():
-        # Rueckgabewert True erlaubt Schliessen, False verhindert es
-        if api.settings.get("close_to_tray", True) and not _quit_wanted["v"]:
+        # Rueckgabewert True erlaubt Schliessen, False verhindert es.
+        # WICHTIG: Nur in den Tray verstecken wenn das Tray-Icon auch
+        # tatsaechlich laeuft – sonst haette der User keine Moeglichkeit
+        # das versteckte Fenster wieder zu holen (Zombie-Prozess).
+        if (api.settings.get("close_to_tray", True)
+                and not _quit_wanted["v"]
+                and tray.icon is not None):
             try:
                 win.hide()
             except Exception:

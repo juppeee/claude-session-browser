@@ -1,6 +1,6 @@
 {
-  "version": "1.0.12",
-  "notes": "Grosses Update: Neuer Clawd-Buddy als animiertes Desktop-Maskottchen (eigener Tab), zeigt live was Claude gerade macht (schreibt Code, denkt, schlaeft). Konfigurierbar: Groesse, Deckkraft, Sichtbarkeits-Regeln (nur wenn Claude Code laeuft, immer, oder nur wenn bestimmtes Fenster vorne), Pro-Monitor-Schnellwahl, freies Ziehen mit Raster, optionaler Cam-Rahmen mit Nameplate. Ausserdem: X schliesst jetzt in den System-Tray (Icon rechts unten, Klick oeffnet wieder); Autostart per Registry. Bestehende Einstellungen bleiben unveraendert.",
+  "version": "1.0.13",
+  "notes": "Sicherheits- und Stabilitaetsupdate ueber v1.0.12. Fixt Command-Injection in Resume, PowerShell-Injection bei Verknuepfungen, Race Condition beim Einstellungen-Speichern, ESC-Abbruch im Buddy-Platzieren-Modus, Frame-Padding beim Anker-Snap, verwaiste Autostart-Eintraege, Ghost-Fenster wenn System-Tray nicht startet und stille Update-Fehler. Neu: Windows-Benachrichtigung wenn dein Claude-Limit sich zurueckgesetzt hat (Toggle im Buddy-Tab). Bestehende Einstellungen bleiben unveraendert.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe"
 }
