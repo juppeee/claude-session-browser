@@ -1,7 +1,7 @@
 {
-  "version": "1.0.16",
-  "notes": "Tray-Icon zeigt jetzt das echte Claude-Session-Browser-Logo statt eines leeren orangen Quadrats (Icon war im letzten Build nicht mitgebuendelt). Buddy-Limit-Erkennung reagiert jetzt auch auf OAuth/Auth-Fehler ('Please run /login', '401 OAuth access token has been revoked', 'authentication_error', 'invalid api key') – wenn dein Token abgelaufen ist zeigt der Buddy die sauere Limit-Animation. SHA-256-Integritaetspruefung wie in v1.0.14/1.0.15. Bestehende Einstellungen bleiben unveraendert.",
+  "version": "1.0.17",
+  "notes": "Buddy zeigt nicht mehr faelschlich die Limit-Animation wenn du nur ueber Limits redest. Trigger-Phrasen wie 'Please run /login' oder 'rate limit reached' muessen jetzt in einer JSONL-Zeile mit einem echten Fehler-Indikator ('is_error', 'stop_reason', 'authentication_error', 'rate_limit_error', 'tool_use_error' etc.) stehen, damit die sauere Anim ausgeloest wird. Normale Chat-Diskussionen ueber Limits triggern nichts mehr. Sonst identisch zu v1.0.16.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
-  "sha256": "d1439304de46bf5468644f2bb90d6625cbddc31cbcfdc592d11ba9f7ca40acb5"
+  "sha256": "32aeeaadf3cabc4b3afa22ab861f402813c7df93f0798f3c51ef2fce1d7abc92"
 }

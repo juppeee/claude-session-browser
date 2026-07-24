@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.16"
+VERSION = "1.0.17"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -226,6 +226,21 @@ def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
         pass
     if not newest_path:
         return False
+    # Nur Zeilen die wie ein echter Fehler aussehen zaehlen – normale
+    # Chat-Nachrichten die zufaellig ueber "rate limit", "Please run /login"
+    # etc. sprechen sollen den Buddy nicht triggern.
+    error_markers = (
+        '"is_error":true',
+        '"is_error": true',
+        '"stop_reason"',
+        '"error":',
+        '"type":"error"',
+        '"type": "error"',
+        'tool_use_error',
+        'authentication_error',
+        'rate_limit_error',
+        'overloaded_error',
+    )
     try:
         with open(newest_path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -233,7 +248,13 @@ def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
             fh.seek(max(0, size - tail_kb * 1024))
             chunk = fh.read()
         text = chunk.decode("utf-8", errors="replace")
-        return bool(_LIMIT_PATTERNS.search(text))
+        for line in text.splitlines():
+            if not _LIMIT_PATTERNS.search(line):
+                continue
+            # Nur wenn diese Zeile auch als echter Fehler markiert ist:
+            if any(m in line for m in error_markers):
+                return True
+        return False
     except OSError:
         return False
 
