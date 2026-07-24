@@ -1,7 +1,7 @@
 {
-  "version": "1.0.17",
-  "notes": "Buddy zeigt nicht mehr faelschlich die Limit-Animation wenn du nur ueber Limits redest. Trigger-Phrasen wie 'Please run /login' oder 'rate limit reached' muessen jetzt in einer JSONL-Zeile mit einem echten Fehler-Indikator ('is_error', 'stop_reason', 'authentication_error', 'rate_limit_error', 'tool_use_error' etc.) stehen, damit die sauere Anim ausgeloest wird. Normale Chat-Diskussionen ueber Limits triggern nichts mehr. Sonst identisch zu v1.0.16.",
+  "version": "1.0.18",
+  "notes": "Zwei Fixes: (1) Buddy verschwindet direkt wenn du das Claude-CLI-Terminal schliesst – der '5 Min Aktivitaets-Nachwirken'-Fallback ist raus, ab jetzt nur Prozess/Fenster-Check. (2) Limit-Erkennung parst JSONL strukturell (checkt echte Fehler-Felder wie is_error/stop_reason/tool_use_error), Wort-Erwaehnungen von 'authentication_error' etc. im normalen Chat triggern nichts mehr. Sonst identisch zu v1.0.17.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
-  "sha256": "32aeeaadf3cabc4b3afa22ab861f402813c7df93f0798f3c51ef2fce1d7abc92"
+  "sha256": "ffef357340f674ea2ebab1ba1003c093006a538096d539c1456d133ce98dcd61"
 }

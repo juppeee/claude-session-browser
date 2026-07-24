@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.17"
+VERSION = "1.0.18"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -226,37 +226,71 @@ def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
         pass
     if not newest_path:
         return False
-    # Nur Zeilen die wie ein echter Fehler aussehen zaehlen – normale
-    # Chat-Nachrichten die zufaellig ueber "rate limit", "Please run /login"
-    # etc. sprechen sollen den Buddy nicht triggern.
-    error_markers = (
-        '"is_error":true',
-        '"is_error": true',
-        '"stop_reason"',
-        '"error":',
-        '"type":"error"',
-        '"type": "error"',
-        'tool_use_error',
-        'authentication_error',
-        'rate_limit_error',
-        'overloaded_error',
-    )
+    # Session-JSONL zeilenweise parsen und STRUKTURELL nach echten Fehler-
+    # Markern suchen. Reine Text-Erwaehnungen von "authentication_error" o.ae.
+    # in normalen Chat-Nachrichten sollen nicht triggern – nur Fehler die
+    # tatsaechlich Feld-basiert markiert sind.
     try:
         with open(newest_path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
-            fh.seek(max(0, size - tail_kb * 1024))
+            # Wir brauchen ganze Zeilen – ggf. bis Zeilenanfang zurueck-suchen.
+            start = max(0, size - tail_kb * 1024)
+            fh.seek(start)
+            if start > 0:
+                fh.readline()  # unvollstaendige erste Zeile ueberspringen
             chunk = fh.read()
         text = chunk.decode("utf-8", errors="replace")
-        for line in text.splitlines():
-            if not _LIMIT_PATTERNS.search(line):
-                continue
-            # Nur wenn diese Zeile auch als echter Fehler markiert ist:
-            if any(m in line for m in error_markers):
-                return True
-        return False
     except OSError:
         return False
+
+    def _line_is_real_error(obj):
+        """True nur wenn diese JSONL-Zeile STRUKTURELL einen echten Fehler
+        signalisiert – nicht wenn 'error' bloss als Text darin steht."""
+        if not isinstance(obj, dict):
+            return False
+        # 1) top-level: {"type":"error", ...} oder isError im Aussenrahmen
+        typ = obj.get("type")
+        if typ in ("error", "tool_use_error", "system_error"):
+            return True
+        if obj.get("isError") is True or obj.get("is_error") is True:
+            return True
+        # 2) message.stop_reason zeigt Fehler an
+        msg = obj.get("message")
+        if isinstance(msg, dict):
+            sr = msg.get("stop_reason")
+            if sr in ("error", "rate_limited", "overloaded",
+                      "authentication_error"):
+                return True
+            # 3) content-Items mit is_error / tool_use_error
+            content = msg.get("content")
+            if isinstance(content, list):
+                for it in content:
+                    if not isinstance(it, dict):
+                        continue
+                    if it.get("is_error") is True or it.get("isError") is True:
+                        return True
+                    if it.get("type") in ("tool_use_error", "error"):
+                        return True
+        # 4) top-level "error"-Objekt vorhanden
+        err = obj.get("error")
+        if isinstance(err, dict) and err.get("type"):
+            return True
+        return False
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not _line_is_real_error(obj):
+            continue
+        if _LIMIT_PATTERNS.search(line):
+            return True
+    return False
 
 
 def load_json(path, fallback):
@@ -765,17 +799,10 @@ def _claude_context_active():
                     continue
                 active = True
                 break
-        # 3) Fallback: frische Session-Aktivitaet (Claude tippt gerade oder
-        #    hat vor kurzem gearbeitet). Deckt Windows Terminal Tabs ab, die
-        #    kein 'claude' im Titel haben.
-        if not active:
-            try:
-                pdir = detect_projects_dir()
-                latest = _latest_session_mtime(pdir, max_files=60)
-                if latest and (now - latest) < 300:
-                    active = True
-            except Exception:
-                pass
+        # KEIN mtime-Fallback mehr: Buddy soll direkt verschwinden wenn die
+        # Claude-CLI geschlossen wird – nicht noch 5 Min nach Aktivitaet
+        # sichtbar bleiben. Erkennung nur ueber laufenden Prozess + offenes
+        # Fenster.
     except Exception:
         pass
     _CLAUDE_CACHE["active"] = active
