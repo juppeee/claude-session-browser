@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.13"
+VERSION = "1.0.14"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -169,12 +169,18 @@ _LIMIT_PATTERNS = re.compile(
     # Explizites "reached"
     r"|(?:(?:5.?hour|weekly|daily|24.?hour|session|usage) limit reached)"
     # "session limit · resets ..." wie in der Claude-CLI-Statuszeile
-    r"|(?:session limit[^\n]{0,40}(?:resets? at|resets? on|resets? in))"
-    # Ganz nah dran (>= 95% verbraucht) – triggert auch die Vorwarn-Phase
-    r"|(?:used 9[5-9]%[^\n]{0,20}session limit)"
+    r"|(?:session limit[^\n]{0,40}resets?)"
+    # Ganz nah dran (>= 90% verbraucht) – triggert auch die Vorwarn-Phase
+    r"|(?:used 9\d%[^\n]{0,20}session limit)"
     r"|(?:used 100%[^\n]{0,20}session limit)"
     # Claude Max Plan Limit
-    r"|(?:claude max plan[^\n]{0,80}limit reached)",
+    r"|(?:claude max plan[^\n]{0,80}limit reached)"
+    # API-Fehler die Claude oft bei Ueberlast/Rate-Limit wirft
+    r"|(?:api error[^\n]{0,40}server error mid.?response)"
+    r"|(?:api error[^\n]{0,40}overloaded)"
+    r"|(?:\"type\":\s*\"overloaded_error\")"
+    r"|(?:rate_limit_error)"
+    r"|(?:429[^\n]{0,20}too many requests)",
     re.IGNORECASE,
 )
 
@@ -2244,6 +2250,30 @@ class Api:
                 if f.read(2) != b"MZ":
                     os.remove(part)
                     return {"ok": False, "error": "Heruntergeladene Datei ist keine gültige .exe."}
+
+            # Integritaets-Pruefung ueber SHA-256, wenn im version.json angegeben.
+            # Feld ist optional (aeltere version.json ohne sha256 laufen ohne Check
+            # durch – Backward-Compat) aber wenn angegeben MUSS er passen.
+            import hashlib
+            expected = str(data.get("sha256") or "").strip().lower()
+            if expected:
+                if not re.fullmatch(r"[0-9a-f]{64}", expected):
+                    try: os.remove(part)
+                    except OSError: pass
+                    return {"ok": False,
+                            "error": "Ungültiger SHA-256 im Server-Manifest."}
+                h = hashlib.sha256()
+                with open(part, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        h.update(chunk)
+                actual = h.hexdigest()
+                if actual != expected:
+                    try: os.remove(part)
+                    except OSError: pass
+                    return {"ok": False,
+                            "error": ("Integritäts-Prüfung fehlgeschlagen "
+                                      "(SHA-256 stimmt nicht). Update abgebrochen.")}
+
             if os.path.exists(new):
                 os.remove(new)
             os.replace(part, new)   # atomar
