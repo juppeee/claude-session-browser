@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.19"
+VERSION = "1.1.0"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -113,6 +113,7 @@ DEFAULT_SETTINGS = {
         "x": 200, "y": 200,      # gemerkte Position auf dem Desktop
         "opacity": 100,          # 20..100 (Prozent) – 100 = voll deckend
         "party": False,          # Party-Modus: nur Tanz-Animation
+        "party_style": "bounce", # Party-Stil: "bounce" (hopsend) oder "sway" (schaukelnd)
         "frame": False,          # (legacy) duenner Rahmen um den Buddy
         "frame_style": "off",    # "off" | "line" | "webcam"
         "frame_color": "#ec7456",
@@ -154,13 +155,19 @@ BUDDY_STATE_MAP = {
     "limit":    "limit",             # Rate/Usage-Limit erreicht (sauer!)
     "active":   "work coding",       # Claude schreibt gerade (mtime < 3 s)
     "thinking": "work think",        # kurz danach, wenn's noch zappelt
+    "awaiting_approval": "allow",    # Claude will Tool-Use, braucht dein Y/N
     "waiting":  "done",              # Claude fertig, wartet auf User-Input
     "recent":   "idle blink",        # zwischendurch mal blinzeln
     "idle":     "idle breathe",      # entspannt atmen
     "sleep":    "expression sleep",  # lange nichts los -> schlaeft
     "none":     "idle look around",  # kein Claude installiert / kein Projekt
-    "party":    "dance bounce",      # Party-Modus
+    "party":    "dance bounce",      # Party-Modus (bounce)
+    "party_sway": "dance sway",      # Party-Modus (sway - sanfter)
     "surprise": "expression surprise",
+    "wink":     "expression wink",   # Easter-Egg bei langem Maus-Hover
+    # Alternate-Anims fuer Variety (werden alle ~30s durchgemischt)
+    "active_alt":   "write",         # Rotation-Alternative zu work coding
+    "thinking_alt": "think",         # Rotation-Alternative zu work think
 }
 
 # Sehr spezifische Muster in der neuesten .jsonl-Datei die eindeutig auf ein
@@ -244,7 +251,8 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=6):
     - reset_at: parsed Reset-Zeit (0 wenn unbekannt oder kein Limit)
     - waiting: letzte Zeile ist assistant end_turn → Claude wartet auf User
     Wird nur aufgerufen wenn ohnehin frische Aktivitaet erkannt wurde."""
-    empty = {"is_limit": False, "reset_at": 0.0, "waiting": False}
+    empty = {"is_limit": False, "reset_at": 0.0, "waiting": False,
+             "awaiting_approval": False}
     if not projects_dir or not os.path.isdir(projects_dir):
         return empty
     newest_path = None
@@ -352,24 +360,30 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=6):
     # "Waiting for user": letzte Zeile ist eine Assistant-Message die
     # regulaer beendet ist (end_turn / stop_sequence) und kein pending
     # tool_use hat -> Claude ist fertig, wartet auf dich.
+    # "Awaiting approval": letzte Zeile ist assistant mit stop_reason=tool_use
+    # (oder Content enthaelt tool_use) -> Claude will was tun und braucht
+    # deine Erlaubnis (Y/N-Prompt in der CLI).
     waiting = False
+    awaiting_approval = False
     if not is_limit:
         obj_type = last_obj.get("type") if isinstance(last_obj, dict) else None
         msg = last_obj.get("message") if isinstance(last_obj, dict) else None
         if obj_type == "assistant" and isinstance(msg, dict):
             sr = msg.get("stop_reason")
-            if sr in ("end_turn", "stop_sequence", None):
-                has_tool_use = False
-                content = msg.get("content")
-                if isinstance(content, list):
-                    for it in content:
-                        if isinstance(it, dict) and it.get("type") == "tool_use":
-                            has_tool_use = True
-                            break
-                if not has_tool_use:
-                    waiting = True
+            has_tool_use = False
+            content = msg.get("content")
+            if isinstance(content, list):
+                for it in content:
+                    if isinstance(it, dict) and it.get("type") == "tool_use":
+                        has_tool_use = True
+                        break
+            if sr == "tool_use" or has_tool_use:
+                awaiting_approval = True
+            elif sr in ("end_turn", "stop_sequence", None):
+                waiting = True
 
-    return {"is_limit": is_limit, "reset_at": reset_at, "waiting": waiting}
+    return {"is_limit": is_limit, "reset_at": reset_at,
+            "waiting": waiting, "awaiting_approval": awaiting_approval}
 
 
 def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
@@ -1443,6 +1457,7 @@ class BuddyController:
         # Maus rein/raus -> sofort transparent damit man drunter sieht
         def _on_enter(e):
             state["hover"] = True
+            state["hover_started_at"] = time.time()
             # Sofort auf 15% Deckkraft (kein Fade)
             try:
                 target = min(state["opacity"], 0.15)
@@ -1453,6 +1468,8 @@ class BuddyController:
                 pass
         def _on_leave(e):
             state["hover"] = False
+            state["hover_started_at"] = 0.0
+            state["wink_fired_this_hover"] = False
             # Sofort zurueck auf normale Deckkraft (kein Fade)
             try:
                 if state.get("was_visible"):
@@ -1634,6 +1651,11 @@ class BuddyController:
         state["last_limit_check"] = 0.0
         state["is_limited"] = False
         state["is_waiting"] = False
+        state["is_awaiting_approval"] = False
+        state["hover_started_at"] = 0.0
+        state["wink_until"] = 0.0
+        state["last_alt_swap"] = 0.0
+        state["use_alt"] = False
 
         def detect_state():
             now = time.time()
@@ -1658,6 +1680,8 @@ class BuddyController:
                               "waiting": False}
                 new_limited = bool(status.get("is_limit"))
                 state["is_waiting"] = bool(status.get("waiting"))
+                state["is_awaiting_approval"] = bool(
+                    status.get("awaiting_approval"))
                 # Reset-Zeit ins Settings speichern damit Timer + Startup-
                 # Nachhol funktionieren
                 reset_at = float(status.get("reset_at") or 0.0)
@@ -1680,6 +1704,11 @@ class BuddyController:
                 state["is_limited"] = new_limited
             if state["is_limited"] and age < 3600:
                 return "limit"
+            # "Awaiting approval" hat Vorrang vor active/thinking - wenn Claude
+            # gerade auf dein Y/N wartet ist er streng genommen "beschaeftigt",
+            # aber der User soll den anderen Anim-Style sehen.
+            if state["is_awaiting_approval"] and age < 300:
+                return "awaiting_approval"
             if age < 3:
                 return "active"
             if age < 15:
@@ -1698,14 +1727,40 @@ class BuddyController:
         def choose_anim():
             bud = self.api.settings.get("buddy", {})
             now = time.time()
+            # Preview-Test aus dem Buddy-Tab hat hoechste Prioritaet
             if now < state["preview_until"] and state["preview_anim"] in BUDDY_ANIMS:
                 return state["preview_anim"]
+            # Surprise-Pulse (z.B. Reset-Karte oder Test-Button)
             if now < state["surprise_until"]:
                 return BUDDY_STATE_MAP["surprise"]
+            # Wink-Easter-Egg: ein Mal pro Hover-Session zwinkern nach 10s
+            # Dwell. Weiter zwinkern erst nach neuem Mouse-Leave/Enter.
+            if state.get("hover") and state["hover_started_at"] > 0 \
+                    and not state.get("wink_fired_this_hover"):
+                dwell = now - state["hover_started_at"]
+                if dwell > 10:
+                    state["wink_fired_this_hover"] = True
+                    state["wink_until"] = now + 2.5
+            if now < state["wink_until"]:
+                return BUDDY_STATE_MAP["wink"]
+            # Party-Modus mit waehlbarem Stil (bounce oder sway)
             if bud.get("party"):
+                style = str(bud.get("party_style", "bounce")).lower()
+                if style == "sway":
+                    return BUDDY_STATE_MAP["party_sway"]
                 return BUDDY_STATE_MAP["party"]
             act = detect_state()
             state["activity_state"] = act
+            # Rotation fuer active/thinking: alle ~30s zwischen Haupt- und
+            # Alternate-Anim wechseln damit's nicht monoton wirkt
+            if act in ("active", "thinking"):
+                if now - state["last_alt_swap"] > 30:
+                    state["last_alt_swap"] = now
+                    state["use_alt"] = not state["use_alt"]
+                if state["use_alt"]:
+                    alt_key = act + "_alt"
+                    if alt_key in BUDDY_STATE_MAP:
+                        return BUDDY_STATE_MAP[alt_key]
             return BUDDY_STATE_MAP.get(act, "idle breathe")
 
         # ---- Rendering (mit Frame-Cache) ----
@@ -2633,21 +2688,166 @@ class Api:
             return {"available": False, "current": VERSION, "frozen": frozen,
                     "error": type(e).__name__ + ": " + str(e)[:120]}
 
+    def _install_via_installer(self, data, installer_url):
+        """Installer-basiertes Update (v1.1.0+). Laedt Setup.exe, prueft
+        SHA-256, startet Silent-Install, danach neue App vom Standard-
+        Install-Pfad. Alter Runner-Pfad wird nicht angefasst -- er bleibt
+        als Orphan liegen (harmlos), User kann ihn manuell loeschen."""
+        if getattr(self, "_installing", False):
+            return {"ok": False, "error": "Update läuft bereits."}
+        self._installing = True
+        part = os.path.join(tempfile.gettempdir(),
+                            "ClaudeSessionBrowser_setup.exe.part")
+        win = self._win()
+
+        def js(code):
+            if win:
+                try:
+                    win.evaluate_js(code)
+                except Exception:
+                    pass
+
+        try:
+            import time
+            setup = os.path.join(tempfile.gettempdir(),
+                                 "ClaudeSessionBrowser_setup.exe")
+            req = urllib.request.Request(
+                installer_url, headers={"User-Agent": "ClaudeSessionBrowser"})
+            with urllib.request.urlopen(
+                    req, timeout=120, context=self._ssl_ctx()) as r, \
+                    open(part, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                done = 0
+                last = -1
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        p = int(done * 100 / total)
+                        if p != last:
+                            last = p
+                            js("window.updateProgress&&updateProgress(%d)" % p)
+            size = os.path.getsize(part)
+            if (total and size != total) or size < 500_000:
+                try: os.remove(part)
+                except OSError: pass
+                return {"ok": False,
+                        "error": "Installer-Download unvollständig."}
+            with open(part, "rb") as f:
+                if f.read(2) != b"MZ":
+                    os.remove(part)
+                    return {"ok": False,
+                            "error": "Heruntergeladener Installer ist keine gültige .exe."}
+            # SHA-256 Pruefung (installer_sha256 bevorzugt, Fallback sha256)
+            import hashlib
+            expected = str(data.get("installer_sha256")
+                           or data.get("sha256") or "").strip().lower()
+            if expected:
+                if not re.fullmatch(r"[0-9a-f]{64}", expected):
+                    try: os.remove(part)
+                    except OSError: pass
+                    return {"ok": False,
+                            "error": "Ungültiger SHA-256 im Server-Manifest."}
+                h = hashlib.sha256()
+                with open(part, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        h.update(chunk)
+                if h.hexdigest() != expected:
+                    try: os.remove(part)
+                    except OSError: pass
+                    return {"ok": False,
+                            "error": "Integritäts-Prüfung fehlgeschlagen "
+                                     "(SHA-256). Update abgebrochen."}
+            if os.path.exists(setup):
+                try: os.remove(setup)
+                except OSError: pass
+            os.replace(part, setup)
+
+            # Neuer Runner-Pfad (Standard-Install-Ort per Inno Setup):
+            # %LOCALAPPDATA%\Programs\ClaudeSessionBrowser\ClaudeSessionBrowser.exe
+            lad = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            new_runner = os.path.join(
+                lad, "Programs", "ClaudeSessionBrowser",
+                "ClaudeSessionBrowser.exe")
+
+            # Batch: Silent-Install ausfuehren, danach neuen Runner starten.
+            # Der Installer bringt sich selbst zum Abschluss und schreibt in
+            # eine Datei ob's geklappt hat.
+            bat = os.path.join(tempfile.gettempdir(), "csb_installer.bat")
+            marker = os.path.join(tempfile.gettempdir(),
+                                  "csb_update_failed.marker")
+            with open(bat, "w", encoding="utf-8") as f:
+                f.write(
+                    "@echo off\r\n"
+                    'set "SETUP=' + setup + '"\r\n'
+                    'set "NEW=' + new_runner + '"\r\n'
+                    'set "FAIL=' + marker + '"\r\n'
+                    'if exist "%FAIL%" del "%FAIL%"\r\n'
+                    "rem Kurz warten bis alte Instanz zu ist\r\n"
+                    "ping -n 2 127.0.0.1 >nul\r\n"
+                    "rem Installer im Silent-Mode ausfuehren\r\n"
+                    '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n'
+                    "if errorlevel 1 (\r\n"
+                    '  echo installer exit %errorlevel% > "%FAIL%"\r\n'
+                    "  goto cleanup\r\n"
+                    ")\r\n"
+                    "rem Neuen Runner starten (ueber explorer.exe = normale User-Rechte)\r\n"
+                    "ping -n 2 127.0.0.1 >nul\r\n"
+                    'if exist "%NEW%" explorer.exe "%NEW%"\r\n'
+                    "if not exist \"%NEW%\" (\r\n"
+                    '  echo runner missing at %NEW% > "%FAIL%"\r\n'
+                    ")\r\n"
+                    ":cleanup\r\n"
+                    'del "%SETUP%" >nul 2>&1\r\n'
+                    'del "%~f0"\r\n'
+                )
+
+            js("window.downloadDone&&downloadDone()")
+            time.sleep(2.6)
+            NOWIN = 0x08000000 | 0x00000200
+            subprocess.Popen(["cmd", "/c", bat], creationflags=NOWIN)
+            if win:
+                win.destroy()  # entsperrt eventuell die alte .exe
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            self._installing = False
+            try:
+                if os.path.exists(part):
+                    os.remove(part)
+            except OSError:
+                pass
+
     def install_update(self):
-        """Laedt die neue .exe, ersetzt die laufende und startet neu.
-        Einstellungen/Daten in ~/.claude bleiben unberuehrt."""
+        """Laedt die neue Version und aktualisiert. Zwei Wege:
+        1) Wenn version.json ein installer_url-Feld hat: Installer laden + im
+           Silent-Mode ausfuehren (v1.1.0+, sauberer Ansatz).
+        2) Sonst: alte Onefile-Replace-Logik (Rueckwaerts-Kompat fuer 1.0.x
+           Server-Manifeste falls die ohne installer_url veroeffentlicht sind).
+        Einstellungen/Daten in ~/.claude bleiben in beiden Faellen unberuehrt."""
         try:
             data = getattr(self, "_update_info", None) or self._remote_info()
         except Exception:
             return {"ok": False, "error": "Kein Internet / Repo nicht erreichbar."}
         page = data.get("url") or \
             "https://github.com/juppeee/claude-session-browser/releases/latest"
+        installer_url = data.get("installer_url") or ""
         exe_url = data.get("exe_url") or ""
 
         # Im Entwicklungsmodus (.py, keine .exe): nur Release-Seite oeffnen
         if not getattr(sys, "frozen", False):
             webbrowser.open(page)
             return {"ok": False, "reason": "dev", "opened": True}
+
+        # Weg 1: Installer-Update
+        if installer_url:
+            return self._install_via_installer(data, installer_url)
+
+        # Weg 2: Onefile-Replace (Legacy)
         if not exe_url:
             webbrowser.open(page)
             return {"ok": False, "reason": "no_exe_url", "opened": True}
@@ -4445,8 +4645,11 @@ def is_autostart_enabled():
 
 
 def install_dir():
+    """Standard-Install-Ort seit v1.1.0: von Inno Setup installiert nach
+    %LOCALAPPDATA%\\Programs\\ClaudeSessionBrowser. Wird nur noch von
+    _autostart_target_exe() als Fallback benutzt."""
     base = os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local")
-    return os.path.join(base, "ClaudeSessionBrowser")
+    return os.path.join(base, "Programs", "ClaudeSessionBrowser")
 
 
 def _ps_escape(s):
@@ -4481,37 +4684,118 @@ def _make_shortcuts(target):
 
 
 def self_install():
-    """Wird die heruntergeladene .exe ausserhalb des Install-Ordners gestartet,
-    kopiert sie sich nach %LOCALAPPDATA% (beschreibbar, ohne Web-Markierung),
-    legt eine Verknuepfung an und startet von dort. Gibt True zurueck, wenn die
-    aufrufende Instanz sich beenden soll."""
+    """Deaktiviert seit v1.1.0: Installation laeuft ab jetzt ueber Inno Setup
+    Installer (%LOCALAPPDATA%\\Programs\\ClaudeSessionBrowser). Diese alte
+    Onefile-Self-Copy-Logik hat bei onedir-Builds die exe ohne _internal-
+    Ordner kopiert und die App unstartbar gemacht. Bleibt als No-op stehen
+    damit alter Ruf-Code (main() bei aelteren Downloads) nichts kaputt macht."""
+    return False
+
+
+def _migrate_from_selfinstall():
+    """v1.1.0 Ein-Mal-Aufraeumung fuer Nutzer die von v1.0.x updaten. Die alte
+    Self-Install-Logik hat Shortcuts + Autostart auf
+    %LOCALAPPDATA%\\ClaudeSessionBrowser\\ClaudeSessionBrowser.exe gebogen
+    (fehlender _internal-Ordner) - bei onedir startet das nicht mehr.
+    Diese Funktion putzt das automatisch weg wenn die neue installierte
+    App aus dem Inno-Setup-Pfad startet. Idempotent - kann bei jedem Start
+    laufen und tut nichts wenn schon sauber."""
     if not getattr(sys, "frozen", False):
-        return False
+        return
+    if not _IS_WIN:
+        return
+    lad = os.environ.get("LOCALAPPDATA") or ""
+    if not lad:
+        return
     cur = os.path.abspath(sys.executable)
-    target = os.path.join(install_dir(), "ClaudeSessionBrowser.exe")
-    if os.path.normcase(cur) == os.path.normcase(target):
-        return False  # laeuft bereits aus dem Install-Ordner
-    try:
-        os.makedirs(install_dir(), exist_ok=True)
+    new_dir = os.path.join(lad, "Programs", "ClaudeSessionBrowser")
+    # Nur greifen wenn wir wirklich die installierte v1.1.0 sind
+    if os.path.normcase(cur).lower() != os.path.normcase(
+            os.path.join(new_dir, "ClaudeSessionBrowser.exe")).lower():
+        return
+    old_dir = os.path.join(lad, "ClaudeSessionBrowser")
+    old_exe = os.path.join(old_dir, "ClaudeSessionBrowser.exe")
+    # 1) Verwaisten alten exe/dir loeschen (nie User-Daten - nur exe drin)
+    if os.path.isfile(old_exe):
         try:
-            # shutil.copy kopiert KEINE Alternate-Data-Streams -> Zone.Identifier
-            # (die "aus dem Web"-Markierung) faellt automatisch weg
-            shutil.copy(cur, target)
+            os.remove(old_exe)
         except OSError:
-            if not os.path.exists(target):
-                return False  # konnte nicht installieren -> normal weiterlaufen
-            # Ziel evtl. gesperrt (laeuft schon) -> einfach die vorhandene starten
-        _make_shortcuts(target)
-        subprocess.Popen([target], creationflags=0x00000008)  # DETACHED
-        return True
+            pass
+    if os.path.isdir(old_dir):
+        try:
+            # Nur loeschen wenn wirklich leer (Safety-Net)
+            if not os.listdir(old_dir):
+                os.rmdir(old_dir)
+        except OSError:
+            pass
+
+    # 2) Shortcuts umbiegen die auf den alten kaputten Pfad zeigen
+    def _fix_lnk(path):
+        if not os.path.isfile(path):
+            return
+        try:
+            # Nur ueber PowerShell, weil pywin32 nicht ueberall da ist
+            ps_target = _ps_escape(cur)
+            ps_wd = _ps_escape(new_dir)
+            ps_path = _ps_escape(path)
+            ps_old = _ps_escape(old_dir)
+            script = (
+                "$ws=New-Object -ComObject WScript.Shell;"
+                f"$s=$ws.CreateShortcut('{ps_path}');"
+                f"if($s.TargetPath.ToLower().StartsWith('{ps_old.lower()}')){{"
+                f"  $s.TargetPath='{ps_target}';"
+                f"  $s.WorkingDirectory='{ps_wd}';"
+                f"  $s.IconLocation='{ps_target},0';"
+                f"  $s.Save()"
+                "}"
+            )
+            subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                           creationflags=0x08000000, timeout=8)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    home = os.path.expanduser("~")
+    appdata = os.environ.get("APPDATA")
+    _fix_lnk(os.path.join(home, "Desktop", "Claude Session Browser.lnk"))
+    if appdata:
+        _fix_lnk(os.path.join(appdata, "Microsoft", "Windows", "Start Menu",
+                              "Programs", "Claude Session Browser.lnk"))
+        # Und den alten Startup-Ordner-Eintrag komplett weg (Registry uebernimmt)
+        old_startup = os.path.join(appdata, "Microsoft", "Windows", "Start Menu",
+                                   "Programs", "Startup",
+                                   "Claude Session Browser.lnk")
+        if os.path.isfile(old_startup):
+            try:
+                os.remove(old_startup)
+            except OSError:
+                pass
+
+    # 3) Autostart-Registry umbiegen falls sie noch auf den alten Pfad zeigt
+    try:
+        import winreg
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
+                            winreg.KEY_ALL_ACCESS) as k:
+            try:
+                v, _ = winreg.QueryValueEx(k, "ClaudeSessionBrowser")
+                stripped = str(v).strip().strip('"').lower()
+                if stripped.startswith(old_dir.lower()):
+                    winreg.SetValueEx(k, "ClaudeSessionBrowser", 0,
+                                      winreg.REG_SZ, f'"{cur}"')
+            except FileNotFoundError:
+                pass
     except Exception:
-        return False
+        pass
 
 
 # --------------------------------------------------------------------------- #
 def main():
     if self_install():
         return  # heruntergeladene Instanz beendet sich; installierte Kopie laeuft
+    try:
+        _migrate_from_selfinstall()
+    except Exception:
+        pass
     api = Api()
     s = api.settings
     kw = dict(

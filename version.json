@@ -1,7 +1,9 @@
 {
-  "version": "1.0.19",
-  "notes": "Zwei neue Features: (1) Buddy zeigt ab jetzt einen 'wartet-auf-dich'-Zustand ('done'-Animation) wenn Claude fertig geantwortet hat und du dran bist – strukturell aus der letzten JSONL-Zeile erkannt. (2) Wenn dein Claude-Limit sich zurueckgesetzt hat kriegst du eine schwebende Karte oben rechts am Bildschirm im Anthropic-Style, die bleibt bis du sie wegklickst (nicht mehr verpassbar). Die Karte kommt auch beim App-Start wenn du sie waehrend Offline-Zeit verpasst haettest, und ein Timer-Thread feuert sie genau zur geparsten Reset-Zeit. Zusaetzlich Fix: Limit-Erkennung schaut jetzt nur noch auf die letzte JSONL-Nachricht (Chat-Verlauf ueber Limits triggert nichts mehr) und erkennt auch 'hit' zusaetzlich zu 'reached'.",
+  "version": "1.1.0",
+  "notes": "Grosser Architektur-Wechsel: statt Onefile-EXE die sich bei jedem Start nach Temp entpackt (3-8s Startzeit + AV-Scans) jetzt ein echter Windows-Installer (Inno Setup) mit Onedir-Layout. Startzeit ~0.3s statt 3-8s. Uninstall-Eintrag in der Systemsteuerung, saubere Start-Menue-Gruppe, per-user Install ohne Admin-Prompt. Auto-Update laeuft weiter im Hintergrund (Silent-Install). Alle Einstellungen und Session-Daten in %USERPROFILE%\\.claude\\ bleiben unangetastet. Neu: 5 zusaetzliche Buddy-Anims verdrahtet (allow bei Tool-Approval-Wait, expression wink als Easter-Egg bei 10s Maus-Hover, dance sway als sanftere Party-Alternative, write/think als Rotation-Alternativen). Fix: alter self-install-Migrations-Code aus v1.0.x deaktiviert (hat bei Onedir die exe ohne _internal-Ordner kopiert und die App unstartbar gemacht) plus automatische Ein-Mal-Aufraeumung fuer alte kaputte Shortcuts + Autostart-Registry.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
-  "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
-  "sha256": "b8bd90a289add55410088716cfff12b534aa57bf07e0f6e11d4eb48c43539b63"
+  "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
+  "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
+  "installer_sha256": "880abc51ef3619bd7904d3754983748387f0cf4fde29e9e87f2a75a93f120851",
+  "sha256": "880abc51ef3619bd7904d3754983748387f0cf4fde29e9e87f2a75a93f120851"
 }
