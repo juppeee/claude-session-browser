@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.0.18"
+VERSION = "1.0.19"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -101,6 +101,8 @@ DEFAULT_SETTINGS = {
     "autostart": True,           # Beim Windows-Start automatisch mitstarten
     "autostart_registered": False,  # Merker: Registry-Eintrag beim ersten Mal setzen
     "notify_limit_reset": True,  # Windows-Notification wenn Claude-Limit sich zurueckgesetzt hat
+    "limit_reset_at": 0,         # Epoche wann Limit zurueckgesetzt wird (aus JSONL geparst, 0 = unbekannt)
+    "limit_reset_notified_for": 0,  # Fuer welche limit_reset_at wurde schon benachrichtigt (verhindert Doppel-Feuer)
     "onboarded": False,          # Erst-Einrichtung schon durchlaufen?
     "onboarded_version": "",     # zuletzt gesehene Onboarding-Version (fuer Re-Onboarding nach Updates)
     "buddy": {                   # Clawd-Buddy: kleines animiertes Desktop-Maskottchen
@@ -152,6 +154,7 @@ BUDDY_STATE_MAP = {
     "limit":    "limit",             # Rate/Usage-Limit erreicht (sauer!)
     "active":   "work coding",       # Claude schreibt gerade (mtime < 3 s)
     "thinking": "work think",        # kurz danach, wenn's noch zappelt
+    "waiting":  "done",              # Claude fertig, wartet auf User-Input
     "recent":   "idle blink",        # zwischendurch mal blinzeln
     "idle":     "idle breathe",      # entspannt atmen
     "sleep":    "expression sleep",  # lange nichts los -> schlaeft
@@ -165,7 +168,7 @@ BUDDY_STATE_MAP = {
 # damit normale Chat-Erwaehnungen von „rate limit" o.ae. NICHT triggern.
 _LIMIT_PATTERNS = re.compile(
     # Klare "erreicht"-Phrasen (5h / weekly / session / max)
-    r"(?:you'?ve reached your (?:5.?hour|weekly|daily|24.?hour|max|session) limit)"
+    r"(?:you'?ve (?:reached|hit) your (?:5.?hour|weekly|daily|24.?hour|max|session) limit)"
     # Explizites "reached"
     r"|(?:(?:5.?hour|weekly|daily|24.?hour|session|usage) limit reached)"
     # "session limit · resets ..." wie in der Claude-CLI-Statuszeile
@@ -192,12 +195,58 @@ _LIMIT_PATTERNS = re.compile(
 )
 
 
-def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
+_RESET_HHMM_RE = re.compile(
+    r"resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*"
+    r"(?:\(([^)]+)\))?", re.IGNORECASE)
+_RESET_REL_RE = re.compile(
+    r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?", re.IGNORECASE)
+
+
+def _parse_reset_epoch(text):
+    """Aus einem Text wie 'resets 2pm (Europe/Berlin)' oder 'resets in 3h 12m'
+    versuchen, einen absoluten Unix-Timestamp fuer die Reset-Zeit zu bauen.
+    Rueckgabe: epoch (float) oder 0.0 wenn nichts erkannt."""
+    if not text:
+        return 0.0
+    m = _RESET_REL_RE.search(text)
+    if m:
+        h = int(m.group(1) or 0)
+        mm = int(m.group(2) or 0)
+        if h or mm:
+            return time.time() + h * 3600 + mm * 60
+    m = _RESET_HHMM_RE.search(text)
+    if m:
+        try:
+            import datetime
+            hour = int(m.group(1))
+            minute = int(m.group(2) or 0)
+            ampm = (m.group(3) or "").lower()
+            if ampm == "pm" and hour < 12:
+                hour += 12
+            elif ampm == "am" and hour == 12:
+                hour = 0
+            now = datetime.datetime.now()
+            target = now.replace(hour=hour, minute=minute,
+                                 second=0, microsecond=0)
+            if target <= now:
+                target = target + datetime.timedelta(days=1)
+            return target.timestamp()
+        except (ValueError, OverflowError):
+            return 0.0
+    return 0.0
+
+
+def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=6):
     """Liest die neuesten Zeilen der zuletzt geaenderten .jsonl-Datei und
-    prueft ob dort ein Limit-Hinweis steht. Rueckgabe: True/False. Wird nur
-    aufgerufen wenn ohnehin frische Aktivitaet erkannt wurde – bleibt billig."""
+    liefert einen Status-Dict zurueck:
+      {"is_limit": bool, "reset_at": float, "waiting": bool}
+    - is_limit: letzte Zeile ist echter Limit-/Auth-Fehler
+    - reset_at: parsed Reset-Zeit (0 wenn unbekannt oder kein Limit)
+    - waiting: letzte Zeile ist assistant end_turn → Claude wartet auf User
+    Wird nur aufgerufen wenn ohnehin frische Aktivitaet erkannt wurde."""
+    empty = {"is_limit": False, "reset_at": 0.0, "waiting": False}
     if not projects_dir or not os.path.isdir(projects_dir):
-        return False
+        return empty
     newest_path = None
     newest_mtime = 0.0
     count = 0
@@ -225,7 +274,7 @@ def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
     except OSError:
         pass
     if not newest_path:
-        return False
+        return empty
     # Session-JSONL zeilenweise parsen und STRUKTURELL nach echten Fehler-
     # Markern suchen. Reine Text-Erwaehnungen von "authentication_error" o.ae.
     # in normalen Chat-Nachrichten sollen nicht triggern – nur Fehler die
@@ -242,7 +291,7 @@ def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
             chunk = fh.read()
         text = chunk.decode("utf-8", errors="replace")
     except OSError:
-        return False
+        return empty
 
     def _line_is_real_error(obj):
         """True nur wenn diese JSONL-Zeile STRUKTURELL einen echten Fehler
@@ -278,6 +327,9 @@ def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
             return True
         return False
 
+    # Nur die LETZTE gueltige JSONL-Zeile (juengste Nachricht) betrachten.
+    last_obj = None
+    last_line = None
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -286,11 +338,44 @@ def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
             obj = json.loads(line)
         except (ValueError, TypeError):
             continue
-        if not _line_is_real_error(obj):
-            continue
-        if _LIMIT_PATTERNS.search(line):
-            return True
-    return False
+        last_obj = obj
+        last_line = line
+    if last_obj is None or last_line is None:
+        return empty
+
+    is_limit = False
+    reset_at = 0.0
+    if _line_is_real_error(last_obj) and _LIMIT_PATTERNS.search(last_line):
+        is_limit = True
+        reset_at = _parse_reset_epoch(last_line)
+
+    # "Waiting for user": letzte Zeile ist eine Assistant-Message die
+    # regulaer beendet ist (end_turn / stop_sequence) und kein pending
+    # tool_use hat -> Claude ist fertig, wartet auf dich.
+    waiting = False
+    if not is_limit:
+        obj_type = last_obj.get("type") if isinstance(last_obj, dict) else None
+        msg = last_obj.get("message") if isinstance(last_obj, dict) else None
+        if obj_type == "assistant" and isinstance(msg, dict):
+            sr = msg.get("stop_reason")
+            if sr in ("end_turn", "stop_sequence", None):
+                has_tool_use = False
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for it in content:
+                        if isinstance(it, dict) and it.get("type") == "tool_use":
+                            has_tool_use = True
+                            break
+                if not has_tool_use:
+                    waiting = True
+
+    return {"is_limit": is_limit, "reset_at": reset_at, "waiting": waiting}
+
+
+def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
+    """Rueckwaerts-kompatibler Wrapper: nur is_limit als bool."""
+    st = _latest_jsonl_status(projects_dir, max_files, tail_kb)
+    return bool(st.get("is_limit"))
 
 
 def load_json(path, fallback):
@@ -1102,17 +1187,71 @@ class BuddyController:
             self._q.put(("pulse", "surprise"))
 
     def _notify_limit_reset(self):
-        """Zeigt eine Windows-Notification via Tray-Icon wenn das Claude-Limit
-        sich zurueckgesetzt hat. Nur wenn User es in Settings erlaubt hat."""
+        """Feuert die Limit-Reset-Karte (persistent, dismissible) + optional
+        Windows-Tray-Notification. Doppel-Feuer wird via
+        limit_reset_notified_for verhindert."""
         if not self.api.settings.get("notify_limit_reset", True):
             return
-        tray = getattr(self.api, "_tray", None)
-        if not tray or not tray.icon:
+        # Doppel-Schutz: fuer welche Reset-Zeit haben wir schon benachrichtigt?
+        reset_at = float(self.api.settings.get("limit_reset_at", 0) or 0)
+        notified_for = float(
+            self.api.settings.get("limit_reset_notified_for", 0) or 0)
+        if reset_at > 0 and abs(notified_for - reset_at) < 30:
             return
+        # Karte zeigen
         try:
-            tray.icon.notify(
-                "Dein Claude-Limit ist zurueck – weitermachen!",
-                "Clawd")
+            toast = getattr(self.api, "_reset_toast", None)
+            if toast is None:
+                toast = LimitResetToast()
+                self.api._reset_toast = toast
+            toast.show()
+        except Exception:
+            pass
+        # Zusaetzlich Tray-Notification als Bonus
+        tray = getattr(self.api, "_tray", None)
+        if tray and tray.icon:
+            try:
+                tray.icon.notify(
+                    "Dein Claude-Limit ist zurueck – weitermachen!",
+                    "Clawd")
+            except Exception:
+                pass
+        # Buddy kurz "surprise" spielen wenn er sichtbar ist
+        try:
+            if self.is_alive():
+                self._q.put(("pulse", "surprise"))
+        except Exception:
+            pass
+        # Marker speichern damit's nicht doppelt feuert
+        try:
+            if reset_at > 0:
+                self.api.settings["limit_reset_notified_for"] = reset_at
+            self.api.settings["limit_reset_at"] = 0
+            save_json(SETTINGS_FILE, self.api.settings)
+        except Exception:
+            pass
+
+    def _schedule_reset_timer(self, reset_at):
+        """Startet einen Timer-Thread der genau zur Reset-Zeit die Karte
+        feuert – unabhaengig davon ob gerade JSONL-Aktivitaet gepollt wird."""
+        try:
+            delay = max(0.0, float(reset_at) - time.time())
+        except (TypeError, ValueError):
+            return
+        # Cap auf 26h damit ein kaputter Parse nicht ewig einen Timer blockiert
+        if delay > 26 * 3600:
+            return
+        prev = getattr(self, "_reset_timer", None)
+        if prev is not None:
+            try:
+                prev.cancel()
+            except Exception:
+                pass
+        try:
+            t = threading.Timer(delay + 1.0, self._notify_limit_reset)
+            t.daemon = True
+            t.start()
+            self._reset_timer = t
         except Exception:
             pass
 
@@ -1494,6 +1633,7 @@ class BuddyController:
         # Chat-Erwaehnungen von „rate limit" false positive triggern.
         state["last_limit_check"] = 0.0
         state["is_limited"] = False
+        state["is_waiting"] = False
 
         def detect_state():
             now = time.time()
@@ -1512,10 +1652,26 @@ class BuddyController:
                 state["last_limit_check"] = now
                 try:
                     pdir = self.api._projects_dir()
-                    new_limited = _latest_jsonl_hits_limit(pdir)
+                    status = _latest_jsonl_status(pdir)
                 except Exception:
-                    new_limited = False
-                # Uebergang von limitiert -> frei: Notification wenn gewuenscht
+                    status = {"is_limit": False, "reset_at": 0.0,
+                              "waiting": False}
+                new_limited = bool(status.get("is_limit"))
+                state["is_waiting"] = bool(status.get("waiting"))
+                # Reset-Zeit ins Settings speichern damit Timer + Startup-
+                # Nachhol funktionieren
+                reset_at = float(status.get("reset_at") or 0.0)
+                if new_limited and reset_at > 0:
+                    try:
+                        prev = float(
+                            self.api.settings.get("limit_reset_at", 0) or 0)
+                        if abs(prev - reset_at) > 30:
+                            self.api.settings["limit_reset_at"] = reset_at
+                            save_json(SETTINGS_FILE, self.api.settings)
+                            self._schedule_reset_timer(reset_at)
+                    except Exception:
+                        pass
+                # Uebergang von limitiert -> frei: Karte + Notification
                 if state["is_limited"] and not new_limited:
                     try:
                         self._notify_limit_reset()
@@ -1528,6 +1684,10 @@ class BuddyController:
                 return "active"
             if age < 15:
                 return "thinking"
+            # "waiting" nur wenn Claude gerade fertig geworden ist (nicht
+            # Minuten spaeter – dann ist es effektiv "idle")
+            if state["is_waiting"] and age < 180:
+                return "waiting"
             if age < 90:
                 return "recent"
             if age < 600:
@@ -1730,6 +1890,208 @@ class BuddyController:
 
 
 # --------------------------------------------------------------------------- #
+#  Limit-Reset-Karte: schwebende Karte oben rechts, bleibt bis Klick weg
+# --------------------------------------------------------------------------- #
+class LimitResetToast:
+    """Zeigt eine Anthropic-Style-Karte oben rechts am Bildschirm die den User
+    darueber informiert dass sein Claude-Limit zurueckgesetzt wurde. Karte
+    bleibt sichtbar bis irgendwo drauf geklickt wird (nicht verpassbar).
+    Laeuft in eigenem Daemon-Thread mit eigenem tkinter-Root."""
+
+    # Anthropic-Palette (warmes Off-Cream + tiefes warmes Braun)
+    _BG_KEY = "#ff00fe"          # Chroma-Key fuer echte Rundungen
+    _CARD = "#f5f2eb"            # warmes Off-Cream (Anthropic-Papier)
+    _CARD_HOVER = "#efeadf"
+    _ACCENT = "#d97757"          # Claude-Orange
+    _ACCENT_SOFT = "#e8a889"     # heller Ring
+    _TITLE = "#1a1815"           # tiefes warmes Braun
+    _SUBTLE = "#6b6660"
+    _CLOSE = "#8a857f"
+    _CLOSE_HOVER = "#1a1815"
+
+    def __init__(self):
+        self._alive = False
+        self._t = None
+
+    def show(self, title="Dein Claude-Limit ist zurückgesetzt",
+             subtitle="Du kannst weitermachen"):
+        if self._alive:
+            return
+        self._alive = True
+        self._t = threading.Thread(
+            target=self._run, args=(title, subtitle), daemon=True)
+        self._t.start()
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:
+            pass
+
+    def _rounded_rect(self, cv, x1, y1, x2, y2, r, fill, outline=""):
+        """Zeichnet ein Rechteck mit runden Ecken auf einen Canvas."""
+        pts = [
+            x1 + r, y1,  x2 - r, y1,
+            x2, y1,  x2, y1 + r,
+            x2, y2 - r,  x2, y2,
+            x2 - r, y2,  x1 + r, y2,
+            x1, y2,  x1, y2 - r,
+            x1, y1 + r,  x1, y1,
+        ]
+        return cv.create_polygon(pts, smooth=True, fill=fill,
+                                 outline=outline)
+
+    def _run(self, title, subtitle):
+        try:
+            import tkinter as tk
+        except Exception:
+            self._alive = False
+            return
+        try:
+            root = tk.Tk()
+        except Exception:
+            self._alive = False
+            return
+
+        root.withdraw()
+        try:
+            root.title("Claude")
+        except Exception:
+            pass
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        try:
+            root.attributes("-transparentcolor", self._BG_KEY)
+        except Exception:
+            pass
+        try:
+            root.attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        root.configure(bg=self._BG_KEY)
+
+        # Card selbst ohne Schatten-Rand: Fenster = Card-Bounds
+        W, H = 300, 78
+        try:
+            sw = root.winfo_screenwidth()
+        except Exception:
+            sw = 1920
+        target_x = sw - W - 28
+        target_y = 40
+        start_x = sw + 20
+        root.geometry(f"{W}x{H}+{start_x}+{target_y}")
+
+        cv = tk.Canvas(root, width=W, height=H,
+                       bg=self._BG_KEY, highlightthickness=0, bd=0)
+        cv.pack(fill="both", expand=True)
+
+        state = {"closing": False, "hover": False,
+                 "card_id": None, "close_id": None,
+                 "close_bg_id": None, "title_id": None, "sub_id": None,
+                 "logo_ring": None, "logo_dot": None, "logo_star": None}
+
+        def _redraw(hover):
+            cv.delete("all")
+            card_fill = self._CARD_HOVER if hover else self._CARD
+            # Karte mit Rundungen
+            state["card_id"] = self._rounded_rect(
+                cv, 0, 0, W, H, 12, fill=card_fill)
+            # Kleiner cleaner Orange-Dot links (kein Text/Icon drin)
+            cx, cy = 24, H // 2
+            r_outer, r_inner = 9, 5
+            cv.create_oval(cx - r_outer, cy - r_outer,
+                           cx + r_outer, cy + r_outer,
+                           fill=self._ACCENT_SOFT, outline="")
+            cv.create_oval(cx - r_inner, cy - r_inner,
+                           cx + r_inner, cy + r_inner,
+                           fill=self._ACCENT, outline="")
+            # Text-Block
+            tx = 44
+            cv.create_text(
+                tx, 26, text=title, anchor="w",
+                font=("Segoe UI Semibold", 10), fill=self._TITLE)
+            cv.create_text(
+                tx, 48, text=subtitle, anchor="w",
+                font=("Segoe UI", 9), fill=self._SUBTLE)
+            # Close-Button oben rechts
+            close_col = self._CLOSE_HOVER if hover else self._CLOSE
+            cv.create_text(
+                W - 14, 12, text="✕", font=("Segoe UI", 9),
+                fill=close_col)
+
+        _redraw(False)
+
+        def _do_close(_e=None):
+            if state["closing"]:
+                return
+            state["closing"] = True
+
+            def fade(step=10):
+                if step <= 0:
+                    try:
+                        root.destroy()
+                    except Exception:
+                        pass
+                    return
+                try:
+                    root.attributes("-alpha", step / 10.0)
+                except Exception:
+                    pass
+                root.after(20, lambda: fade(step - 1))
+            fade(10)
+
+        def _hover_on(_e=None):
+            if state["closing"] or state["hover"]:
+                return
+            state["hover"] = True
+            _redraw(True)
+
+        def _hover_off(_e=None):
+            if state["closing"] or not state["hover"]:
+                return
+            state["hover"] = False
+            _redraw(False)
+
+        cv.bind("<Button-1>", _do_close)
+        cv.bind("<Enter>", _hover_on)
+        cv.bind("<Leave>", _hover_off)
+        try:
+            cv.configure(cursor="hand2")
+        except Exception:
+            pass
+
+        try:
+            root.deiconify()
+        except Exception:
+            pass
+
+        anim = {"step": 0, "steps": 14}
+
+        def slide():
+            if state["closing"]:
+                return
+            anim["step"] += 1
+            t = anim["step"] / anim["steps"]
+            e = 1 - (1 - t) ** 3
+            nx = int(start_x + (target_x - start_x) * e)
+            try:
+                root.geometry(f"{W}x{H}+{nx}+{target_y}")
+                root.attributes("-alpha", min(1.0, t * 1.15))
+            except Exception:
+                return
+            if anim["step"] < anim["steps"]:
+                root.after(16, slide)
+
+        root.after(16, slide)
+
+        try:
+            root.mainloop()
+        except Exception:
+            pass
+        finally:
+            self._alive = False
+
+
+# --------------------------------------------------------------------------- #
 #  System-Tray (X = App in Hintergrund)
 # --------------------------------------------------------------------------- #
 class TrayManager:
@@ -1831,6 +2193,41 @@ class Api:
         self._cache = None
         self._current_view = "sessions"
         self.buddy = BuddyController(self)
+        self._reset_toast = None
+        # Startup-Nachhol: Reset-Zeit in der Vergangenheit + noch nicht
+        # benachrichtigt → Karte jetzt nachtraeglich zeigen. Aussderdem
+        # zukuenftige Reset-Zeit als Timer registrieren.
+        try:
+            self._check_pending_limit_reset()
+        except Exception:
+            pass
+
+    def _check_pending_limit_reset(self):
+        reset_at = float(self.settings.get("limit_reset_at", 0) or 0)
+        if reset_at <= 0:
+            return
+        notified_for = float(
+            self.settings.get("limit_reset_notified_for", 0) or 0)
+        if abs(notified_for - reset_at) < 30:
+            return
+        now = time.time()
+        if reset_at <= now:
+            # Reset ist in der Vergangenheit, User war offline. Kurz
+            # verzoegert triggern damit UI erst hochkommt.
+            def _late_fire():
+                try:
+                    self.buddy._notify_limit_reset()
+                except Exception:
+                    pass
+            t = threading.Timer(3.0, _late_fire)
+            t.daemon = True
+            t.start()
+        else:
+            # Reset noch in Zukunft → Timer registrieren
+            try:
+                self.buddy._schedule_reset_timer(reset_at)
+            except Exception:
+                pass
 
     @staticmethod
     def _win():

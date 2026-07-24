@@ -1,7 +1,7 @@
 {
-  "version": "1.0.18",
-  "notes": "Zwei Fixes: (1) Buddy verschwindet direkt wenn du das Claude-CLI-Terminal schliesst – der '5 Min Aktivitaets-Nachwirken'-Fallback ist raus, ab jetzt nur Prozess/Fenster-Check. (2) Limit-Erkennung parst JSONL strukturell (checkt echte Fehler-Felder wie is_error/stop_reason/tool_use_error), Wort-Erwaehnungen von 'authentication_error' etc. im normalen Chat triggern nichts mehr. Sonst identisch zu v1.0.17.",
+  "version": "1.0.19",
+  "notes": "Zwei neue Features: (1) Buddy zeigt ab jetzt einen 'wartet-auf-dich'-Zustand ('done'-Animation) wenn Claude fertig geantwortet hat und du dran bist – strukturell aus der letzten JSONL-Zeile erkannt. (2) Wenn dein Claude-Limit sich zurueckgesetzt hat kriegst du eine schwebende Karte oben rechts am Bildschirm im Anthropic-Style, die bleibt bis du sie wegklickst (nicht mehr verpassbar). Die Karte kommt auch beim App-Start wenn du sie waehrend Offline-Zeit verpasst haettest, und ein Timer-Thread feuert sie genau zur geparsten Reset-Zeit. Zusaetzlich Fix: Limit-Erkennung schaut jetzt nur noch auf die letzte JSONL-Nachricht (Chat-Verlauf ueber Limits triggert nichts mehr) und erkennt auch 'hit' zusaetzlich zu 'reached'.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
-  "sha256": "ffef357340f674ea2ebab1ba1003c093006a538096d539c1456d133ce98dcd61"
+  "sha256": "b8bd90a289add55410088716cfff12b534aa57bf07e0f6e11d4eb48c43539b63"
 }
