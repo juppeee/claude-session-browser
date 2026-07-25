@@ -13,7 +13,7 @@
 ; ==========================================================================
 
 #define MyAppName "Claude Session Browser"
-#define MyAppVersion "1.1.7"
+#define MyAppVersion "1.1.8"
 #define MyAppPublisher "juppeee"
 #define MyAppURL "https://github.com/juppeee/claude-session-browser"
 #define MyAppExeName "ClaudeSessionBrowser.exe"
@@ -107,25 +107,86 @@ Filename: "{cmd}"; Parameters: "/c taskkill /F /IM {#MyAppExeName} /T"; \
 Type: filesandordirs; Name: "{app}\_internal"
 
 [Code]
-// Beim Silent-Install laufende Instanz sauber beenden bevor ueberschrieben
-// wird. CloseApplications=force macht das eigentlich schon, aber Sicherheit.
+var
+  InstallLog: String;
+
+procedure Log(Msg: String);
+var
+  LogFile: String;
+begin
+  LogFile := ExpandConstant('{tmp}\csb_installer_debug.log');
+  SaveStringToFile(LogFile, Msg + #13#10, True);
+end;
+
 function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
   LockFile: String;
+  I: Integer;
 begin
   Result := True;
+  InstallLog := ExpandConstant('{tmp}\csb_installer_debug.log');
+  SaveStringToFile(InstallLog, '=== CSB Installer Start ===' + #13#10, False);
+
   if WizardSilent then
   begin
-    // Alte Instanz killen
-    Exec(ExpandConstant('{cmd}'),
-         '/c taskkill /F /IM ' + '{#MyAppExeName}' + ' /T',
-         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // 3s warten bis Mutex + Lock freigegeben
-    Sleep(3000);
-    // Stale Lock-File loeschen falls vorhanden (Single-Instance-Guard)
+    Log('Silent-Mode erkannt');
+
+    // Mehrfach versuchen alle CSB-Prozesse zu killen
+    for I := 1 to 3 do
+    begin
+      Log('Kill-Versuch ' + IntToStr(I));
+      Exec(ExpandConstant('{cmd}'),
+           '/c taskkill /F /IM ClaudeSessionBrowser.exe /T 2>nul',
+           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Sleep(1000);
+    end;
+
+    // 5s warten bis alles freigegeben
+    Log('Warte 5s...');
+    Sleep(5000);
+
+    // Lock-File loeschen
     LockFile := ExpandConstant('{localappdata}\ClaudeSessionBrowser.instance.lock');
     if FileExists(LockFile) then
+    begin
+      Log('Loesche Lock-File: ' + LockFile);
       DeleteFile(LockFile);
+    end;
+
+    Log('InitializeSetup fertig');
   end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    Log('PostInstall - App-Pfad: ' + ExpandConstant('{app}'));
+    Log('PostInstall fertig');
+  end;
+end;
+
+procedure DeinitializeSetup();
+var
+  AppPath: String;
+  ResultCode: Integer;
+begin
+  Log('DeinitializeSetup - Finaler Start der App');
+
+  // Sicherheits-Start: Falls [Run] nicht funktioniert hat
+  if WizardSilent then
+  begin
+    AppPath := ExpandConstant('{app}\{#MyAppExeName}');
+    Log('Starte App: ' + AppPath);
+    if FileExists(AppPath) then
+    begin
+      Exec(AppPath, '', '', SW_SHOW, ewNoWait, ResultCode);
+      Log('App gestartet, ResultCode: ' + IntToStr(ResultCode));
+    end
+    else
+      Log('FEHLER: App nicht gefunden: ' + AppPath);
+  end;
+
+  Log('=== Installer Ende ===');
 end;

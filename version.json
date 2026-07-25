@@ -1,9 +1,9 @@
-{
-  "version": "1.1.7",
-  "notes": "Fix Auto-Update: Batch vereinfacht - Installer startet App selbst (postinstall), Batch macht nur noch Warten+Cleanup. Plus: Bessere Buddy State-Detection (Limit rueckwaerts scannen, Allow nur bei echtem Pending-Tool, State-Stabilisierung, getrennte Tick/Frame-Rate).",
+﻿{
+  "version": "1.1.8",
+  "notes": "Robusterer Installer: 3x Kill-Retry, 5s Wartezeit, Debug-Log in TEMP, Backup-Start in DeinitializeSetup falls Run-Section nicht greift.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "c48a07d69b10768a7f3b1b2e286bf10687f8436326a3439a41e549014ed56e0e",
-  "sha256": "4a66f835d6425ecc15d735e5bfc7065892452ae91a563be490cfdd910c5034ae"
+  "installer_sha256": "552b0ccb6194ceeb748af099cc3898d8cecb9feddfc6730fd2e006cad172c4e5",
+  "sha256": "35bd926389a8b0d932a6b2911a7421bea5e569c616ce113ce904e4ec0f76383d"
 }
