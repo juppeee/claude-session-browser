@@ -14,12 +14,12 @@ set SETUPTOOLS_USE_DISTUTILS=stdlib
 set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 
 echo.
-echo [1/3] Alte Builds loeschen...
+echo [1/4] Alte Builds loeschen...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
 echo.
-echo [2/3] PyInstaller: onedir-Build...
+echo [2/4] PyInstaller: onedir-Build (fuer Installer)...
 pyinstaller ^
   --onedir ^
   --noconsole ^
@@ -33,15 +33,36 @@ pyinstaller ^
 if errorlevel 1 goto :error
 
 echo.
-echo [3/3] Inno Setup: Installer bauen...
+echo [3/4] Inno Setup: Installer bauen...
 %ISCC% setup.iss
 if errorlevel 1 goto :error
 
 echo.
+echo [4/4] PyInstaller: Onefile-Fallback (fuer alte v1.0.x-Auto-Updater)...
+REM Zweiter Build als Onefile - alte Versionen die noch keinen installer_url
+REM kennen laden diesen via exe_url wie eine normale App-EXE. Diese Version
+REM checkt beim Start ob eine echte Installation da ist und delegiert sonst
+REM an den Installer.
+pyinstaller ^
+  --onefile ^
+  --noconsole ^
+  --clean ^
+  --name ClaudeSessionBrowser-Onefile ^
+  --icon claude_sessions.ico ^
+  --add-data "claude_sessions.ico;." ^
+  --hidden-import pystray ^
+  --hidden-import PIL ^
+  claude_sessions.py
+if errorlevel 1 goto :error
+REM Zum Ausliefern umbenennen (exe_url zeigt in alten Versionen auf diesen Namen)
+if exist dist\ClaudeSessionBrowser.exe del /f /q dist\ClaudeSessionBrowser.exe
+move /y dist\ClaudeSessionBrowser-Onefile.exe dist\ClaudeSessionBrowser.exe
+
+echo.
 echo ==============================================
 echo Fertig!
-echo   Onedir:    dist\ClaudeSessionBrowser\
-echo   Installer: dist\ClaudeSessionBrowser-Setup.exe
+echo   Installer:        dist\ClaudeSessionBrowser-Setup.exe  (neuer Weg)
+echo   Onefile-Fallback: dist\ClaudeSessionBrowser.exe        (fuer alte v1.0.x)
 echo ==============================================
 pause
 exit /b 0

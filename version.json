@@ -1,9 +1,9 @@
 {
-  "version": "1.1.1",
-  "notes": "Kleiner Feature+Fix-Release. Neu: (1) alle 15 Buddy-Sprites komplett ueberarbeitet - neue Grafiken, teils andere Frame-Counts, kompakter (BLOB von 5300 auf 3800 Zeichen). (2) Der Buddy unterscheidet jetzt zwischen Claude Code CLI (loest ihn aus) und Anthropic Claude Desktop-App (wird ignoriert) - falls du beide installiert hast triggert er nur noch auf den CLI. (3) Single-Instance-Guard: wenn die App in den Tray minimiert ist und du sie ueber Desktop-/Startmenue-Shortcut wieder aufrufst, wird die bestehende Instanz nach vorne geholt statt einer zweiten daneben zu starten. Sonst identisch zu v1.1.0.",
+  "version": "1.1.2",
+  "notes": "Fixes fuer den Buddy: (1) Debounce 1.5s vor Anim-Wechsel - der Buddy tauscht nicht mehr staendig zwischen den Animationen durch (active/thinking/waiting flackerten frueher waehrend Claude schrieb). Priority-Anims wie allow, limit und surprise schalten weiterhin sofort. (2) Frame-Rate langsamer: 180ms/Frame statt 120ms (~5.5 fps statt 8). Deine kuerzeren Sprites laufen jetzt in gesundem Tempo statt wie im Zeitraffer. Ausserdem: fuer alte v1.0.7-v1.0.18-Nutzer gibts ab jetzt einen Onefile-Fallback als exe_url damit deren Auto-Updater funktioniert - v1.1.2+ nutzen weiter den sauberen Installer via installer_url.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
-  "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
+  "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "b0fae3bbc5f916e03c83707b489919e0e16671ef2907b434bea436d37cc15317",
-  "sha256": "b0fae3bbc5f916e03c83707b489919e0e16671ef2907b434bea436d37cc15317"
+  "installer_sha256": "f4aa8828a2707800f427848f909740886f59d1a116531e4df7276b1ad508c847",
+  "sha256": "dc0342cb44c68711c66cc2a6d93623229918039b03f5172917fd56d74387c7a6"
 }

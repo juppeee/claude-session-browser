@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -1220,7 +1220,8 @@ class BuddyController:
     die Animation abhaengig von der Aktivitaet in ~/.claude/projects/*."""
 
     _TRANSPARENT = "magenta"        # Chroma-Key (unwahrscheinlich in Sprites)
-    _FRAME_MS = 120                 # ~8 fps – reicht fuer 8-24 Frame-Anims, spart CPU
+    _FRAME_MS = 180                 # ~5.5 fps – ruhig genug fuer Sprites mit wenigen Frames
+    _STATE_DEBOUNCE_S = 1.5         # min. Standzeit bevor Buddy in andere Anim wechselt
     _POLL_MS = 300                  # Zustands-/Fokus-Check-Rate
     _MTIME_CACHE_S = 2.0            # nur alle 2s Dateisystem abfragen
     _FG_CHECK_EVERY = 3             # foreground-title nur alle N ticks (~360 ms)
@@ -1987,9 +1988,34 @@ class BuddyController:
             apply_visibility()
             step_fade()
             chosen = choose_anim()
+            # Debounce: nicht bei jedem 300ms-Tick zwischen Anims flackern.
+            # Neue Ziel-Anim muss _STATE_DEBOUNCE_S lang stabil gewuenscht sein
+            # bevor gewechselt wird. Ausnahmen (sofort schalten): high-priority
+            # Signale wie allow/limit/surprise/wink/preview - der User soll sie
+            # ohne Verzoegerung sehen.
+            _priority = {"limit", "allow", "expression surprise",
+                         "expression wink"}
+            now = time.time()
             if chosen != state["anim"]:
-                state["anim"] = chosen
-                state["frame"] = 0
+                if chosen in _priority or state.get("preview_until", 0) > now:
+                    state["anim"] = chosen
+                    state["frame"] = 0
+                    state["pending_anim"] = None
+                    state["pending_since"] = 0.0
+                else:
+                    if state.get("pending_anim") != chosen:
+                        state["pending_anim"] = chosen
+                        state["pending_since"] = now
+                    elif now - state["pending_since"] >= self._STATE_DEBOUNCE_S:
+                        state["anim"] = chosen
+                        state["frame"] = 0
+                        state["pending_anim"] = None
+                        state["pending_since"] = 0.0
+            else:
+                # Ziel-Anim = aktuelle Anim -> pending zuruecksetzen
+                if state.get("pending_anim") is not None:
+                    state["pending_anim"] = None
+                    state["pending_since"] = 0.0
             if state["current_alpha"] > 0.01:
                 render_frame()
             # Place-Mode: Rahmen pulsieren fuer bessere Sichtbarkeit
