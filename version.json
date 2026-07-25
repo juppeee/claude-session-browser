@@ -1,9 +1,9 @@
 {
-  "version": "1.1.6",
-  "notes": "Bessere Buddy State-Detection (nach Codex-Analyse): Limit rueckwaerts scannen, Allow nur bei echtem Pending-Tool, State-Stabilisierung (coding bleibt stabil), getrennte Tick/Frame-Rate. Fix: 'Transcript saving is off' beim Session-Einsteigen - jetzt wird CLAUDE_CODE_FORCE_SESSION_PERSIST gesetzt.",
+  "version": "1.1.7",
+  "notes": "Fix Auto-Update: Batch vereinfacht - Installer startet App selbst (postinstall), Batch macht nur noch Warten+Cleanup. Plus: Bessere Buddy State-Detection (Limit rueckwaerts scannen, Allow nur bei echtem Pending-Tool, State-Stabilisierung, getrennte Tick/Frame-Rate).",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "3dd13d374da2b1e6421c35c88218c8e91c461838f4298be74547cc93f51bbf81",
-  "sha256": "8f1ee3587ce877c628e7ef86d0d71bef912ae5ac63c4c40040642554c5e0e109"
+  "installer_sha256": "c48a07d69b10768a7f3b1b2e286bf10687f8436326a3439a41e549014ed56e0e",
+  "sha256": "4a66f835d6425ecc15d735e5bfc7065892452ae91a563be490cfdd910c5034ae"
 }

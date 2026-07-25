@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.1.6"
+VERSION = "1.1.7"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -3134,49 +3134,25 @@ class Api:
             app_id = "{A2E1C4F8-9B3D-4E5A-8F2B-7C6D5A4E3F21}"
             reg_key = ("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\"
                        "Uninstall\\" + app_id + "_is1")
+            # Vereinfachter Batch: Installer startet die App selbst (postinstall),
+            # der Batch muss das nicht nochmal tun. Weniger kann schiefgehen.
             with open(bat, "w", encoding="utf-8") as f:
                 f.write(
                     "@echo off\r\n"
                     'set "SETUP=' + setup + '"\r\n'
-                    'set "FALLBACK=' + fallback_runner + '"\r\n'
                     'set "FAIL=' + marker + '"\r\n'
                     'set "LOG=' + log + '"\r\n'
                     'set "LOCK=' + lock_file + '"\r\n'
                     'if exist "%FAIL%" del "%FAIL%"\r\n'
-                    '> "%LOG%" echo [%%date%% %%time%%] csb update batch start\r\n'
-                    "rem Warten bis alte Instanz + Mutex + Lock freigegeben sind\r\n"
+                    'echo %date% %time% csb update batch start > "%LOG%"\r\n'
+                    "rem 5s warten bis alte Instanz + Mutex + Lock freigegeben\r\n"
                     "ping -n 6 127.0.0.1 >nul\r\n"
-                    "rem Lock-File explizit killen falls die alte Instanz\r\n"
-                    "rem crashed war und ihn nicht aufraeumen konnte\r\n"
                     'if exist "%LOCK%" del /f /q "%LOCK%" 2>nul\r\n'
-                    '>> "%LOG%" echo Installer starten: %%SETUP%%\r\n'
-                    "rem Installer im Silent-Mode ausfuehren\r\n"
+                    'echo %date% %time% Installer starten >> "%LOG%"\r\n'
+                    "rem Installer im Silent-Mode - startet App selbst danach\r\n"
                     '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL\r\n'
-                    "set INST_RC=%errorlevel%\r\n"
-                    '>> "%LOG%" echo Installer exit code: %%INST_RC%%\r\n'
-                    "if not %INST_RC%==0 (\r\n"
-                    '  echo installer exit %%INST_RC%% > "%FAIL%"\r\n'
-                    "  goto cleanup\r\n"
-                    ")\r\n"
-                    "rem Install-Pfad aus Registry lesen (Custom-Dir-Support)\r\n"
-                    "set NEW=\r\n"
-                    'for /f "tokens=2,*" %%a in (\'reg query "' + reg_key + '" '
-                    '/v "InstallLocation" 2^>nul ^| find "InstallLocation"\') do '
-                    'set "NEW=%%b\\ClaudeSessionBrowser.exe"\r\n'
-                    'if not defined NEW set "NEW=%FALLBACK%"\r\n'
-                    '>> "%LOG%" echo Runner-Pfad: %%NEW%%\r\n'
-                    "rem Nochmal warten bis Inno-Files freigegeben sind\r\n"
-                    "ping -n 3 127.0.0.1 >nul\r\n"
-                    'if exist "%LOCK%" del /f /q "%LOCK%" 2>nul\r\n'
-                    'if exist "%NEW%" (\r\n'
-                    '  >> "%LOG%" echo Starte Runner...\r\n'
-                    '  start "" "%NEW%"\r\n'
-                    ") else (\r\n"
-                    '  echo runner missing at %NEW% > "%FAIL%"\r\n'
-                    '  >> "%LOG%" echo FEHLER: Runner nicht gefunden\r\n'
-                    ")\r\n"
-                    ":cleanup\r\n"
-                    '>> "%LOG%" echo Cleanup...\r\n'
+                    'echo %date% %time% Installer beendet mit code %errorlevel% >> "%LOG%"\r\n'
+                    "rem Cleanup\r\n"
                     'del "%SETUP%" >nul 2>&1\r\n'
                     'del "%~f0"\r\n'
                 )
