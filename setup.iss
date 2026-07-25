@@ -13,7 +13,7 @@
 ; ==========================================================================
 
 #define MyAppName "Claude Session Browser"
-#define MyAppVersion "1.1.9"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "juppeee"
 #define MyAppURL "https://github.com/juppeee/claude-session-browser"
 #define MyAppExeName "ClaudeSessionBrowser.exe"
@@ -74,6 +74,8 @@ Name: "startupicon"; Description: "Beim Windows-Start automatisch mitstarten"; G
 ; Kompletter onedir-Output. Der Runner selbst + alle DLLs + _internal-Ordner.
 Source: "dist\ClaudeSessionBrowser\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\ClaudeSessionBrowser\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Separater Updater (wie Chrome/VS Code)
+Source: "dist\csb_updater.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

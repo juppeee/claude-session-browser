@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.1.9"
+VERSION = "1.2.0"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -3105,71 +3105,46 @@ class Api:
                 except OSError: pass
             os.replace(part, setup)
 
-            # Fallback-Pfad falls Registry-Lookup nichts liefert
+            # Updater-Pfad: neben der aktuellen exe oder im Install-Ordner
             lad = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-            fallback_runner = os.path.join(
-                lad, "Programs", "ClaudeSessionBrowser",
-                "ClaudeSessionBrowser.exe")
+            install_dir = os.path.join(lad, "Programs", "ClaudeSessionBrowser")
 
-            # Batch fuer Silent-Install + Relaunch. Wichtige Details:
-            # - Wartet 5s (nicht 2s) bis alte Instanz + Mutex/Lock sauber freigegeben sind
-            # - Liest Install-Pfad aus Registry (funktioniert auch wenn User einen
-            #   Custom-Pfad im Wizard gewaehlt hat) mit Fallback auf Standard-Ort
-            # - Loescht Lock-File explizit (Single-Instance-Guard koennte sonst
-            #   den frischen Runner blockieren wenn die alte Instanz nicht sauber
-            #   die Lock aufgeraeumt hat)
-            # - Startet ueber "start" statt "explorer.exe" (zuverlaessiger)
-            # - Log-Datei fuer Diagnose falls's schief geht
-            bat = os.path.join(tempfile.gettempdir(), "csb_installer.bat")
-            marker = os.path.join(tempfile.gettempdir(),
-                                  "csb_update_failed.marker")
-            log = os.path.join(tempfile.gettempdir(), "csb_update.log")
-            lock_file = os.path.join(lad, "ClaudeSessionBrowser.instance.lock")
-            app_id = "{A2E1C4F8-9B3D-4E5A-8F2B-7C6D5A4E3F21}"
-            reg_key = ("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\"
-                       "Uninstall\\" + app_id + "_is1")
-            # Batch startet Installer UND danach die App explizit.
-            # Sich auf den Installer zu verlassen hat nicht funktioniert.
-            with open(bat, "w", encoding="utf-8") as f:
-                f.write(
-                    "@echo off\r\n"
-                    'set "SETUP=' + setup + '"\r\n'
-                    'set "FALLBACK=' + fallback_runner + '"\r\n'
-                    'set "LOG=' + log + '"\r\n'
-                    'set "LOCK=' + lock_file + '"\r\n'
-                    'set "REGKEY=' + reg_key + '"\r\n'
-                    'echo %date% %time% batch start > "%LOG%"\r\n'
-                    "ping -n 6 127.0.0.1 >nul\r\n"
-                    'if exist "%LOCK%" del /f /q "%LOCK%" 2>nul\r\n'
-                    'echo %date% %time% installer starten >> "%LOG%"\r\n'
-                    '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL\r\n'
-                    'echo %date% %time% installer exit %errorlevel% >> "%LOG%"\r\n'
-                    "ping -n 3 127.0.0.1 >nul\r\n"
-                    'echo %date% %time% app starten >> "%LOG%"\r\n'
-                    "rem App-Pfad aus Registry lesen, Fallback auf Standard\r\n"
-                    'for /f "tokens=2*" %%a in (\'reg query "%REGKEY%" /v InstallLocation 2^>nul ^| find "InstallLocation"\') do set "APPDIR=%%b"\r\n'
-                    'if defined APPDIR (\r\n'
-                    '  set "APP=%APPDIR%ClaudeSessionBrowser.exe"\r\n'
-                    ') else (\r\n'
-                    '  set "APP=%FALLBACK%"\r\n'
-                    ')\r\n'
-                    'echo %date% %time% starte %APP% >> "%LOG%"\r\n'
-                    'if exist "%APP%" (\r\n'
-                    '  start "" "%APP%"\r\n'
-                    '  echo %date% %time% gestartet >> "%LOG%"\r\n'
-                    ') else (\r\n'
-                    '  echo %date% %time% APP NICHT GEFUNDEN >> "%LOG%"\r\n'
-                    ')\r\n'
-                    'del "%SETUP%" >nul 2>&1\r\n'
-                    'del "%~f0"\r\n'
-                )
+            # Updater suchen: erst neben aktueller exe, dann im Install-Ordner
+            updater = None
+            if getattr(sys, "frozen", False):
+                updater = os.path.join(os.path.dirname(sys.executable),
+                                       "csb_updater.exe")
+            if not updater or not os.path.exists(updater):
+                updater = os.path.join(install_dir, "csb_updater.exe")
 
             js("window.downloadDone&&downloadDone()")
-            time.sleep(2.6)
-            NOWIN = 0x08000000 | 0x00000200
-            subprocess.Popen(["cmd", "/c", bat], creationflags=NOWIN)
-            if win:
-                win.destroy()  # entsperrt eventuell die alte .exe
+
+            if os.path.exists(updater):
+                # Neuer Weg: Updater starten, der macht alles
+                time.sleep(0.5)
+                DETACHED = 0x00000008 | 0x00000200
+                subprocess.Popen([updater, "--install", setup],
+                                 creationflags=DETACHED, close_fds=True)
+                time.sleep(0.5)
+                if win:
+                    win.destroy()
+            else:
+                # Fallback: Batch (fuer alte Installationen ohne Updater)
+                bat = os.path.join(tempfile.gettempdir(), "csb_installer.bat")
+                with open(bat, "w", encoding="utf-8") as f:
+                    f.write(
+                        "@echo off\r\n"
+                        'set "SETUP=' + setup + '"\r\n'
+                        "ping -n 6 127.0.0.1 >nul\r\n"
+                        '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL\r\n'
+                        'del "%SETUP%" >nul 2>&1\r\n'
+                        'del "%~f0"\r\n'
+                    )
+                time.sleep(2.6)
+                NOWIN = 0x08000000 | 0x00000200
+                subprocess.Popen(["cmd", "/c", bat], creationflags=NOWIN)
+                if win:
+                    win.destroy()
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
