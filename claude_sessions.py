@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.1.5"
+VERSION = "1.1.6"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -243,17 +243,26 @@ def _parse_reset_epoch(text):
     return 0.0
 
 
-def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=6):
+def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
     """Liest die neuesten Zeilen der zuletzt geaenderten .jsonl-Datei und
-    liefert einen Status-Dict zurueck:
-      {"is_limit": bool, "reset_at": float, "waiting": bool}
-    - is_limit: letzte Zeile ist echter Limit-/Auth-Fehler
-    - reset_at: parsed Reset-Zeit (0 wenn unbekannt oder kein Limit)
-    - waiting: letzte Zeile ist assistant end_turn → Claude wartet auf User
-    Wird nur aufgerufen wenn ohnehin frische Aktivitaet erkannt wurde."""
-    empty = {"is_limit": False, "reset_at": 0.0, "waiting": False,
-             "awaiting_approval": False, "last_block_type": None,
-             "last_tool_name": None}
+    liefert einen detaillierten Status-Dict zurueck.
+
+    Verbesserte Logik nach Codex-Analyse:
+    - Limit-Detection: rueckwaerts scannen, nicht nur letzte Zeile
+    - Allow-Detection: nur wenn tool_use OHNE folgendes tool_result
+    - Interne States fuer stabilere Animation-Zuordnung
+    """
+    empty = {
+        "internal_state": "no_session",  # Neuer interner State
+        "is_limit": False,
+        "limit_type": None,  # "rate_limited" | "auth_required" | "api_overloaded"
+        "reset_at": 0.0,
+        "waiting": False,
+        "awaiting_approval": False,
+        "last_block_type": None,
+        "last_tool_name": None,
+        "has_pending_tool": False,
+    }
     if not projects_dir or not os.path.isdir(projects_dir):
         return empty
     newest_path = None
@@ -284,172 +293,228 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=6):
         pass
     if not newest_path:
         return empty
-    # Session-JSONL zeilenweise parsen und STRUKTURELL nach echten Fehler-
-    # Markern suchen. Reine Text-Erwaehnungen von "authentication_error" o.ae.
-    # in normalen Chat-Nachrichten sollen nicht triggern – nur Fehler die
-    # tatsaechlich Feld-basiert markiert sind.
+
     try:
         with open(newest_path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
-            # Wir brauchen ganze Zeilen – ggf. bis Zeilenanfang zurueck-suchen.
             start = max(0, size - tail_kb * 1024)
             fh.seek(start)
             if start > 0:
-                fh.readline()  # unvollstaendige erste Zeile ueberspringen
+                fh.readline()
             chunk = fh.read()
         text = chunk.decode("utf-8", errors="replace")
     except OSError:
         return empty
 
-    def _line_is_real_error(obj):
-        """True nur wenn diese JSONL-Zeile STRUKTURELL einen echten Fehler
-        signalisiert – nicht wenn 'error' bloss als Text darin steht."""
+    def _classify_error(obj, line_text):
+        """Klassifiziert einen Fehler in: rate_limited, auth_required, api_overloaded, oder None."""
         if not isinstance(obj, dict):
-            return False
-        # 1) top-level: {"type":"error", ...} oder isError im Aussenrahmen
+            return None
+        # Strukturelle Fehler-Marker pruefen
         typ = obj.get("type")
-        if typ in ("error", "tool_use_error", "system_error"):
-            return True
-        if obj.get("isError") is True or obj.get("is_error") is True:
-            return True
-        # 2) message.stop_reason zeigt Fehler an
+        is_struct_error = typ in ("error", "tool_use_error", "system_error")
+        is_struct_error = is_struct_error or obj.get("isError") is True
+        is_struct_error = is_struct_error or obj.get("is_error") is True
+        is_struct_error = is_struct_error or obj.get("isApiError") is True
         msg = obj.get("message")
         if isinstance(msg, dict):
             sr = msg.get("stop_reason")
-            if sr in ("error", "rate_limited", "overloaded",
-                      "authentication_error"):
-                return True
-            # 3) content-Items mit is_error / tool_use_error
+            if sr in ("error", "rate_limited", "overloaded", "authentication_error"):
+                is_struct_error = True
             content = msg.get("content")
             if isinstance(content, list):
                 for it in content:
-                    if not isinstance(it, dict):
-                        continue
-                    if it.get("is_error") is True or it.get("isError") is True:
-                        return True
-                    if it.get("type") in ("tool_use_error", "error"):
-                        return True
-        # 4) top-level "error"-Objekt vorhanden
+                    if isinstance(it, dict):
+                        if it.get("is_error") or it.get("isError"):
+                            is_struct_error = True
+                        if it.get("type") in ("tool_use_error", "error"):
+                            is_struct_error = True
         err = obj.get("error")
         if isinstance(err, dict) and err.get("type"):
-            return True
-        return False
+            is_struct_error = True
+        if not is_struct_error:
+            return None
+        # Jetzt klassifizieren basierend auf Text-Patterns
+        lt = line_text.lower()
+        if "authentication" in lt or "auth" in lt and "error" in lt:
+            return "auth_required"
+        if obj.get("apiErrorType") == "overloaded" or "overloaded" in lt:
+            return "api_overloaded"
+        if _LIMIT_PATTERNS.search(line_text):
+            return "rate_limited"
+        if "rate" in lt and "limit" in lt:
+            return "rate_limited"
+        # Generischer API-Error
+        if obj.get("isApiError"):
+            return "api_overloaded"
+        return None
 
-    # Nur die LETZTE gueltige JSONL-Zeile (juengste Nachricht) betrachten.
-    last_obj = None
-    last_line = None
+    # Alle Zeilen parsen
+    parsed_lines = []
+    raw_lines = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             obj = json.loads(line)
+            parsed_lines.append(obj)
+            raw_lines.append(line)
         except (ValueError, TypeError):
             continue
-        last_obj = obj
-        last_line = line
-    if last_obj is None or last_line is None:
+
+    if not parsed_lines:
         return empty
 
+    # LIMIT-DETECTION: Rueckwaerts die letzten 20 Zeilen nach Fehlern scannen
+    # Nicht nur die letzte Zeile! Limit kann von spaeterem tool_result ueberdeckt sein.
     is_limit = False
+    limit_type = None
     reset_at = 0.0
-    if _line_is_real_error(last_obj) and _LIMIT_PATTERNS.search(last_line):
-        is_limit = True
-        reset_at = _parse_reset_epoch(last_line)
-
-    # "Waiting for user": letzte Zeile ist eine Assistant-Message die
-    # regulaer beendet ist (end_turn / stop_sequence) und kein pending
-    # tool_use hat -> Claude ist fertig, wartet auf dich.
-    # "Awaiting approval": letzte Zeile ist assistant mit stop_reason=tool_use
-    # (oder Content enthaelt tool_use) -> Claude will was tun und braucht
-    # deine Erlaubnis (Y/N-Prompt in der CLI).
-    # Alle Zeilen in umgekehrter Reihenfolge parsen um "letzte Assistant-Zeile"
-    # zu finden - denn oft ist die eigentlich letzte Zeile ein user-tool_result.
-    parsed_lines = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        parsed_lines.append(obj)
-
-    waiting = False
-    awaiting_approval = False
-    last_block_type = None
-    last_tool_name = None
-    if not is_limit:
-        # Letzte Zeile ist ggf. eine Claude-Code-Interna-Zeile (queue-operation
-        # etc.). Rueckwaerts zur letzten echten user/assistant-Zeile.
-        real_last = None
-        for cand in reversed(parsed_lines):
-            if isinstance(cand, dict) and cand.get("type") in ("user", "assistant"):
-                real_last = cand
-                break
-        if real_last is None:
-            real_last = last_obj  # Fallback
-        last_obj = real_last
-        top_type = last_obj.get("type") if isinstance(last_obj, dict) else None
-        # Wenn letzte Zeile ein user-tool_result ist -> Claude verarbeitet
-        # gerade das Ergebnis, gilt als active/tool_use.
-        if top_type == "user":
-            msg = last_obj.get("message") if isinstance(last_obj, dict) else None
-            has_tool_result = False
-            if isinstance(msg, dict):
-                content = msg.get("content")
-                if isinstance(content, list):
-                    for it in content:
-                        if isinstance(it, dict) and it.get("type") == "tool_result":
-                            has_tool_result = True
-                            break
-            if last_obj.get("toolUseResult") is not None or has_tool_result:
-                # Claude bekommt gerade Tool-Ergebnis zurueck und verarbeitet es
-                last_block_type = "tool_use"
-                # Tool-Name aus vorheriger Assistant-Zeile ziehen
-                for prev in reversed(parsed_lines[:-1]):
-                    if not isinstance(prev, dict):
-                        continue
-                    if prev.get("type") != "assistant":
-                        continue
-                    pmsg = prev.get("message") or {}
-                    pc = pmsg.get("content") if isinstance(pmsg, dict) else None
-                    if isinstance(pc, list):
-                        for it in reversed(pc):
-                            if isinstance(it, dict) and it.get("type") == "tool_use":
-                                last_tool_name = str(it.get("name") or "")
-                                break
-                    break
-            else:
-                # Regulaerer User-Prompt gerade abgeschickt - Claude denkt
-                last_block_type = "thinking"
-        elif top_type == "assistant":
-            msg = last_obj.get("message") if isinstance(last_obj, dict) else None
+    for i in range(len(parsed_lines) - 1, max(-1, len(parsed_lines) - 20), -1):
+        obj = parsed_lines[i]
+        line_text = raw_lines[i]
+        err_type = _classify_error(obj, line_text)
+        if err_type:
+            is_limit = True
+            limit_type = err_type
+            reset_at = _parse_reset_epoch(line_text)
+            break
+        # Wenn wir eine erfolgreiche assistant-Nachricht finden, Limit aufheben
+        if isinstance(obj, dict) and obj.get("type") == "assistant":
+            msg = obj.get("message")
             if isinstance(msg, dict):
                 sr = msg.get("stop_reason")
-                has_tool_use = False
-                content = msg.get("content")
-                if isinstance(content, list):
-                    for it in content:
-                        if isinstance(it, dict) and it.get("type") == "tool_use":
-                            has_tool_use = True
-                    if content:
-                        last = content[-1] if isinstance(content[-1], dict) else None
-                        if last:
-                            last_block_type = last.get("type")
-                            if last_block_type == "tool_use":
-                                last_tool_name = str(last.get("name") or "")
-                if sr == "tool_use" or has_tool_use:
-                    awaiting_approval = True
-                elif sr in ("end_turn", "stop_sequence", None):
-                    waiting = True
+                if sr in ("end_turn", "stop_sequence", "tool_use"):
+                    # Erfolgreiche Antwort - kein Limit
+                    break
 
-    return {"is_limit": is_limit, "reset_at": reset_at,
-            "waiting": waiting, "awaiting_approval": awaiting_approval,
-            "last_block_type": last_block_type,
-            "last_tool_name": last_tool_name}
+    result = {
+        "internal_state": "unknown_active",
+        "is_limit": is_limit,
+        "limit_type": limit_type,
+        "reset_at": reset_at,
+        "waiting": False,
+        "awaiting_approval": False,
+        "last_block_type": None,
+        "last_tool_name": None,
+        "has_pending_tool": False,
+    }
+
+    if is_limit:
+        result["internal_state"] = limit_type or "rate_limited"
+        return result
+
+    # Letzte echte user/assistant-Zeile finden (nicht interne queue-ops)
+    real_last = None
+    real_last_idx = -1
+    for i in range(len(parsed_lines) - 1, -1, -1):
+        cand = parsed_lines[i]
+        if isinstance(cand, dict) and cand.get("type") in ("user", "assistant"):
+            real_last = cand
+            real_last_idx = i
+            break
+
+    if real_last is None:
+        return result
+
+    top_type = real_last.get("type")
+
+    # ALLOW-DETECTION verbessert: Nur wenn tool_use OHNE folgendes tool_result
+    # Schauen ob nach der letzten assistant-Zeile ein tool_result kam
+    def _has_tool_result_after(assistant_idx):
+        """Prueft ob nach assistant_idx ein tool_result kam."""
+        for j in range(assistant_idx + 1, len(parsed_lines)):
+            obj = parsed_lines[j]
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("type") == "user":
+                msg = obj.get("message")
+                if obj.get("toolUseResult") is not None:
+                    return True
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for it in content:
+                            if isinstance(it, dict) and it.get("type") == "tool_result":
+                                return True
+        return False
+
+    if top_type == "user":
+        msg = real_last.get("message") if isinstance(real_last, dict) else None
+        has_tool_result = False
+        if isinstance(msg, dict):
+            content = msg.get("content")
+            if isinstance(content, list):
+                for it in content:
+                    if isinstance(it, dict) and it.get("type") == "tool_result":
+                        has_tool_result = True
+                        break
+        if real_last.get("toolUseResult") is not None or has_tool_result:
+            # Claude verarbeitet Tool-Ergebnis
+            result["last_block_type"] = "tool_use"
+            result["internal_state"] = "processing_tool_result"
+            # Tool-Name aus vorheriger Assistant-Zeile
+            for prev in reversed(parsed_lines[:real_last_idx]):
+                if not isinstance(prev, dict) or prev.get("type") != "assistant":
+                    continue
+                pmsg = prev.get("message") or {}
+                pc = pmsg.get("content") if isinstance(pmsg, dict) else None
+                if isinstance(pc, list):
+                    for it in reversed(pc):
+                        if isinstance(it, dict) and it.get("type") == "tool_use":
+                            result["last_tool_name"] = str(it.get("name") or "")
+                            break
+                break
+        else:
+            # User hat Prompt geschickt - Claude denkt
+            result["last_block_type"] = "thinking"
+            result["internal_state"] = "user_sent_prompt"
+
+    elif top_type == "assistant":
+        msg = real_last.get("message") if isinstance(real_last, dict) else None
+        if isinstance(msg, dict):
+            sr = msg.get("stop_reason")
+            content = msg.get("content")
+            has_tool_use = False
+            last_tool_use_name = None
+
+            if isinstance(content, list):
+                for it in content:
+                    if isinstance(it, dict) and it.get("type") == "tool_use":
+                        has_tool_use = True
+                        last_tool_use_name = str(it.get("name") or "")
+                if content:
+                    last = content[-1] if isinstance(content[-1], dict) else None
+                    if last:
+                        result["last_block_type"] = last.get("type")
+                        if result["last_block_type"] == "tool_use":
+                            result["last_tool_name"] = str(last.get("name") or "")
+
+            # ALLOW nur wenn tool_use UND kein tool_result danach kam
+            if sr == "tool_use" or has_tool_use:
+                has_result_after = _has_tool_result_after(real_last_idx)
+                if not has_result_after:
+                    result["awaiting_approval"] = True
+                    result["has_pending_tool"] = True
+                    result["internal_state"] = "tool_pending_approval"
+                    if last_tool_use_name:
+                        result["last_tool_name"] = last_tool_use_name
+                else:
+                    # Tool laeuft gerade
+                    result["internal_state"] = "tool_running"
+            elif sr in ("end_turn", "stop_sequence"):
+                result["waiting"] = True
+                result["internal_state"] = "done"
+            elif result["last_block_type"] == "thinking":
+                result["internal_state"] = "thinking"
+            elif result["last_block_type"] == "text":
+                result["internal_state"] = "responding_text"
+            else:
+                result["internal_state"] = "unknown_active"
+
+    return result
 
 
 def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
@@ -681,12 +746,17 @@ def resume_session(session_id, cwd, settings, project=""):
     if any(c in claude for c in '&|;<>"`$'):
         return {"ok": False, "error": "Unsicherer claude_cmd-Wert."}
     term = settings.get("terminal", "auto")
+    # Wichtig: CLAUDE_CODE_FORCE_SESSION_PERSIST=1 setzen damit die resumed
+    # Session weiterhin in die JSONL schreibt (sonst wird sie als Child erkannt
+    # und Transcript-Speicherung ist aus).
+    env = os.environ.copy()
+    env["CLAUDE_CODE_FORCE_SESSION_PERSIST"] = "1"
     try:
         if term in ("auto", "wt"):
             try:
                 # argv-Form, KEIN shell=True -> keine Shell-Interpretation
                 subprocess.Popen(["wt", "-d", workdir, "cmd", "/k",
-                                  claude, "--resume", sid])
+                                  claude, "--resume", sid], env=env)
                 return {"ok": True}
             except FileNotFoundError:
                 if term == "wt":
@@ -695,7 +765,7 @@ def resume_session(session_id, cwd, settings, project=""):
         # `start` ist ein cmd-Builtin, deshalb rufen wir cmd /c start …
         subprocess.Popen(
             ["cmd", "/c", "start", "Claude Code", "/D", workdir,
-             "cmd", "/k", claude, "--resume", sid])
+             "cmd", "/k", claude, "--resume", sid], env=env)
         return {"ok": True}
     except OSError as e:
         return {"ok": False, "error": str(e)}
@@ -1286,7 +1356,8 @@ class BuddyController:
     die Animation abhaengig von der Aktivitaet in ~/.claude/projects/*."""
 
     _TRANSPARENT = "magenta"        # Chroma-Key (unwahrscheinlich in Sprites)
-    _FRAME_MS = 180                 # ~5.5 fps – ruhig genug fuer Sprites mit wenigen Frames
+    _TICK_MS = 100                  # State-Polling/Visibility/Fade/Hover alle 100ms
+    _FRAME_MS = 180                 # Frame-Advance nur alle 180ms (~5.5 fps)
     _STATE_DEBOUNCE_S = 1.5         # min. Standzeit bevor Buddy in andere Anim wechselt
     _POLL_MS = 300                  # Zustands-/Fokus-Check-Rate
     _MTIME_CACHE_S = 2.0            # nur alle 2s Dateisystem abfragen
@@ -1831,90 +1902,138 @@ class BuddyController:
             except Exception:
                 pass
 
-        # ---- Aktivitaets-Detection ----
-        # Modifikationszeit alle 2 s, Limit-Check nur bei frischer Aktivitaet
-        # (max alle 15 s) und mit sehr strengen Mustern damit keine normalen
-        # Chat-Erwaehnungen von „rate limit" false positive triggern.
-        state["last_limit_check"] = 0.0
+        # ---- Aktivitaets-Detection (verbessert nach Codex-Analyse) ----
+        # Status-Check jetzt mtime-getrieben: bei neuer mtime sofort pruefen,
+        # sonst throttlen. State-Stabilisierung: "coding" bleibt stabil bei
+        # frischer Aktivitaet, kurze Zwischenzustaende unterbrechen nicht.
+        state["last_status_check"] = 0.0
+        state["last_known_mtime"] = 0.0
         state["is_limited"] = False
+        state["limit_type"] = None
+        state["limited_until"] = 0.0  # Hysterese: Limit bleibt bis hier
         state["is_waiting"] = False
         state["is_awaiting_approval"] = False
-        state["last_block_type"] = None   # thinking | tool_use | text | None
+        state["last_block_type"] = None
         state["last_tool_name"] = None
+        state["internal_state"] = "no_session"
+        # State-Stabilisierung: coding/tool_running bleibt stabil
+        state["stable_state"] = None
+        state["stable_since"] = 0.0
+        state["last_frame_at"] = 0.0  # Frame-Rate getrennt von State-Polling
         state["hover_started_at"] = 0.0
         state["wink_until"] = 0.0
         state["last_alt_swap"] = 0.0
         state["use_alt"] = False
 
+        # States die "coding" blockieren duerfen (hohe Prioritaet)
+        _HIGH_PRIO_STATES = {"done", "tool_pending_approval", "rate_limited",
+                            "auth_required", "api_overloaded", "no_session"}
+        # States die als "aktiv arbeitend" gelten
+        _WORKING_STATES = {"tool_running", "processing_tool_result",
+                          "responding_text", "thinking", "user_sent_prompt"}
+
         def detect_state():
             now = time.time()
-            if now - state["last_mtime_check"] > self._MTIME_CACHE_S:
+            # mtime-Check: immer schnell (alle 500ms)
+            if now - state["last_mtime_check"] > 0.5:
                 state["last_mtime_check"] = now
                 pdir = ""
                 try:
                     pdir = self.api._projects_dir()
                 except Exception:
                     pdir = ""
-                state["last_mtime"] = _latest_session_mtime(pdir)
+                new_mtime = _latest_session_mtime(pdir)
+                mtime_changed = new_mtime != state["last_known_mtime"]
+                state["last_known_mtime"] = new_mtime
+                state["last_mtime"] = new_mtime
+
+                # Status-Check: sofort bei mtime-Aenderung, sonst max alle 2s
+                should_check = mtime_changed or (now - state["last_status_check"] > 2.0)
+
+                if new_mtime > 0 and should_check:
+                    state["last_status_check"] = now
+                    try:
+                        status = _latest_jsonl_status(pdir)
+                    except Exception:
+                        status = {"internal_state": "no_session", "is_limit": False}
+
+                    # Limit mit Hysterese: bleibt aktiv bis reset_at oder 60s
+                    new_limited = bool(status.get("is_limit"))
+                    new_limit_type = status.get("limit_type")
+                    reset_at = float(status.get("reset_at") or 0.0)
+
+                    if new_limited:
+                        state["is_limited"] = True
+                        state["limit_type"] = new_limit_type
+                        if reset_at > 0:
+                            state["limited_until"] = reset_at
+                        else:
+                            # Kein reset_at: 60s Hysterese
+                            state["limited_until"] = now + 60
+                        # Reset-Zeit speichern
+                        try:
+                            prev = float(self.api.settings.get("limit_reset_at", 0) or 0)
+                            if reset_at > 0 and abs(prev - reset_at) > 30:
+                                self.api.settings["limit_reset_at"] = reset_at
+                                save_json(SETTINGS_FILE, self.api.settings)
+                                self._schedule_reset_timer(reset_at)
+                        except Exception:
+                            pass
+                    elif state["is_limited"]:
+                        # Limit aufheben nur wenn Hysterese abgelaufen
+                        if now > state["limited_until"]:
+                            # Erfolgreiche neue Aktivitaet -> Limit aufheben
+                            int_state = status.get("internal_state", "")
+                            if int_state in _WORKING_STATES or int_state == "done":
+                                try:
+                                    self._notify_limit_reset()
+                                except Exception:
+                                    pass
+                                state["is_limited"] = False
+                                state["limit_type"] = None
+
+                    state["is_waiting"] = bool(status.get("waiting"))
+                    state["is_awaiting_approval"] = bool(status.get("awaiting_approval"))
+                    state["last_block_type"] = status.get("last_block_type")
+                    state["last_tool_name"] = status.get("last_tool_name")
+                    state["internal_state"] = status.get("internal_state", "unknown_active")
+
             if state["last_mtime"] <= 0:
                 return "none"
+
             age = now - state["last_mtime"]
-            if age < 300 and now - state["last_limit_check"] > 15:
-                state["last_limit_check"] = now
-                try:
-                    pdir = self.api._projects_dir()
-                    status = _latest_jsonl_status(pdir)
-                except Exception:
-                    status = {"is_limit": False, "reset_at": 0.0,
-                              "waiting": False}
-                new_limited = bool(status.get("is_limit"))
-                state["is_waiting"] = bool(status.get("waiting"))
-                state["is_awaiting_approval"] = bool(
-                    status.get("awaiting_approval"))
-                state["last_block_type"] = status.get("last_block_type")
-                state["last_tool_name"] = status.get("last_tool_name")
-                # Reset-Zeit ins Settings speichern damit Timer + Startup-
-                # Nachhol funktionieren
-                reset_at = float(status.get("reset_at") or 0.0)
-                if new_limited and reset_at > 0:
-                    try:
-                        prev = float(
-                            self.api.settings.get("limit_reset_at", 0) or 0)
-                        if abs(prev - reset_at) > 30:
-                            self.api.settings["limit_reset_at"] = reset_at
-                            save_json(SETTINGS_FILE, self.api.settings)
-                            self._schedule_reset_timer(reset_at)
-                    except Exception:
-                        pass
-                # Uebergang von limitiert -> frei: Karte + Notification
-                if state["is_limited"] and not new_limited:
-                    try:
-                        self._notify_limit_reset()
-                    except Exception:
-                        pass
-                state["is_limited"] = new_limited
+            int_state = state.get("internal_state", "unknown_active")
+
+            # HIGH-PRIO States: sofort anzeigen
             if state["is_limited"] and age < 3600:
                 return "limit"
-            # Ground-Truth-Detection: die LETZTE Assistant-Zeile in der JSONL
-            # sagt was Claude tatsaechlich zuletzt tat. Content-Block-Type
-            # gewinnt vor mtime-Alter, solange die letzte Nachricht "frisch
-            # genug" ist (< 5 min). Danach fallen wir auf idle/sleep zurueck.
-            block = state.get("last_block_type")
             if state["is_awaiting_approval"] and age < 300:
                 return "awaiting_approval"
-            if age < 300:
-                if block == "thinking":
+            if int_state == "done" and age < 180:
+                return "waiting"
+
+            # STATE-STABILISIERUNG: Wenn wir in einem "working" State sind,
+            # bleiben wir dort solange frische Aktivitaet da ist.
+            # Kurze thinking/text Zwischenzustaende unterbrechen nicht.
+            if int_state in _WORKING_STATES and age < 300:
+                # Neuer working state oder gleicher wie vorher?
+                if state["stable_state"] in _WORKING_STATES:
+                    # Schon im working state - bleiben (max 5 min)
+                    if now - state["stable_since"] < 300:
+                        return "active"
+                # Neuer working state starten
+                state["stable_state"] = int_state
+                state["stable_since"] = now
+                if int_state == "thinking" or int_state == "user_sent_prompt":
                     return "thinking"
-                if block == "tool_use":
-                    return "active"
-                if block == "text":
-                    # Text ist entweder "Claude antwortet gerade in Text"
-                    # oder "hat gerade fertig geschrieben"
-                    if state["is_waiting"] and age < 180:
-                        return "waiting"
-                    return "active"
-            # Waiting-Sonderfall wenn wir keinen Content-Type haben aber
-            # der end_turn-Marker in der letzten Zeile stand.
+                return "active"
+
+            # Nicht mehr aktiv arbeitend - stable state zuruecksetzen
+            if int_state not in _WORKING_STATES:
+                state["stable_state"] = None
+                state["stable_since"] = 0.0
+
+            # DONE vs IDLE: done nur bei end_turn, idle durch Zeit
             if state["is_waiting"] and age < 180:
                 return "waiting"
             if age < 300:
@@ -2127,6 +2246,7 @@ class BuddyController:
                 if chosen in _priority or state.get("preview_until", 0) > now:
                     state["anim"] = chosen
                     state["frame"] = 0
+                    state["last_frame_at"] = 0.0
                     state["pending_anim"] = None
                     state["pending_since"] = 0.0
                 else:
@@ -2143,8 +2263,12 @@ class BuddyController:
                 if state.get("pending_anim") is not None:
                     state["pending_anim"] = None
                     state["pending_since"] = 0.0
+            # Frame-Rate getrennt von tick-Rate: Frame-Advance nur alle
+            # _FRAME_MS, aber tick bleibt schnell fuer Visibility/Fade/Hover.
             if state["current_alpha"] > 0.01:
-                render_frame()
+                if now - state["last_frame_at"] >= self._FRAME_MS / 1000.0:
+                    render_frame()
+                    state["last_frame_at"] = now
             # Place-Mode: Rahmen pulsieren fuer bessere Sichtbarkeit
             if state["placing"]:
                 state["place_pulse"] = (state["place_pulse"] + 0.14) % 6.283
@@ -2154,7 +2278,7 @@ class BuddyController:
                     canvas.itemconfigure(place_ring, width=intensity)
                 except Exception:
                     pass
-            root.after(self._FRAME_MS, tick)
+            root.after(self._TICK_MS, tick)
 
         try:
             root.after(50, tick)

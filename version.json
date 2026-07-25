@@ -1,9 +1,9 @@
 {
-  "version": "1.1.5",
-  "notes": "Fix Auto-Update fuer alle Versionen. Der Installer startet die App jetzt selbst nach Silent-Install - der Update-Batch muss das nicht mehr tun. Das fixt das Henne-Ei-Problem: v1.1.2/v1.1.3 hatten einen kaputten Batch, aber um den v1.1.4-Fix zu bekommen brauchte man den Fix. Jetzt: (1) Installer killt alte Instanz + wartet 3s. (2) Installer loescht stale Lock-File. (3) Installer startet neue App direkt (kein skipifsilent mehr). Damit klappt Auto-Update auch von v1.1.2/v1.1.3.",
+  "version": "1.1.6",
+  "notes": "Bessere Buddy State-Detection (nach Codex-Analyse): Limit rueckwaerts scannen, Allow nur bei echtem Pending-Tool, State-Stabilisierung (coding bleibt stabil), getrennte Tick/Frame-Rate. Fix: 'Transcript saving is off' beim Session-Einsteigen - jetzt wird CLAUDE_CODE_FORCE_SESSION_PERSIST gesetzt.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "05ad2b3b2a336048952e056294b4a3c079f07c8f9cb0606da29fc1a0123266ba",
-  "sha256": "8b4731bf5a0484807cd7388da2db18d9a33e97bb0f3fb8d977cc54add2d26285"
+  "installer_sha256": "3dd13d374da2b1e6421c35c88218c8e91c461838f4298be74547cc93f51bbf81",
+  "sha256": "8f1ee3587ce877c628e7ef86d0d71bef912ae5ac63c4c40040642554c5e0e109"
 }
