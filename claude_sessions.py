@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.1.8"
+VERSION = "1.1.9"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -2079,12 +2079,7 @@ class BuddyController:
             return BUDDY_STATE_MAP.get(act, "idle breathe")
 
         # ---- Rendering (mit Frame-Cache) ----
-        # Cache-Key = (anim_name, frame_idx, scale, bg_fill) -> list[20] row-strings.
-        # Da Animationen loopen und Groesse/BG-Farbe konstant bleiben, sparen
-        # wir nach einem vollen Zyklus 100% der Zeichenkosten pro Frame.
         render_cache = {}
-        # Merkmale des zuletzt geschriebenen Frames, damit wir bei unveraenderter
-        # Zeichnung gar nichts machen.
         last_drawn = {"key": None}
 
         def render_frame():
@@ -2095,7 +2090,7 @@ class BuddyController:
                 return
             frame_idx = state["frame"] % len(frames)
             sc = state["scale"]
-            bg_fill = "#14100e" if state.get("frame_style", "off") != "off" else self._TRANSPARENT
+            bg_fill = "#14100e"
             key = (name, frame_idx, sc, bg_fill)
 
             if key == last_drawn["key"]:
@@ -2121,7 +2116,6 @@ class BuddyController:
                     row_str = "{" + " ".join(
                         (" ".join([c] * sc)) for c in cells) + "}"
                     rows_data.append(row_str)
-                # Cache begrenzen (nicht boesartig wachsen lassen)
                 if len(render_cache) > 400:
                     render_cache.clear()
                 render_cache[key] = rows_data
@@ -3134,25 +3128,38 @@ class Api:
             app_id = "{A2E1C4F8-9B3D-4E5A-8F2B-7C6D5A4E3F21}"
             reg_key = ("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\"
                        "Uninstall\\" + app_id + "_is1")
-            # Vereinfachter Batch: Installer startet die App selbst (postinstall),
-            # der Batch muss das nicht nochmal tun. Weniger kann schiefgehen.
+            # Batch startet Installer UND danach die App explizit.
+            # Sich auf den Installer zu verlassen hat nicht funktioniert.
             with open(bat, "w", encoding="utf-8") as f:
                 f.write(
                     "@echo off\r\n"
                     'set "SETUP=' + setup + '"\r\n'
-                    'set "FAIL=' + marker + '"\r\n'
+                    'set "FALLBACK=' + fallback_runner + '"\r\n'
                     'set "LOG=' + log + '"\r\n'
                     'set "LOCK=' + lock_file + '"\r\n'
-                    'if exist "%FAIL%" del "%FAIL%"\r\n'
-                    'echo %date% %time% csb update batch start > "%LOG%"\r\n'
-                    "rem 5s warten bis alte Instanz + Mutex + Lock freigegeben\r\n"
+                    'set "REGKEY=' + reg_key + '"\r\n'
+                    'echo %date% %time% batch start > "%LOG%"\r\n'
                     "ping -n 6 127.0.0.1 >nul\r\n"
                     'if exist "%LOCK%" del /f /q "%LOCK%" 2>nul\r\n'
-                    'echo %date% %time% Installer starten >> "%LOG%"\r\n'
-                    "rem Installer im Silent-Mode - startet App selbst danach\r\n"
+                    'echo %date% %time% installer starten >> "%LOG%"\r\n'
                     '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL\r\n'
-                    'echo %date% %time% Installer beendet mit code %errorlevel% >> "%LOG%"\r\n'
-                    "rem Cleanup\r\n"
+                    'echo %date% %time% installer exit %errorlevel% >> "%LOG%"\r\n'
+                    "ping -n 3 127.0.0.1 >nul\r\n"
+                    'echo %date% %time% app starten >> "%LOG%"\r\n'
+                    "rem App-Pfad aus Registry lesen, Fallback auf Standard\r\n"
+                    'for /f "tokens=2*" %%a in (\'reg query "%REGKEY%" /v InstallLocation 2^>nul ^| find "InstallLocation"\') do set "APPDIR=%%b"\r\n'
+                    'if defined APPDIR (\r\n'
+                    '  set "APP=%APPDIR%ClaudeSessionBrowser.exe"\r\n'
+                    ') else (\r\n'
+                    '  set "APP=%FALLBACK%"\r\n'
+                    ')\r\n'
+                    'echo %date% %time% starte %APP% >> "%LOG%"\r\n'
+                    'if exist "%APP%" (\r\n'
+                    '  start "" "%APP%"\r\n'
+                    '  echo %date% %time% gestartet >> "%LOG%"\r\n'
+                    ') else (\r\n'
+                    '  echo %date% %time% APP NICHT GEFUNDEN >> "%LOG%"\r\n'
+                    ')\r\n'
                     'del "%SETUP%" >nul 2>&1\r\n'
                     'del "%~f0"\r\n'
                 )
