@@ -1,9 +1,9 @@
 {
-  "version": "1.1.2",
-  "notes": "Fixes fuer den Buddy: (1) Debounce 1.5s vor Anim-Wechsel - der Buddy tauscht nicht mehr staendig zwischen den Animationen durch (active/thinking/waiting flackerten frueher waehrend Claude schrieb). Priority-Anims wie allow, limit und surprise schalten weiterhin sofort. (2) Frame-Rate langsamer: 180ms/Frame statt 120ms (~5.5 fps statt 8). Deine kuerzeren Sprites laufen jetzt in gesundem Tempo statt wie im Zeitraffer. Ausserdem: fuer alte v1.0.7-v1.0.18-Nutzer gibts ab jetzt einen Onefile-Fallback als exe_url damit deren Auto-Updater funktioniert - v1.1.2+ nutzen weiter den sauberen Installer via installer_url.",
+  "version": "1.1.3",
+  "notes": "Grosser Buddy-Verhaltens-Fix: Der Buddy zeigt jetzt tatsaechlich was Claude gerade tut, statt aus der Datei-Modifikationszeit zu raten. Er parst die letzte Zeile in deiner JSONL-Session strukturell und schaut sich den Content-Block-Type an - thinking / tool_use / text - und zeigt die passende Animation. Auch das Nach-Tool-Use-Verarbeitungs-Szenario (user-Zeile mit toolUseResult) wird als 'Claude arbeitet gerade' erkannt. Kein Flackern mehr zwischen active/thinking waehrend Claude in Bursts schreibt - wenn Claude 10 Minuten codet, laeuft die coding-Anim 10 Minuten. Ausserdem: (1) Fix fuer 'Buddy bleibt sichtbar wenn App aus dem Buddy-Tab in den Tray gepackt wird' - Buddy-Tab-Sonderregel greift nur noch wenn Haupt-Fenster wirklich sichtbar ist. (2) Selbst-Heiler: falls Buddy trotzdem 4s haengt obwohl er versteckt sein sollte, hartes withdraw(). (3) Single-Instance haerter - jetzt Named-Mutex + File-Lock parallel, keine 3 Instanzen mehr moeglich.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "f4aa8828a2707800f427848f909740886f59d1a116531e4df7276b1ad508c847",
-  "sha256": "dc0342cb44c68711c66cc2a6d93623229918039b03f5172917fd56d74387c7a6"
+  "installer_sha256": "c6cf3a3b7792a42421c345e385137cb142da050108263be0253477043f44bb45",
+  "sha256": "4de28c5fd62b261e919006f4472b9cbb63150def1d476fe1dac51dce5a933ed5"
 }

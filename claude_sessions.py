@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -252,7 +252,8 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=6):
     - waiting: letzte Zeile ist assistant end_turn → Claude wartet auf User
     Wird nur aufgerufen wenn ohnehin frische Aktivitaet erkannt wurde."""
     empty = {"is_limit": False, "reset_at": 0.0, "waiting": False,
-             "awaiting_approval": False}
+             "awaiting_approval": False, "last_block_type": None,
+             "last_tool_name": None}
     if not projects_dir or not os.path.isdir(projects_dir):
         return empty
     newest_path = None
@@ -363,27 +364,92 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=6):
     # "Awaiting approval": letzte Zeile ist assistant mit stop_reason=tool_use
     # (oder Content enthaelt tool_use) -> Claude will was tun und braucht
     # deine Erlaubnis (Y/N-Prompt in der CLI).
+    # Alle Zeilen in umgekehrter Reihenfolge parsen um "letzte Assistant-Zeile"
+    # zu finden - denn oft ist die eigentlich letzte Zeile ein user-tool_result.
+    parsed_lines = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        parsed_lines.append(obj)
+
     waiting = False
     awaiting_approval = False
+    last_block_type = None
+    last_tool_name = None
     if not is_limit:
-        obj_type = last_obj.get("type") if isinstance(last_obj, dict) else None
-        msg = last_obj.get("message") if isinstance(last_obj, dict) else None
-        if obj_type == "assistant" and isinstance(msg, dict):
-            sr = msg.get("stop_reason")
-            has_tool_use = False
-            content = msg.get("content")
-            if isinstance(content, list):
-                for it in content:
-                    if isinstance(it, dict) and it.get("type") == "tool_use":
-                        has_tool_use = True
-                        break
-            if sr == "tool_use" or has_tool_use:
-                awaiting_approval = True
-            elif sr in ("end_turn", "stop_sequence", None):
-                waiting = True
+        # Letzte Zeile ist ggf. eine Claude-Code-Interna-Zeile (queue-operation
+        # etc.). Rueckwaerts zur letzten echten user/assistant-Zeile.
+        real_last = None
+        for cand in reversed(parsed_lines):
+            if isinstance(cand, dict) and cand.get("type") in ("user", "assistant"):
+                real_last = cand
+                break
+        if real_last is None:
+            real_last = last_obj  # Fallback
+        last_obj = real_last
+        top_type = last_obj.get("type") if isinstance(last_obj, dict) else None
+        # Wenn letzte Zeile ein user-tool_result ist -> Claude verarbeitet
+        # gerade das Ergebnis, gilt als active/tool_use.
+        if top_type == "user":
+            msg = last_obj.get("message") if isinstance(last_obj, dict) else None
+            has_tool_result = False
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for it in content:
+                        if isinstance(it, dict) and it.get("type") == "tool_result":
+                            has_tool_result = True
+                            break
+            if last_obj.get("toolUseResult") is not None or has_tool_result:
+                # Claude bekommt gerade Tool-Ergebnis zurueck und verarbeitet es
+                last_block_type = "tool_use"
+                # Tool-Name aus vorheriger Assistant-Zeile ziehen
+                for prev in reversed(parsed_lines[:-1]):
+                    if not isinstance(prev, dict):
+                        continue
+                    if prev.get("type") != "assistant":
+                        continue
+                    pmsg = prev.get("message") or {}
+                    pc = pmsg.get("content") if isinstance(pmsg, dict) else None
+                    if isinstance(pc, list):
+                        for it in reversed(pc):
+                            if isinstance(it, dict) and it.get("type") == "tool_use":
+                                last_tool_name = str(it.get("name") or "")
+                                break
+                    break
+            else:
+                # Regulaerer User-Prompt gerade abgeschickt - Claude denkt
+                last_block_type = "thinking"
+        elif top_type == "assistant":
+            msg = last_obj.get("message") if isinstance(last_obj, dict) else None
+            if isinstance(msg, dict):
+                sr = msg.get("stop_reason")
+                has_tool_use = False
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for it in content:
+                        if isinstance(it, dict) and it.get("type") == "tool_use":
+                            has_tool_use = True
+                    if content:
+                        last = content[-1] if isinstance(content[-1], dict) else None
+                        if last:
+                            last_block_type = last.get("type")
+                            if last_block_type == "tool_use":
+                                last_tool_name = str(last.get("name") or "")
+                if sr == "tool_use" or has_tool_use:
+                    awaiting_approval = True
+                elif sr in ("end_turn", "stop_sequence", None):
+                    waiting = True
 
     return {"is_limit": is_limit, "reset_at": reset_at,
-            "waiting": waiting, "awaiting_approval": awaiting_approval}
+            "waiting": waiting, "awaiting_approval": awaiting_approval,
+            "last_block_type": last_block_type,
+            "last_tool_name": last_tool_name}
 
 
 def _latest_jsonl_hits_limit(projects_dir, max_files=200, tail_kb=6):
@@ -1233,6 +1299,36 @@ class BuddyController:
         self._q = queue.Queue()     # Commands aus dem UI-Thread
         self._pulse = 0             # fuer die kurzen "surprise"-Momente
 
+    def _app_window_visible(self):
+        """True wenn das Session-Browser-Hauptfenster gerade wirklich als
+        sichtbares Fenster existiert (nicht im Tray minimiert/verstecked)."""
+        if not _IS_WIN:
+            return True
+        try:
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            found = {"ok": False}
+            EnumWindowsProc = ctypes.WINFUNCTYPE(
+                ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+            def cb(hwnd, _lp):
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                if buf.value.strip().lower() == _OWN_APP_TITLE_EXACT:
+                    found["ok"] = True
+                    return False
+                return True
+
+            user32.EnumWindows(EnumWindowsProc(cb), 0)
+            return found["ok"]
+        except Exception:
+            return True
+
     # ---- oeffentliche API (aus Api heraus aufgerufen) ----
     def is_alive(self):
         return bool(self._thread and self._thread.is_alive())
@@ -1643,9 +1739,15 @@ class BuddyController:
             bud = self.api.settings.get("buddy", {})
             if not bud.get("enabled"):
                 return False
-            # Buddy-Tab: immer sichtbar (auch waehrend Foreground-Racing).
+            # Buddy-Tab: immer sichtbar (auch waehrend Foreground-Racing) -
+            # ABER nur wenn das Hauptfenster auch tatsaechlich sichtbar ist.
+            # Wenn die App in den Tray minimiert wurde bleibt _current_view
+            # zwar auf "buddy" stehen, aber dann sollen die normalen
+            # Sichtbarkeits-Regeln (when_claude etc.) greifen statt Buddy
+            # ewig auf dem Desktop rumhaengen zu lassen.
             if getattr(self.api, "_current_view", "") == "buddy":
-                return True
+                if self._app_window_visible():
+                    return True
             fg = _fg_title(state.get("tick", 0))
             # Session Browser vorne (auf anderem Tab) -> Buddy weg.
             if fg.strip() == _OWN_APP_TITLE_EXACT:
@@ -1663,6 +1765,7 @@ class BuddyController:
             return True
 
         _visible = {"v": None}
+        state["invisible_since"] = 0.0  # Zeit seit want=False (0 wenn sichtbar)
 
         def apply_visibility():
             want = desired_visible()
@@ -1673,8 +1776,12 @@ class BuddyController:
                     state["target_alpha"] = min(state["opacity"], 0.15)
                 else:
                     state["target_alpha"] = state["opacity"]
+                state["invisible_since"] = 0.0
             else:
                 state["target_alpha"] = 0.0
+                # Merken seit wann "unsichtbar gewollt" - fuer Selbst-Heiler
+                if state["invisible_since"] == 0.0:
+                    state["invisible_since"] = time.time()
             if want and not state["was_visible"]:
                 # Reingekommen -> Fenster zeigen (transparent) und Fade starten
                 try:
@@ -1685,6 +1792,17 @@ class BuddyController:
                     pass
             state["was_visible"] = want
             _visible["v"] = want
+            # Selbst-Heiler: wenn wir seit >4s unsichtbar sein sollen aber
+            # das Fenster noch da rumhaengt (Fade-Loop gecrasht, tk-Bug, was
+            # auch immer), hart wegschicken.
+            if (not want) and state["invisible_since"] > 0 \
+                    and (time.time() - state["invisible_since"]) > 4.0:
+                try:
+                    root.attributes("-alpha", 0.0)
+                    state["current_alpha"] = 0.0
+                    root.withdraw()
+                except Exception:
+                    pass
 
         def step_fade():
             # Naehert current_alpha an target_alpha an. ~180 ms Total.
@@ -1721,6 +1839,8 @@ class BuddyController:
         state["is_limited"] = False
         state["is_waiting"] = False
         state["is_awaiting_approval"] = False
+        state["last_block_type"] = None   # thinking | tool_use | text | None
+        state["last_tool_name"] = None
         state["hover_started_at"] = 0.0
         state["wink_until"] = 0.0
         state["last_alt_swap"] = 0.0
@@ -1751,6 +1871,8 @@ class BuddyController:
                 state["is_waiting"] = bool(status.get("waiting"))
                 state["is_awaiting_approval"] = bool(
                     status.get("awaiting_approval"))
+                state["last_block_type"] = status.get("last_block_type")
+                state["last_tool_name"] = status.get("last_tool_name")
                 # Reset-Zeit ins Settings speichern damit Timer + Startup-
                 # Nachhol funktionieren
                 reset_at = float(status.get("reset_at") or 0.0)
@@ -1773,22 +1895,31 @@ class BuddyController:
                 state["is_limited"] = new_limited
             if state["is_limited"] and age < 3600:
                 return "limit"
-            # "Awaiting approval" hat Vorrang vor active/thinking - wenn Claude
-            # gerade auf dein Y/N wartet ist er streng genommen "beschaeftigt",
-            # aber der User soll den anderen Anim-Style sehen.
+            # Ground-Truth-Detection: die LETZTE Assistant-Zeile in der JSONL
+            # sagt was Claude tatsaechlich zuletzt tat. Content-Block-Type
+            # gewinnt vor mtime-Alter, solange die letzte Nachricht "frisch
+            # genug" ist (< 5 min). Danach fallen wir auf idle/sleep zurueck.
+            block = state.get("last_block_type")
             if state["is_awaiting_approval"] and age < 300:
                 return "awaiting_approval"
-            if age < 3:
-                return "active"
-            if age < 15:
-                return "thinking"
-            # "waiting" nur wenn Claude gerade fertig geworden ist (nicht
-            # Minuten spaeter – dann ist es effektiv "idle")
+            if age < 300:
+                if block == "thinking":
+                    return "thinking"
+                if block == "tool_use":
+                    return "active"
+                if block == "text":
+                    # Text ist entweder "Claude antwortet gerade in Text"
+                    # oder "hat gerade fertig geschrieben"
+                    if state["is_waiting"] and age < 180:
+                        return "waiting"
+                    return "active"
+            # Waiting-Sonderfall wenn wir keinen Content-Type haben aber
+            # der end_turn-Marker in der letzten Zeile stand.
             if state["is_waiting"] and age < 180:
                 return "waiting"
-            if age < 90:
+            if age < 300:
                 return "recent"
-            if age < 600:
+            if age < 900:
                 return "idle"
             return "sleep"
 
@@ -1820,16 +1951,12 @@ class BuddyController:
                 return BUDDY_STATE_MAP["party"]
             act = detect_state()
             state["activity_state"] = act
-            # Rotation fuer active/thinking: alle ~30s zwischen Haupt- und
-            # Alternate-Anim wechseln damit's nicht monoton wirkt
-            if act in ("active", "thinking"):
-                if now - state["last_alt_swap"] > 30:
-                    state["last_alt_swap"] = now
-                    state["use_alt"] = not state["use_alt"]
-                if state["use_alt"]:
-                    alt_key = act + "_alt"
-                    if alt_key in BUDDY_STATE_MAP:
-                        return BUDDY_STATE_MAP[alt_key]
+            # Ein State = eine Anim, so lang der State anhaelt. Kein Rotieren
+            # zwischen "work coding" und "write" alle 30s mehr - der User hat
+            # zu Recht gesagt: wenn Claude 10 Min codet soll auch 10 Min
+            # "work coding" laufen. Weniger Bewegung im Augenwinkel.
+            # ("write" und "think" sind weiter ueber die Preview-Kachel im
+            # Buddy-Tab antestbar, nur nicht mehr in der Auto-Rotation.)
             return BUDDY_STATE_MAP.get(act, "idle breathe")
 
         # ---- Rendering (mit Frame-Cache) ----
@@ -4883,28 +5010,71 @@ def _migrate_from_selfinstall():
 
 
 # --------------------------------------------------------------------------- #
-_SINGLE_INSTANCE_MUTEX = "Global\\ClaudeSessionBrowser_SingleInstance_juppeee"
+_SINGLE_INSTANCE_MUTEX = "Local\\ClaudeSessionBrowser_SingleInstance_juppeee"
+_SINGLE_INSTANCE_LOCKFILE = None  # wird beim Acquire gesetzt
 
 
 def _acquire_single_instance():
-    """Named-Mutex-basierter Single-Instance-Guard. Rueckgabe: (owned, handle).
-    - owned=True: wir sind die erste Instanz, Mutex gehoert uns (Handle
-      halten bis App zumacht)
-    - owned=False: eine andere Instanz laeuft schon"""
+    """Doppelt gesicherter Single-Instance-Guard.
+
+    Ansatz 1: Named-Mutex (`Local\\...`). Windows garantiert dass nur der
+    ERSTE Prozess owned=True bekommt. Handle muss gehalten werden bis der
+    Prozess zumacht.
+
+    Ansatz 2: Zusaetzlich exclusive Lock-File in `%LOCALAPPDATA%`. Faengt
+    Faelle ab wo das Mutex-Handling nicht sauber funktioniert (z.B. Onefile-
+    Extract-Race, Antivirus-Injection, alte Windows-Version).
+
+    Rueckgabe: (owned, mutex_handle). owned=False -> zweite Instanz."""
+    global _SINGLE_INSTANCE_LOCKFILE
     if not _IS_WIN:
         return True, None
+
+    # Ansatz 1: Named-Mutex
+    mutex_says_first = True
+    handle = None
     try:
         k = ctypes.windll.kernel32
         ERROR_ALREADY_EXISTS = 183
-        h = k.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX)
-        if not h:
-            return True, None
-        err = ctypes.get_last_error() or k.GetLastError()
-        if err == ERROR_ALREADY_EXISTS:
-            return False, h
-        return True, h
+        # kernel32 mit use_last_error damit GetLastError korrekt lesbar ist
+        k.SetLastError(0)
+        # CreateMutexW: (SECURITY_ATTRS, bInitialOwner, lpName)
+        k.CreateMutexW.restype = ctypes.c_void_p
+        handle = k.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX)
+        err = k.GetLastError()
+        if handle and err == ERROR_ALREADY_EXISTS:
+            mutex_says_first = False
     except Exception:
-        return True, None
+        # Mutex fehlgeschlagen - verlassen wir uns nur auf Lock-File
+        pass
+
+    # Ansatz 2: Lock-File mit exklusiver Sperre
+    file_says_first = True
+    try:
+        lad = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        lock_path = os.path.join(lad, "ClaudeSessionBrowser.instance.lock")
+        # Auf Windows brauchen wir msvcrt.locking() fuer exklusive Sperre.
+        # Wenn ein anderer Prozess die Datei schon offen und gelockt hat,
+        # bekommen wir hier eine OSError.
+        import msvcrt
+        lf = open(lock_path, "wb")
+        try:
+            msvcrt.locking(lf.fileno(), msvcrt.LK_NBLCK, 1)
+            _SINGLE_INSTANCE_LOCKFILE = lf  # in globals halten -> lock bleibt
+        except OSError:
+            # Datei gelockt - andere Instanz laeuft
+            file_says_first = False
+            try:
+                lf.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Wenn EINER von beiden Wegen sagt "zweite Instanz" -> zweite Instanz.
+    # Nur wenn BEIDE sagen "erste Instanz" duerfen wir starten.
+    owned = mutex_says_first and file_says_first
+    return owned, handle
 
 
 def _restore_existing_window():
