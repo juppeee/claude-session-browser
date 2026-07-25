@@ -13,7 +13,7 @@
 ; ==========================================================================
 
 #define MyAppName "Claude Session Browser"
-#define MyAppVersion "1.1.4"
+#define MyAppVersion "1.1.5"
 #define MyAppPublisher "juppeee"
 #define MyAppURL "https://github.com/juppeee/claude-session-browser"
 #define MyAppExeName "ClaudeSessionBrowser.exe"
@@ -88,9 +88,11 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     Flags: uninsdeletevalue; Tasks: startupicon
 
 [Run]
-; Nach dem Install optional starten (User kann Haken entfernen)
+; Nach dem Install starten - WICHTIG: auch bei Silent-Install starten!
+; Der alte Update-Batch (v1.1.2/v1.1.3) hatte einen Bug beim Relaunch.
+; Indem der Installer selbst die App startet ist der Batch egal.
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; \
-    Flags: nowait postinstall skipifsilent
+    Flags: nowait postinstall
 
 [UninstallRun]
 ; Alte Runner-Instanz beenden bevor Dateien geloescht werden (verhindert Lock)
@@ -110,13 +112,20 @@ Type: filesandordirs; Name: "{app}\_internal"
 function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
+  LockFile: String;
 begin
   Result := True;
   if WizardSilent then
   begin
+    // Alte Instanz killen
     Exec(ExpandConstant('{cmd}'),
          '/c taskkill /F /IM ' + '{#MyAppExeName}' + ' /T',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Sleep(500);
+    // 3s warten bis Mutex + Lock freigegeben
+    Sleep(3000);
+    // Stale Lock-File loeschen falls vorhanden (Single-Instance-Guard)
+    LockFile := ExpandConstant('{localappdata}\ClaudeSessionBrowser.instance.lock');
+    if FileExists(LockFile) then
+      DeleteFile(LockFile);
   end;
 end;
