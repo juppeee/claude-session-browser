@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.1.3"
+VERSION = "1.1.4"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -2987,41 +2987,72 @@ class Api:
                 except OSError: pass
             os.replace(part, setup)
 
-            # Neuer Runner-Pfad (Standard-Install-Ort per Inno Setup):
-            # %LOCALAPPDATA%\Programs\ClaudeSessionBrowser\ClaudeSessionBrowser.exe
+            # Fallback-Pfad falls Registry-Lookup nichts liefert
             lad = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-            new_runner = os.path.join(
+            fallback_runner = os.path.join(
                 lad, "Programs", "ClaudeSessionBrowser",
                 "ClaudeSessionBrowser.exe")
 
-            # Batch: Silent-Install ausfuehren, danach neuen Runner starten.
-            # Der Installer bringt sich selbst zum Abschluss und schreibt in
-            # eine Datei ob's geklappt hat.
+            # Batch fuer Silent-Install + Relaunch. Wichtige Details:
+            # - Wartet 5s (nicht 2s) bis alte Instanz + Mutex/Lock sauber freigegeben sind
+            # - Liest Install-Pfad aus Registry (funktioniert auch wenn User einen
+            #   Custom-Pfad im Wizard gewaehlt hat) mit Fallback auf Standard-Ort
+            # - Loescht Lock-File explizit (Single-Instance-Guard koennte sonst
+            #   den frischen Runner blockieren wenn die alte Instanz nicht sauber
+            #   die Lock aufgeraeumt hat)
+            # - Startet ueber "start" statt "explorer.exe" (zuverlaessiger)
+            # - Log-Datei fuer Diagnose falls's schief geht
             bat = os.path.join(tempfile.gettempdir(), "csb_installer.bat")
             marker = os.path.join(tempfile.gettempdir(),
                                   "csb_update_failed.marker")
+            log = os.path.join(tempfile.gettempdir(), "csb_update.log")
+            lock_file = os.path.join(lad, "ClaudeSessionBrowser.instance.lock")
+            app_id = "{A2E1C4F8-9B3D-4E5A-8F2B-7C6D5A4E3F21}"
+            reg_key = ("HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\"
+                       "Uninstall\\" + app_id + "_is1")
             with open(bat, "w", encoding="utf-8") as f:
                 f.write(
                     "@echo off\r\n"
                     'set "SETUP=' + setup + '"\r\n'
-                    'set "NEW=' + new_runner + '"\r\n'
+                    'set "FALLBACK=' + fallback_runner + '"\r\n'
                     'set "FAIL=' + marker + '"\r\n'
+                    'set "LOG=' + log + '"\r\n'
+                    'set "LOCK=' + lock_file + '"\r\n'
                     'if exist "%FAIL%" del "%FAIL%"\r\n'
-                    "rem Kurz warten bis alte Instanz zu ist\r\n"
-                    "ping -n 2 127.0.0.1 >nul\r\n"
+                    '> "%LOG%" echo [%%date%% %%time%%] csb update batch start\r\n'
+                    "rem Warten bis alte Instanz + Mutex + Lock freigegeben sind\r\n"
+                    "ping -n 6 127.0.0.1 >nul\r\n"
+                    "rem Lock-File explizit killen falls die alte Instanz\r\n"
+                    "rem crashed war und ihn nicht aufraeumen konnte\r\n"
+                    'if exist "%LOCK%" del /f /q "%LOCK%" 2>nul\r\n'
+                    '>> "%LOG%" echo Installer starten: %%SETUP%%\r\n'
                     "rem Installer im Silent-Mode ausfuehren\r\n"
-                    '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n'
-                    "if errorlevel 1 (\r\n"
-                    '  echo installer exit %errorlevel% > "%FAIL%"\r\n'
+                    '"%SETUP%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL\r\n'
+                    "set INST_RC=%errorlevel%\r\n"
+                    '>> "%LOG%" echo Installer exit code: %%INST_RC%%\r\n'
+                    "if not %INST_RC%==0 (\r\n"
+                    '  echo installer exit %%INST_RC%% > "%FAIL%"\r\n'
                     "  goto cleanup\r\n"
                     ")\r\n"
-                    "rem Neuen Runner starten (ueber explorer.exe = normale User-Rechte)\r\n"
-                    "ping -n 2 127.0.0.1 >nul\r\n"
-                    'if exist "%NEW%" explorer.exe "%NEW%"\r\n'
-                    "if not exist \"%NEW%\" (\r\n"
+                    "rem Install-Pfad aus Registry lesen (Custom-Dir-Support)\r\n"
+                    "set NEW=\r\n"
+                    'for /f "tokens=2,*" %%a in (\'reg query "' + reg_key + '" '
+                    '/v "InstallLocation" 2^>nul ^| find "InstallLocation"\') do '
+                    'set "NEW=%%b\\ClaudeSessionBrowser.exe"\r\n'
+                    'if not defined NEW set "NEW=%FALLBACK%"\r\n'
+                    '>> "%LOG%" echo Runner-Pfad: %%NEW%%\r\n'
+                    "rem Nochmal warten bis Inno-Files freigegeben sind\r\n"
+                    "ping -n 3 127.0.0.1 >nul\r\n"
+                    'if exist "%LOCK%" del /f /q "%LOCK%" 2>nul\r\n'
+                    'if exist "%NEW%" (\r\n'
+                    '  >> "%LOG%" echo Starte Runner...\r\n'
+                    '  start "" "%NEW%"\r\n'
+                    ") else (\r\n"
                     '  echo runner missing at %NEW% > "%FAIL%"\r\n'
+                    '  >> "%LOG%" echo FEHLER: Runner nicht gefunden\r\n'
                     ")\r\n"
                     ":cleanup\r\n"
+                    '>> "%LOG%" echo Cleanup...\r\n'
                     'del "%SETUP%" >nul 2>&1\r\n'
                     'del "%~f0"\r\n'
                 )
@@ -5145,9 +5176,25 @@ def main():
     if not owned:
         if _restore_existing_window():
             return  # bestehende Instanz wiederhergestellt -> wir sind fertig
-        # Konnte Fenster nicht finden (z.B. bestehende Instanz haengt) -
-        # dann trotzdem sauber beenden statt eine zweite parallel zu starten.
-        return
+        # Kein Fenster findbar - das kann passieren wenn a) eine alte
+        # Instanz gerade sauber beendet wurde aber der Mutex/Lock noch
+        # kurz gehalten wird, oder b) ein stale-Lock nach einem Crash
+        # rumhaengt. Statt still zu enden (der User sieht nichts passieren!)
+        # kurz warten und nochmal versuchen. Wenn dann immer noch nicht
+        # frei, trotzdem starten - besser als "App reagiert nicht auf
+        # Doppelklick" nach einem Update.
+        import time as _time
+        _time.sleep(1.5)
+        owned2, mutex_handle2 = _acquire_single_instance()
+        if owned2:
+            mutex_handle = mutex_handle2
+        else:
+            # Immer noch nicht frei UND kein Fenster gefunden ->
+            # trotzdem starten. Der Guard hat sich verzockt, aber
+            # der User erwartet dass die App aufgeht.
+            if _restore_existing_window():
+                return
+            mutex_handle = mutex_handle2  # womoeglich None
     # Handle in Modul-Scope halten bis Prozess-Ende (Mutex faellt sonst weg)
     globals()["_SINGLE_INSTANCE_HANDLE"] = mutex_handle
     api = Api()
