@@ -1,9 +1,9 @@
 {
-  "version": "1.1.0",
-  "notes": "Grosser Architektur-Wechsel: statt Onefile-EXE die sich bei jedem Start nach Temp entpackt (3-8s Startzeit + AV-Scans) jetzt ein echter Windows-Installer (Inno Setup) mit Onedir-Layout. Startzeit ~0.3s statt 3-8s. Uninstall-Eintrag in der Systemsteuerung, saubere Start-Menue-Gruppe, per-user Install ohne Admin-Prompt. Auto-Update laeuft weiter im Hintergrund (Silent-Install). Alle Einstellungen und Session-Daten in %USERPROFILE%\\.claude\\ bleiben unangetastet. Neu: 5 zusaetzliche Buddy-Anims verdrahtet (allow bei Tool-Approval-Wait, expression wink als Easter-Egg bei 10s Maus-Hover, dance sway als sanftere Party-Alternative, write/think als Rotation-Alternativen). Fix: alter self-install-Migrations-Code aus v1.0.x deaktiviert (hat bei Onedir die exe ohne _internal-Ordner kopiert und die App unstartbar gemacht) plus automatische Ein-Mal-Aufraeumung fuer alte kaputte Shortcuts + Autostart-Registry.",
+  "version": "1.1.1",
+  "notes": "Kleiner Feature+Fix-Release. Neu: (1) alle 15 Buddy-Sprites komplett ueberarbeitet - neue Grafiken, teils andere Frame-Counts, kompakter (BLOB von 5300 auf 3800 Zeichen). (2) Der Buddy unterscheidet jetzt zwischen Claude Code CLI (loest ihn aus) und Anthropic Claude Desktop-App (wird ignoriert) - falls du beide installiert hast triggert er nur noch auf den CLI. (3) Single-Instance-Guard: wenn die App in den Tray minimiert ist und du sie ueber Desktop-/Startmenue-Shortcut wieder aufrufst, wird die bestehende Instanz nach vorne geholt statt einer zweiten daneben zu starten. Sonst identisch zu v1.1.0.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "880abc51ef3619bd7904d3754983748387f0cf4fde29e9e87f2a75a93f120851",
-  "sha256": "880abc51ef3619bd7904d3754983748387f0cf4fde29e9e87f2a75a93f120851"
+  "installer_sha256": "b0fae3bbc5f916e03c83707b489919e0e16671ef2907b434bea436d37cc15317",
+  "sha256": "b0fae3bbc5f916e03c83707b489919e0e16671ef2907b434bea436d37cc15317"
 }
