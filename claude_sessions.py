@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.3.2"
+VERSION = "1.3.4"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -5197,9 +5197,27 @@ def _migrate_from_selfinstall():
             pass
 
     # 2) Shortcuts umbiegen die auf den alten kaputten Pfad zeigen
+    def _mentions_old_path(path):
+        """Steht der alte Pfad ueberhaupt in der .lnk?
+
+        Ohne diese Vorpruefung startete die Migration bei JEDEM App-Start
+        PowerShell - und jeder dieser Aufrufe blitzt als Konsolenfenster auf.
+        Eine .lnk legt Pfade als ASCII und/oder UTF-16 ab, also in beiden
+        Kodierungen suchen."""
+        try:
+            with open(path, "rb") as f:
+                data = f.read().lower()
+        except OSError:
+            return False
+        needle = old_dir.lower()
+        return (needle.encode("utf-8", "ignore") in data
+                or needle.encode("utf-16-le", "ignore") in data)
+
     def _fix_lnk(path):
         if not os.path.isfile(path):
             return
+        if not _mentions_old_path(path):
+            return          # zeigt schon woanders hin - nichts zu tun
         try:
             # Nur ueber PowerShell, weil pywin32 nicht ueberall da ist
             ps_target = _ps_escape(cur)

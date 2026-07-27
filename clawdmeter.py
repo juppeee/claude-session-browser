@@ -184,42 +184,29 @@ def poll_usage(token: str) -> dict | None:
 # --------------------------------------------------------------------------
 
 def _mac_from_instance_id(instance_id: str) -> str | None:
-    m = re.search(r"DEV_([0-9A-Fa-f]{12})(?![0-9A-Fa-f])", instance_id)
+    # Gross-/Kleinschreibung variiert: PnP liefert "DEV_", die Registry "Dev_".
+    m = re.search(r"DEV_([0-9A-Fa-f]{12})(?![0-9A-Fa-f])", instance_id,
+                  re.IGNORECASE)
     if not m:
         return None
     h = m.group(1).upper()
     return ":".join(h[i:i + 2] for i in range(0, 12, 2))
 
 
-def _run_hidden(args: list[str], timeout: int = 15) -> str:
-    """Konsolen-Programm ohne sichtbares Fenster ausfuehren.
-
-    CREATE_NO_WINDOW allein reicht nicht immer -- deshalb zusaetzlich
-    STARTUPINFO mit SW_HIDE. Sonst blitzen staendig CMD-Fenster auf."""
-    kw = {}
-    if sys.platform == "win32":
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = 0  # SW_HIDE
-        kw["startupinfo"] = si
-        # Kein DETACHED_PROCESS -- das wuerde die Ausgabe-Pipe kappen.
-        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    try:
-        result = subprocess.run(args, capture_output=True, text=True,
-                                timeout=timeout, **kw)
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout or ""
-
-
-# Die PnP-Abfrage kostet ~1s und aendert sich selten -- kurz zwischenspeichern,
-# damit der Reconnect-Loop nicht dauernd PowerShell startet.
+# Kurz zwischenspeichern -- die Liste aendert sich praktisch nie.
 _devices_cache: dict = {"at": 0.0, "value": []}
 _DEVICES_TTL = 30.0
+
+# Hier fuehrt Windows jedes gekoppelte BLE-Geraet mit Namen und Adresse.
+_BTHLE_KEY = r"SYSTEM\CurrentControlSet\Enum\BTHLE"
 
 
 def list_paired_devices(force: bool = False) -> list[dict]:
     """Alle in Windows gekoppelten BLE-Geraete: [{name, address}, ...].
+
+    Liest die Registry direkt. Frueher lief das ueber PowerShell -- das
+    riss aber jedes Mal ein Konsolenfenster auf, egal welche Flags gesetzt
+    waren. Die Registry-Variante startet keinen Prozess und ist sofort da.
 
     Ein gekoppeltes UND verbundenes Geraet sendet keine Advertisements mehr,
     ein normaler BLE-Scan findet es also nicht -- Windows kennt es aber."""
@@ -229,22 +216,44 @@ def list_paired_devices(force: bool = False) -> list[dict]:
     if not force and now - _devices_cache["at"] < _DEVICES_TTL:
         return list(_devices_cache["value"])
 
-    command = (
-        "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.InstanceId -like 'BTHLE\\DEV_*' } | "
-        "ForEach-Object { $_.FriendlyName + '|' + $_.InstanceId }"
-    )
-    stdout = _run_hidden(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command])
-
+    import winreg
     out, seen = [], set()
-    for line in stdout.splitlines():
-        name, _, instance = line.strip().partition("|")
-        mac = _mac_from_instance_id(instance)
-        if not mac or mac in seen:
-            continue
-        seen.add(mac)
-        out.append({"name": name.strip() or mac, "address": mac})
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _BTHLE_KEY) as root:
+            for i in range(4096):
+                try:
+                    dev = winreg.EnumKey(root, i)     # z.B. "Dev_98a316a5d60e"
+                except OSError:
+                    break
+                mac = _mac_from_instance_id(dev)
+                if not mac or mac in seen:
+                    continue
+
+                # Der Anzeigename haengt eine Ebene tiefer an der Instanz.
+                name = ""
+                try:
+                    with winreg.OpenKey(root, dev) as devkey:
+                        for j in range(64):
+                            try:
+                                inst = winreg.EnumKey(devkey, j)
+                            except OSError:
+                                break
+                            try:
+                                with winreg.OpenKey(devkey, inst) as ik:
+                                    name = winreg.QueryValueEx(
+                                        ik, "FriendlyName")[0]
+                                if name:
+                                    break
+                            except OSError:
+                                continue
+                except OSError:
+                    pass
+
+                seen.add(mac)
+                out.append({"name": (name or "").strip() or mac,
+                            "address": mac})
+    except OSError:
+        return list(_devices_cache["value"])
 
     _devices_cache["at"] = now
     _devices_cache["value"] = out

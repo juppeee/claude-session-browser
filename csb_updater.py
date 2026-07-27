@@ -20,7 +20,7 @@ import argparse
 import ctypes
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 APP_NAME = "ClaudeSessionBrowser"
 APP_EXE = "ClaudeSessionBrowser.exe"
 
@@ -36,35 +36,67 @@ def log(msg):
     except:
         pass
 
-def _hidden_kwargs():
-    """Keep console helpers (tasklist/taskkill) from flashing a window up."""
-    if sys.platform != "win32":
-        return {}
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = 0  # SW_HIDE
-    return {"startupinfo": si,
-            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+TH32CS_SNAPPROCESS = 0x00000002
+PROCESS_TERMINATE = 0x0001
+INVALID_HANDLE_VALUE = -1
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_ulong),
+        ("cntUsage", ctypes.c_ulong),
+        ("th32ProcessID", ctypes.c_ulong),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", ctypes.c_ulong),
+        ("cntThreads", ctypes.c_ulong),
+        ("th32ParentProcessID", ctypes.c_ulong),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", ctypes.c_ulong),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+def _pids_by_name(name):
+    """PIDs of all processes with this exe name - via Windows API.
+
+    Deliberately NOT tasklist/taskkill: every one of those spawns a console
+    window that flashes up on the user's screen, and neither CREATE_NO_WINDOW
+    nor STARTUPINFO/SW_HIDE reliably suppresses it. Polling once per 500ms
+    meant a dozen windows per update.
+    """
+    k32 = ctypes.windll.kernel32
+    snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == INVALID_HANDLE_VALUE:
+        return []
+    pids = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k32.Process32FirstW(snap, ctypes.byref(entry))
+        target = name.lower()
+        while ok:
+            if entry.szExeFile.lower() == target:
+                pids.append(entry.th32ProcessID)
+            ok = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+    return pids
 
 def is_process_running(name):
     """Check if process with given name is running."""
     try:
-        result = subprocess.run(
-            ["tasklist", "/FI", f"IMAGENAME eq {name}", "/NH"],
-            capture_output=True, text=True, timeout=10, **_hidden_kwargs()
-        )
-        return name.lower() in result.stdout.lower()
+        return bool(_pids_by_name(name))
     except:
         return False
 
 def kill_process(name, timeout=10):
     """Kill process and wait until it's gone."""
     log(f"Killing {name}...")
+    k32 = ctypes.windll.kernel32
     try:
-        subprocess.run(
-            ["taskkill", "/F", "/IM", name, "/T"],
-            capture_output=True, timeout=10, **_hidden_kwargs()
-        )
+        for pid in _pids_by_name(name):
+            handle = k32.OpenProcess(PROCESS_TERMINATE, False, pid)
+            if handle:
+                k32.TerminateProcess(handle, 1)
+                k32.CloseHandle(handle)
     except:
         pass
 

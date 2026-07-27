@@ -1,6 +1,6 @@
 {
-  "version": "1.3.2",
-  "notes": "Keine aufblitzenden CMD-Fenster mehr: die Geraetesuche laeuft jetzt unsichtbar und wird zwischengespeichert.",
+  "version": "1.3.4",
+  "notes": "Konsolenfenster endgueltig weg: Alt-Migration startete bei jedem App-Start PowerShell, der Updater rief tasklist im Halbsekundentakt auf.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"

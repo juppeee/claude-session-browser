@@ -13,7 +13,7 @@
 ; ==========================================================================
 
 #define MyAppName "Claude Session Browser"
-#define MyAppVersion "1.3.2"
+#define MyAppVersion "1.3.4"
 #define MyAppPublisher "juppeee"
 #define MyAppURL "https://github.com/juppeee/claude-session-browser"
 #define MyAppExeName "ClaudeSessionBrowser.exe"
@@ -128,9 +128,7 @@ end;
 
 function InitializeSetup(): Boolean;
 var
-  ResultCode: Integer;
   LockFile: String;
-  I: Integer;
 begin
   Result := True;
   InstallLog := ExpandConstant('{tmp}\csb_installer_debug.log');
@@ -140,19 +138,10 @@ begin
   begin
     Log('Silent-Mode erkannt');
 
-    // Mehrfach versuchen alle CSB-Prozesse zu killen
-    for I := 1 to 3 do
-    begin
-      Log('Kill-Versuch ' + IntToStr(I));
-      Exec(ExpandConstant('{cmd}'),
-           '/c taskkill /F /IM ClaudeSessionBrowser.exe /T 2>nul',
-           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-      Sleep(1000);
-    end;
-
-    // 5s warten bis alles freigegeben
-    Log('Warte 5s...');
-    Sleep(5000);
+    // KEIN taskkill ueber cmd mehr: jeder dieser Aufrufe riss ein
+    // Konsolenfenster auf (SW_HIDE hin oder her). Die laufende App beendet
+    // schon der Updater, den Rest erledigt CloseApplications=force.
+    Sleep(1000);
 
     // Lock-File loeschen
     LockFile := ExpandConstant('{localappdata}\ClaudeSessionBrowser.instance.lock');
