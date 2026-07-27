@@ -47,6 +47,7 @@ API_BODY = {
 
 POLL_INTERVAL = 60      # Sekunden zwischen zwei API-Abfragen
 RETRY_INTERVAL = 15     # Wartezeit nach einem Verbindungsfehler
+CONNECT_TIMEOUT = 20    # Abbruch wenn das Geraet nicht antwortet
 
 
 # --------------------------------------------------------------------------
@@ -190,19 +191,17 @@ def _mac_from_instance_id(instance_id: str) -> str | None:
     return ":".join(h[i:i + 2] for i in range(0, 12, 2))
 
 
-def discover_address() -> str | None:
-    """Findet die BLE-Adresse des gekoppelten Clawdmeters ueber die PnP-Tabelle.
+def list_paired_devices() -> list[dict]:
+    """Alle in Windows gekoppelten BLE-Geraete: [{name, address}, ...].
 
     Ein gekoppeltes UND verbundenes Geraet sendet keine Advertisements mehr,
-    ein normaler BLE-Scan findet es also nicht. Windows kennt die Adresse aber."""
-    if override := os.environ.get("CLAWDMETER_BLE_ADDRESS"):
-        return override.strip().upper()
+    ein normaler BLE-Scan findet es also nicht -- Windows kennt es aber."""
     if sys.platform != "win32":
-        return None
+        return []
     command = (
         "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
-        f"Where-Object {{ $_.FriendlyName -eq '{DEVICE_NAME}' }} | "
-        "Select-Object -ExpandProperty InstanceId"
+        "Where-Object { $_.InstanceId -like 'BTHLE\\DEV_*' } | "
+        "ForEach-Object { $_.FriendlyName + '|' + $_.InstanceId }"
     )
     try:
         result = subprocess.run(
@@ -211,11 +210,43 @@ def discover_address() -> str | None:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return []
+
+    out, seen = [], set()
     for line in (result.stdout or "").splitlines():
-        mac = _mac_from_instance_id(line.strip())
-        if mac:
-            return mac
+        name, _, instance = line.strip().partition("|")
+        mac = _mac_from_instance_id(instance)
+        if not mac or mac in seen:
+            continue
+        seen.add(mac)
+        out.append({"name": name.strip() or mac, "address": mac})
+    return out
+
+
+def _looks_like_clawdmeter(name: str) -> bool:
+    return "clawd" in (name or "").lower()
+
+
+def discover_address(preferred: str | None = None) -> str | None:
+    """Ermittelt die zu benutzende BLE-Adresse.
+
+    Reihenfolge:
+      1. ausdruecklich gewaehltes Geraet (Einstellungen)
+      2. CLAWDMETER_BLE_ADDRESS aus der Umgebung
+      3. gekoppeltes Geraet dessen Name nach Clawdmeter aussieht
+      4. wenn genau EIN BLE-Geraet gekoppelt ist: dieses
+    """
+    if preferred and preferred.strip():
+        return preferred.strip().upper()
+    if override := os.environ.get("CLAWDMETER_BLE_ADDRESS"):
+        return override.strip().upper()
+
+    devices = list_paired_devices()
+    for d in devices:
+        if _looks_like_clawdmeter(d["name"]):
+            return d["address"]
+    if len(devices) == 1:
+        return devices[0]["address"]
     return None
 
 
@@ -229,8 +260,12 @@ class ClawdmeterLink:
     Laeuft in einem eigenen Thread mit eigener asyncio-Loop, damit die
     pywebview-GUI davon nichts mitbekommt."""
 
-    def __init__(self, log=None):
+    def __init__(self, log=None, address_provider=None):
+        """address_provider: Funktion die die gewuenschte Geraeteadresse liefert
+        (leer/None = automatisch suchen). Wird bei jedem Versuch neu gefragt,
+        damit eine Aenderung in den Einstellungen sofort greift."""
         self._log = log or (lambda msg: None)
+        self._address_provider = address_provider or (lambda: None)
         self._thread = None
         self._stop = threading.Event()
         self._status = {"connected": False, "last_send": None,
@@ -240,8 +275,13 @@ class ClawdmeterLink:
     # -- oeffentliche API --------------------------------------------------
 
     def start(self) -> bool:
-        if self._thread and self._thread.is_alive():
-            return True
+        old = self._thread
+        if old and old.is_alive():
+            if not self._stop.is_set():
+                return True          # laeuft schon
+            # Ein stop() ist noch im Gange: kurz auf das Ende warten, damit
+            # nicht zwei Threads parallel auf dasselbe Geraet zugreifen.
+            old.join(timeout=CONNECT_TIMEOUT + 5)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="clawdmeter")
@@ -283,12 +323,14 @@ class ClawdmeterLink:
     async def _loop(self) -> None:
         import asyncio
         while not self._stop.is_set():
-            address = discover_address()
+            try:
+                preferred = self._address_provider()
+            except Exception:
+                preferred = None
+            address = discover_address(preferred)
             if not address:
                 self._set(connected=False,
-                          last_error="Geraet nicht gekoppelt")
-                self._log("Clawdmeter nicht gefunden - erst in den "
-                          "Windows-Bluetooth-Einstellungen koppeln")
+                          last_error="Kein Gerät ausgewählt")
                 await self._sleep(RETRY_INTERVAL)
                 continue
             self._set(address=address)
@@ -313,7 +355,21 @@ class ClawdmeterLink:
         def on_refresh(_char, _data) -> None:
             refresh.set()
 
-        async with BleakClient(address) as client:
+        async with BleakClient(address, timeout=CONNECT_TIMEOUT) as client:
+            # Fehlt der Service, hat das zwei moegliche Gruende: falsches
+            # Geraet gewaehlt -- oder das Geraet haengt schon an einem anderen
+            # Programm, dann liefert Windows eine unvollstaendige Service-Liste.
+            # Beides ist kein Grund aufzugeben, aber ein Schreibversuch waere
+            # zwecklos. Also melden und es spaeter nochmal probieren.
+            if not any(s.uuid.lower() == SERVICE_UUID
+                       for s in client.services):
+                self._set(connected=False, last_error=(
+                    "Gerät meldet keinen Clawdmeter-Dienst — falsches Gerät, "
+                    "oder es ist von einem anderen Programm belegt"))
+                self._log(f"{address}: kein Clawdmeter-Dienst gefunden")
+                await self._sleep(RETRY_INTERVAL)
+                return
+
             self._set(connected=True, last_error=None)
             self._log(f"Clawdmeter verbunden ({address})")
             try:

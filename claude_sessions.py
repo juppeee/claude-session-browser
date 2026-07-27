@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -120,6 +120,7 @@ DEFAULT_SETTINGS = {
         "frame_label": "CLAWD",
     },
     "clawdmeter": False,         # Usage-Werte per BLE ans Clawdmeter-Geraet schicken
+    "clawdmeter_addr": "",       # gewaehltes Geraet (leer = automatisch suchen)
 }
 
 # Wenn diese Konstante sich aendert, sehen bestehende Nutzer das Onboarding erneut
@@ -2834,18 +2835,45 @@ class Api:
             from clawdmeter import ClawdmeterLink
         except Exception:
             return None
-        self._clawdmeter = ClawdmeterLink()
+        self._clawdmeter = ClawdmeterLink(
+            address_provider=lambda: self.settings.get("clawdmeter_addr") or "")
         return self._clawdmeter
 
     def clawdmeter_state(self):
         """Status fuer die Einstellungs-Seite."""
         on = bool(self.settings.get("clawdmeter"))
+        addr = self.settings.get("clawdmeter_addr") or ""
         link = self._clawd_link()
         if link is None:
-            return {"enabled": on, "available": False,
-                    "running": False, "status": {}}
-        return {"enabled": on, "available": True,
+            return {"enabled": on, "available": False, "running": False,
+                    "address": addr, "status": {}}
+        return {"enabled": on, "available": True, "address": addr,
                 "running": link.is_running(), "status": link.status()}
+
+    def clawdmeter_devices(self):
+        """Gekoppelte BLE-Geraete fuer die Auswahl-Liste."""
+        try:
+            import clawdmeter as cm
+        except Exception:
+            return {"ok": False, "devices": []}
+        devices = cm.list_paired_devices()
+        auto = cm.discover_address(None)
+        return {"ok": True, "devices": devices, "auto": auto or ""}
+
+    def clawdmeter_pick(self, address):
+        """Geraet festlegen (leer = wieder automatisch suchen)."""
+        self.settings["clawdmeter_addr"] = (address or "").strip().upper()
+        save_json(SETTINGS_FILE, self.settings)
+        link = self._clawd_link()
+        # Laufende Verbindung neu aufbauen, damit die Wahl sofort greift.
+        if link is not None and self.settings.get("clawdmeter"):
+            link.stop()
+            for _ in range(30):
+                if not link.is_running():
+                    break
+                time.sleep(0.1)
+            link.start()
+        return self.clawdmeter_state()
 
     def clawdmeter_set(self, on):
         """Anbindung ein-/ausschalten."""
@@ -4728,6 +4756,15 @@ function renderSettings(){
         <div><div class="lbl">Anbindung aktiv</div><div class="desc" id="clawd-status">…</div></div>
         <div class="toggle ${st.clawdmeter?'on':''}" onclick="toggleClawd(this)"></div>
       </div>
+      <div class="row2">
+        <div><div class="lbl">Gerät</div><div class="desc">Welches gekoppelte Gerät benutzt wird.</div></div>
+        <select class="sel-input" id="clawd-dev" onchange="pickClawd(this.value)">
+          <option value="">Wird geladen…</option>
+        </select>
+      </div>
+      <div class="field">
+        <button class="btn" onclick="loadClawdDevices(true)">Geräte neu suchen</button>
+      </div>
     </div>
 
     <div class="card">
@@ -4740,8 +4777,34 @@ function renderSettings(){
     </div>
   `;
   refreshClawd();
+  loadClawdDevices(false);
 }
 
+async function loadClawdDevices(rescan){
+  const sel = document.getElementById('clawd-dev');
+  if(!sel) return;
+  if(rescan) sel.innerHTML = '<option value="">Suche…</option>';
+  let r;
+  try{ r = await api.clawdmeter_devices(); }catch(e){ return; }
+  const cur = (STATE.settings.clawdmeter_addr||'');
+  const devs = (r&&r.devices)||[];
+  const autoName = (devs.find(d=>d.address===(r&&r.auto))||{}).name;
+  const autoLbl = r&&r.auto ? `Automatisch (${esc(autoName||r.auto)})` : 'Automatisch (nichts gefunden)';
+  let html = `<option value="" ${cur?'':'selected'}>${autoLbl}</option>`;
+  if(!devs.length){
+    html += '<option value="" disabled>Keine gekoppelten Bluetooth-Geräte</option>';
+  } else {
+    html += devs.map(d=>`<option value="${esc(d.address)}" ${cur===d.address?'selected':''}>${esc(d.name)} — ${esc(d.address)}</option>`).join('');
+  }
+  sel.innerHTML = html;
+}
+async function pickClawd(addr){
+  const r = await api.clawdmeter_pick(addr);
+  ingest(await api.get_state());
+  const s = document.getElementById('clawd-status');
+  if(s) s.textContent = clawdText(r);
+  toast(addr ? 'Gerät gewählt ✓' : 'Gerät wird automatisch gesucht');
+}
 function clawdText(r){
   if(!r) return '';
   if(!r.available) return 'Bluetooth-Modul nicht verfügbar (bleak fehlt).';

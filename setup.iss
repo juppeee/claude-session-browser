@@ -13,7 +13,7 @@
 ; ==========================================================================
 
 #define MyAppName "Claude Session Browser"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "juppeee"
 #define MyAppURL "https://github.com/juppeee/claude-session-browser"
 #define MyAppExeName "ClaudeSessionBrowser.exe"
@@ -61,6 +61,10 @@ WizardStyle=modern
 ; Kein Restart, keine Ready-Dialoge im Silent-Mode
 CloseApplications=force
 RestartApplications=no
+; NUR die Haupt-App per Restart-Manager schliessen. Ohne diesen Filter greift
+; Inno auch nach csb_updater.exe - und genau der fuehrt gerade das Update aus.
+; Der Installer wartete dann ewig darauf, dass sich der Updater beendet.
+CloseApplicationsFilter=ClaudeSessionBrowser.exe
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
@@ -74,8 +78,10 @@ Name: "startupicon"; Description: "Beim Windows-Start automatisch mitstarten"; G
 ; Kompletter onedir-Output. Der Runner selbst + alle DLLs + _internal-Ordner.
 Source: "dist\ClaudeSessionBrowser\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\ClaudeSessionBrowser\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Separater Updater (wie Chrome/VS Code)
-Source: "dist\csb_updater.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Separater Updater (wie Chrome/VS Code). restartreplace: laeuft gerade eine
+; alte Updater-Version aus diesem Ordner, ist die Datei gesperrt - dann wird
+; sie beim naechsten Neustart ersetzt statt den Install scheitern zu lassen.
+Source: "dist\csb_updater.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

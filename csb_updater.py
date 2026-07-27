@@ -20,7 +20,7 @@ import argparse
 import ctypes
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 APP_NAME = "ClaudeSessionBrowser"
 APP_EXE = "ClaudeSessionBrowser.exe"
 
@@ -130,7 +130,50 @@ def start_app(app_path):
         log(f"Failed to start app: {e}")
         return False
 
-def do_install(setup_path):
+def relaunch_from_temp(setup_path):
+    """Copy self to TEMP and continue from there.
+
+    The updater is installed INTO the app folder, so the installer needs to
+    replace the very file we are running from - Windows locks it and the
+    install hangs. Chrome/VS Code solve this the same way: run the updater
+    from a scratch copy outside the install directory.
+
+    Returns True when a copy was launched (caller should exit).
+    """
+    if not getattr(sys, "frozen", False):
+        return False  # running as .py, nothing is locked
+
+    src = Path(sys.executable)
+    dst = Path(os.environ.get("TEMP", ".")) / "csb_updater_run.exe"
+    try:
+        if src.resolve() == dst.resolve():
+            return False  # already the temp copy
+    except OSError:
+        pass
+
+    try:
+        import shutil
+        shutil.copy2(src, dst)
+    except OSError as e:
+        log(f"Could not copy updater to temp: {e} - continuing in place")
+        return False
+
+    log(f"Relaunching from {dst}")
+    try:
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        DETACHED_PROCESS = 0x00000008
+        subprocess.Popen(
+            [str(dst), "--install", str(setup_path), "--relaunched"],
+            creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+            close_fds=True,
+        )
+        return True
+    except OSError as e:
+        log(f"Relaunch failed: {e} - continuing in place")
+        return False
+
+
+def do_install(setup_path, relaunched=False):
     """Main install routine."""
     log(f"=== CSB Updater v{VERSION} ===")
     log(f"Setup: {setup_path}")
@@ -138,6 +181,9 @@ def do_install(setup_path):
     if not os.path.exists(setup_path):
         log(f"ERROR: Setup not found: {setup_path}")
         return False
+
+    if not relaunched and relaunch_from_temp(setup_path):
+        return True  # the temp copy takes over from here
 
     # Wait for main app to exit (it should have closed itself)
     wait_for_process_exit(APP_EXE, timeout=10)
@@ -191,6 +237,8 @@ def do_install(setup_path):
 def main():
     parser = argparse.ArgumentParser(description="CSB Updater")
     parser.add_argument("--install", metavar="SETUP", help="Install from setup.exe")
+    parser.add_argument("--relaunched", action="store_true",
+                        help=argparse.SUPPRESS)  # internal: already the temp copy
     parser.add_argument("--version", action="store_true", help="Show version")
     args = parser.parse_args()
 
@@ -199,7 +247,7 @@ def main():
         return 0
 
     if args.install:
-        success = do_install(args.install)
+        success = do_install(args.install, relaunched=args.relaunched)
         return 0 if success else 1
 
     parser.print_help()

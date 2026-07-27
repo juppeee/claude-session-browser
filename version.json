@@ -1,6 +1,6 @@
 {
-  "version": "1.3.0",
-  "notes": "Clawdmeter-Anbindung: Session Browser schickt die Claude-Auslastung direkt per Bluetooth ans Geraet - der separate Daemon wird nicht mehr gebraucht.",
+  "version": "1.3.1",
+  "notes": "Clawdmeter: Geraeteauswahl in den Einstellungen (nicht mehr auf den Namen 'Clawdmeter' festgenagelt). Updater laeuft jetzt aus TEMP - er blockierte sich beim Update selbst.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"
