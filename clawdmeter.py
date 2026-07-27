@@ -191,36 +191,64 @@ def _mac_from_instance_id(instance_id: str) -> str | None:
     return ":".join(h[i:i + 2] for i in range(0, 12, 2))
 
 
-def list_paired_devices() -> list[dict]:
+def _run_hidden(args: list[str], timeout: int = 15) -> str:
+    """Konsolen-Programm ohne sichtbares Fenster ausfuehren.
+
+    CREATE_NO_WINDOW allein reicht nicht immer -- deshalb zusaetzlich
+    STARTUPINFO mit SW_HIDE. Sonst blitzen staendig CMD-Fenster auf."""
+    kw = {}
+    if sys.platform == "win32":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kw["startupinfo"] = si
+        # Kein DETACHED_PROCESS -- das wuerde die Ausgabe-Pipe kappen.
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(args, capture_output=True, text=True,
+                                timeout=timeout, **kw)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout or ""
+
+
+# Die PnP-Abfrage kostet ~1s und aendert sich selten -- kurz zwischenspeichern,
+# damit der Reconnect-Loop nicht dauernd PowerShell startet.
+_devices_cache: dict = {"at": 0.0, "value": []}
+_DEVICES_TTL = 30.0
+
+
+def list_paired_devices(force: bool = False) -> list[dict]:
     """Alle in Windows gekoppelten BLE-Geraete: [{name, address}, ...].
 
     Ein gekoppeltes UND verbundenes Geraet sendet keine Advertisements mehr,
     ein normaler BLE-Scan findet es also nicht -- Windows kennt es aber."""
     if sys.platform != "win32":
         return []
+    now = time.time()
+    if not force and now - _devices_cache["at"] < _DEVICES_TTL:
+        return list(_devices_cache["value"])
+
     command = (
         "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
         "Where-Object { $_.InstanceId -like 'BTHLE\\DEV_*' } | "
         "ForEach-Object { $_.FriendlyName + '|' + $_.InstanceId }"
     )
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True, text=True, timeout=15,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
+    stdout = _run_hidden(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command])
 
     out, seen = [], set()
-    for line in (result.stdout or "").splitlines():
+    for line in stdout.splitlines():
         name, _, instance = line.strip().partition("|")
         mac = _mac_from_instance_id(instance)
         if not mac or mac in seen:
             continue
         seen.add(mac)
         out.append({"name": name.strip() or mac, "address": mac})
-    return out
+
+    _devices_cache["at"] = now
+    _devices_cache["value"] = out
+    return list(out)
 
 
 def _looks_like_clawdmeter(name: str) -> bool:

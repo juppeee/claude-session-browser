@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -2850,13 +2850,13 @@ class Api:
         return {"enabled": on, "available": True, "address": addr,
                 "running": link.is_running(), "status": link.status()}
 
-    def clawdmeter_devices(self):
+    def clawdmeter_devices(self, force=False):
         """Gekoppelte BLE-Geraete fuer die Auswahl-Liste."""
         try:
             import clawdmeter as cm
         except Exception:
             return {"ok": False, "devices": []}
-        devices = cm.list_paired_devices()
+        devices = cm.list_paired_devices(force=bool(force))
         auto = cm.discover_address(None)
         return {"ok": True, "devices": devices, "auto": auto or ""}
 
@@ -4785,7 +4785,7 @@ async function loadClawdDevices(rescan){
   if(!sel) return;
   if(rescan) sel.innerHTML = '<option value="">Suche…</option>';
   let r;
-  try{ r = await api.clawdmeter_devices(); }catch(e){ return; }
+  try{ r = await api.clawdmeter_devices(!!rescan); }catch(e){ return; }
   const cur = (STATE.settings.clawdmeter_addr||'');
   const devs = (r&&r.devices)||[];
   const autoName = (devs.find(d=>d.address===(r&&r.auto))||{}).name;

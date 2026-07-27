@@ -36,12 +36,22 @@ def log(msg):
     except:
         pass
 
+def _hidden_kwargs():
+    """Keep console helpers (tasklist/taskkill) from flashing a window up."""
+    if sys.platform != "win32":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0  # SW_HIDE
+    return {"startupinfo": si,
+            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
 def is_process_running(name):
     """Check if process with given name is running."""
     try:
         result = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {name}", "/NH"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10, **_hidden_kwargs()
         )
         return name.lower() in result.stdout.lower()
     except:
@@ -53,7 +63,7 @@ def kill_process(name, timeout=10):
     try:
         subprocess.run(
             ["taskkill", "/F", "/IM", name, "/T"],
-            capture_output=True, timeout=10
+            capture_output=True, timeout=10, **_hidden_kwargs()
         )
     except:
         pass
