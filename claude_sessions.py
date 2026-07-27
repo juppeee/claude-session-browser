@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -119,6 +119,7 @@ DEFAULT_SETTINGS = {
         "frame_color": "#ec7456",
         "frame_label": "CLAWD",
     },
+    "clawdmeter": False,         # Usage-Werte per BLE ans Clawdmeter-Geraet schicken
 }
 
 # Wenn diese Konstante sich aendert, sehen bestehende Nutzer das Onboarding erneut
@@ -2822,6 +2823,40 @@ class Api:
         self.buddy.surprise()
         return {"ok": True}
 
+    # ---- Clawdmeter (BLE-Usage-Anzeige) --------------------------------
+
+    def _clawd_link(self):
+        """Lazy-Init des BLE-Links. None wenn das Modul nicht verfuegbar ist."""
+        link = getattr(self, "_clawdmeter", None)
+        if link is not None:
+            return link
+        try:
+            from clawdmeter import ClawdmeterLink
+        except Exception:
+            return None
+        self._clawdmeter = ClawdmeterLink()
+        return self._clawdmeter
+
+    def clawdmeter_state(self):
+        """Status fuer die Einstellungs-Seite."""
+        on = bool(self.settings.get("clawdmeter"))
+        link = self._clawd_link()
+        if link is None:
+            return {"enabled": on, "available": False,
+                    "running": False, "status": {}}
+        return {"enabled": on, "available": True,
+                "running": link.is_running(), "status": link.status()}
+
+    def clawdmeter_set(self, on):
+        """Anbindung ein-/ausschalten."""
+        on = bool(on)
+        self.settings["clawdmeter"] = on
+        save_json(SETTINGS_FILE, self.settings)
+        link = self._clawd_link()
+        if link is not None:
+            link.start() if on else link.stop()
+        return self.clawdmeter_state()
+
     def set_autostart(self, on):
         """Autostart im Windows-Registry setzen und Setting speichern."""
         ok = set_autostart(bool(on))
@@ -4687,6 +4722,15 @@ function renderSettings(){
     </div>
 
     <div class="card">
+      <h2>Clawdmeter</h2>
+      <div class="sub">Schickt deine Claude-Auslastung per Bluetooth an ein Clawdmeter-Gerät. Das Gerät muss einmalig in den Windows-Bluetooth-Einstellungen gekoppelt werden.</div>
+      <div class="row2">
+        <div><div class="lbl">Anbindung aktiv</div><div class="desc" id="clawd-status">…</div></div>
+        <div class="toggle ${st.clawdmeter?'on':''}" onclick="toggleClawd(this)"></div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Updates</h2>
       <div class="sub">Aktuelle Version: v${esc(STATE.version||'?')} — beim Start wird automatisch nach Updates gesucht (ohne Internet wird das übersprungen).</div>
       <div class="field">
@@ -4695,7 +4739,33 @@ function renderSettings(){
       </div>
     </div>
   `;
+  refreshClawd();
 }
+
+function clawdText(r){
+  if(!r) return '';
+  if(!r.available) return 'Bluetooth-Modul nicht verfügbar (bleak fehlt).';
+  if(!r.enabled) return 'Aus.';
+  const s = r.status || {};
+  if(s.connected){
+    const ago = s.last_send ? Math.round(Date.now()/1000 - s.last_send) : null;
+    return ago===null ? 'Verbunden.' : `Verbunden — zuletzt gesendet vor ${ago}s.`;
+  }
+  return s.last_error ? `Nicht verbunden: ${s.last_error}` : 'Verbinde…';
+}
+async function refreshClawd(){
+  const el = document.getElementById('clawd-status');
+  if(!el) return;
+  try{ el.textContent = clawdText(await api.clawdmeter_state()); }catch(e){}
+}
+async function toggleClawd(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  const r = await api.clawdmeter_set(on);
+  const s = document.getElementById('clawd-status');
+  if(s) s.textContent = clawdText(r);
+  toast(on?'Clawdmeter an ✓':'Clawdmeter aus');
+}
+setInterval(()=>{ if(document.getElementById('clawd-status')) refreshClawd(); }, 5000);
 
 async function toggleTray(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
@@ -5310,6 +5380,15 @@ def main():
     if s.get("buddy", {}).get("enabled"):
         try:
             api.buddy.start()
+        except Exception:
+            pass
+
+    # Clawdmeter-Anbindung anwerfen, wenn sie zuletzt an war.
+    if s.get("clawdmeter"):
+        try:
+            link = api._clawd_link()
+            if link:
+                link.start()
         except Exception:
             pass
 

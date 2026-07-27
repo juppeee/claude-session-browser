@@ -1,6 +1,6 @@
 {
-  "version": "1.2.0",
-  "notes": "Neuer Updater: Separater csb_updater.exe wie Chrome/VS Code - robustes Auto-Update.",
+  "version": "1.3.0",
+  "notes": "Clawdmeter-Anbindung: Session Browser schickt die Claude-Auslastung direkt per Bluetooth ans Geraet - der separate Daemon wird nicht mehr gebraucht.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"
