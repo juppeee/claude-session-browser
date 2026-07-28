@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -986,9 +986,9 @@ def _win_process_names():
 
 
 def _win_process_names_with_path():
-    """Wie _win_process_names, gibt aber (name, path)-Tupel zurueck. Der Pfad
-    kann leer sein wenn OpenProcess/QueryFullProcessImageName fehlschlaegt
-    (Rechte-Problem bei System-Prozessen)."""
+    """Wie _win_process_names, gibt aber (name, path, pid)-Tupel zurueck. Der
+    Pfad kann leer sein wenn OpenProcess/QueryFullProcessImageName
+    fehlschlaegt (Rechte-Problem bei System-Prozessen)."""
     if not _IS_WIN:
         return []
     try:
@@ -1036,7 +1036,7 @@ def _win_process_names_with_path():
                             k.CloseHandle(ph)
                     except Exception:
                         path = ""
-                results.append((name, path))
+                results.append((name, path, pid))
                 if not k.Process32Next(h, ctypes.byref(pe)):
                     break
         k.CloseHandle(h)
@@ -1046,7 +1046,10 @@ def _win_process_names_with_path():
 
 
 # Cache fuer den Prozess-/Fenster-Scan – wird alle 2 s neu berechnet.
-_CLAUDE_CACHE = {"t": 0.0, "active": False}
+# "keys" ist der Fingerabdruck der aktuell offenen Claude-Kontexte (PIDs +
+# Fenstertitel). Damit laesst sich unterscheiden ob nur noch dieselben
+# Terminals offen sind oder ein NEUES dazugekommen ist.
+_CLAUDE_CACHE = {"t": 0.0, "active": False, "keys": frozenset()}
 # Genauer Titel unseres Hauptfensters (pywebview.create_window). Wichtig:
 # EXAKT-Match nutzen – nicht als Substring – damit z.B. das Claude-Code-CLI
 # Fenster mit Titel „⠂ Claude Session Browser Tool Development" nicht
@@ -1067,62 +1070,94 @@ def _claude_context_active():
     if now - _CLAUDE_CACHE["t"] < 2.0:
         return _CLAUDE_CACHE["active"]
     _CLAUDE_CACHE["t"] = now
-    active = False
+    keys = set()
     try:
         # 1) claude.exe direkt (CLI-Installation). ABSICHTLICH nicht triggern
         # fuer die Anthropic Claude Desktop-App (%LOCALAPPDATA%\AnthropicClaude\
         # claude.exe) - das ist ein Chat-Client, kein CLI, und hat nichts mit
         # unserer JSONL-Detection zu tun. Wir filtern nach Prozesspfad falls
         # verfuegbar.
-        for name, path in _win_process_names_with_path():
+        for name, path, pid in _win_process_names_with_path():
             if name != "claude.exe":
                 continue
             if path and "anthropicclaude" in path.lower():
                 # Desktop-App - ignorieren
                 continue
-            active = True
-            break
+            keys.add(("pid", pid))
         # 2) Fenster mit 'claude' im Titel (locker), Browser + Eigen-App raus
-        if not active:
-            browser_hints = (
-                " — google chrome", " - google chrome",
-                " — firefox", " - firefox",
-                " — brave", " - brave",
-                " — microsoft edge", " - microsoft edge",
-                " — opera", " - opera",
-                " and 1 more page", " and 2 more page",
-                "chat.openai.com", "claude.ai",   # Web-Claude nicht mitzaehlen
-                "anthropic.com",
-            )
-            for title in _win_list_windows():
-                t = title.lower()
-                if not t or t.strip() == _OWN_APP_TITLE_EXACT:
-                    continue
-                if "claude" not in t:
-                    continue
-                if any(b in t for b in browser_hints):
-                    continue
-                active = True
-                break
+        # Wird auch dann durchlaufen wenn schon ein Prozess passte: die Titel
+        # gehoeren mit in den Fingerabdruck, sonst faellt ein zweites Terminal
+        # desselben Prozessbaums nicht auf.
+        browser_hints = (
+            " — google chrome", " - google chrome",
+            " — firefox", " - firefox",
+            " — brave", " - brave",
+            " — microsoft edge", " - microsoft edge",
+            " — opera", " - opera",
+            " and 1 more page", " and 2 more page",
+            "chat.openai.com", "claude.ai",   # Web-Claude nicht mitzaehlen
+            "anthropic.com",
+        )
+        for hwnd, title in _win_list_windows_hwnd():
+            t = title.lower()
+            if not t or t.strip() == _OWN_APP_TITLE_EXACT:
+                continue
+            if "claude" not in t:
+                continue
+            if any(b in t for b in browser_hints):
+                continue
+            # Fenster-Handle statt Titel: der Titel eines Claude-Terminals
+            # aendert sich staendig (Spinner-Zeichen, aktueller Task) - als
+            # Fingerabdruck waere er wertlos, das Handle bleibt stabil.
+            keys.add(("win", hwnd))
         # KEIN mtime-Fallback mehr: Buddy soll direkt verschwinden wenn die
         # Claude-CLI geschlossen wird – nicht noch 5 Min nach Aktivitaet
         # sichtbar bleiben. Erkennung nur ueber laufenden Prozess + offenes
         # Fenster.
     except Exception:
         pass
-    _CLAUDE_CACHE["active"] = active
-    return active
+    _CLAUDE_CACHE["keys"] = frozenset(keys)
+    _CLAUDE_CACHE["active"] = bool(keys)
+    return _CLAUDE_CACHE["active"]
 
 
-def _win_list_windows():
-    """Liste sichtbarer Fenstertitel (Duplikate raus). Fuer den Picker im
-    Buddy-Tab."""
+def _snooze_over(snooze, keys, empty_since, now, grace=5.0):
+    """Ist der Buddy-Snooze vorbei? -> (vorbei, neues_empty_since)
+
+    `snooze` ist der Kontext-Fingerabdruck vom Moment des Wegklickens.
+    Vorbei ist der Snooze wenn ein Kontext dazugekommen ist (neues Terminal),
+    oder wenn alle damals offenen Kontexte seit `grace` Sekunden weg sind.
+    Die Karenzzeit faengt ab, dass ein Fenstertitel mal kurz kein "claude"
+    enthaelt - das soll den Buddy nicht zurueckholen.
+    """
+    if keys - snooze:
+        return True, 0.0
+    if keys or not snooze:
+        # Unveraenderte Lage, oder von Anfang an kein Kontext bekannt: dann
+        # beendet nur ein neuer Kontext den Snooze.
+        return False, 0.0
+    if not empty_since:
+        return False, now
+    return (now - empty_since >= grace), empty_since
+
+
+def _claude_context_keys():
+    """Fingerabdruck der gerade offenen Claude-Kontexte (siehe _CLAUDE_CACHE).
+
+    Nutzt denselben 2-s-Cache wie _claude_context_active - der Aufruf kostet
+    also nichts extra wenn beides im selben Tick abgefragt wird.
+    """
+    _claude_context_active()
+    return _CLAUDE_CACHE["keys"]
+
+
+def _win_list_windows_hwnd():
+    """Sichtbare Fenster als (hwnd, titel)-Liste, ungefiltert."""
     if not _IS_WIN:
         return []
     try:
         u = ctypes.windll.user32
-        seen = []
-        seen_set = set()
+        out = []
 
         EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool,
                                       ctypes.c_void_p, ctypes.c_void_p)
@@ -1136,15 +1171,26 @@ def _win_list_windows():
             buf = ctypes.create_unicode_buffer(n + 1)
             u.GetWindowTextW(hwnd, buf, n + 1)
             t = (buf.value or "").strip()
-            if t and t not in seen_set and len(t) < 200:
-                seen_set.add(t)
-                seen.append(t)
+            if t and len(t) < 200:
+                out.append((int(hwnd or 0), t))
             return True
 
         u.EnumWindows(EnumProc(cb), 0)
-        return sorted(seen, key=str.lower)
+        return out
     except Exception:
         return []
+
+
+def _win_list_windows():
+    """Liste sichtbarer Fenstertitel (Duplikate raus). Fuer den Picker im
+    Buddy-Tab."""
+    seen = []
+    seen_set = set()
+    for _hwnd, t in _win_list_windows_hwnd():
+        if t not in seen_set:
+            seen_set.add(t)
+            seen.append(t)
+    return sorted(seen, key=str.lower)
 
 
 def _latest_session_mtime(projects_dir, max_files=200):
@@ -1653,6 +1699,10 @@ class BuddyController:
             "was_visible": False,      # letzter apply_visibility-Zustand
             "tick": 0,
             "hover": False,            # Maus ueber Buddy -> transparent machen
+            # None = kein Snooze. Sonst: Fingerabdruck der Claude-Kontexte die
+            # beim Wegklicken offen waren (siehe desired_visible).
+            "snooze_keys": None,
+            "snooze_empty_since": 0.0,
         }
 
         # ---- Drag & Drop ----
@@ -1687,7 +1737,7 @@ class BuddyController:
         canvas.bind("<Button-1>", on_press)
         canvas.bind("<B1-Motion>", on_drag)
         canvas.bind("<ButtonRelease-1>", on_release)
-        # Doppelklick oder Rechtsklick -> ausblenden
+        # Doppelklick oder Rechtsklick -> voruebergehend wegschicken (Snooze)
         canvas.bind("<Double-Button-1>",
                     lambda e: self._q.put(("hide_toggle", None)))
         canvas.bind("<Button-3>",
@@ -1808,7 +1858,7 @@ class BuddyController:
                 fg_cache["tick"] = tick_count
             return fg_cache["title"]
 
-        def desired_visible():
+        def _desired_visible_raw():
             bud = self.api.settings.get("buddy", {})
             if not bud.get("enabled"):
                 return False
@@ -1836,6 +1886,40 @@ class BuddyController:
             if mode == "when_claude":
                 return _claude_context_active()
             return True
+
+        def desired_visible():
+            """Wie _desired_visible_raw, aber mit Snooze.
+
+            Doppel-/Rechtsklick blendet den Buddy nur voruebergehend aus - er
+            bleibt in den Settings aktiviert. Zurueck kommt er sobald ein
+            NEUER Claude-Kontext auftaucht (neues Terminal) oder alle
+            weggeklickten Terminals zu sind.
+
+            Bewusst NICHT beendet wird der Snooze durch blosses Alt-Tabben:
+            dass der Buddy nach den normalen Regeln gerade unsichtbar ist
+            heisst nicht, dass der User ihn wiederhaben will.
+            """
+            want = _desired_visible_raw()
+            snooze = state.get("snooze_keys")
+            if snooze is not None:
+                keys = _claude_context_keys()
+                on_buddy_tab = (
+                    getattr(self.api, "_current_view", "") == "buddy"
+                    and self._app_window_visible())
+                if state.get("placing") or on_buddy_tab:
+                    # Buddy-Tab offen oder Platzier-Modus -> immer zeigen,
+                    # sonst sucht der User im Leeren.
+                    state["snooze_keys"] = None
+                    state["snooze_empty_since"] = 0.0
+                else:
+                    over, since = _snooze_over(
+                        snooze, keys,
+                        state.get("snooze_empty_since") or 0.0, time.time())
+                    state["snooze_empty_since"] = since
+                    if not over:
+                        return False
+                    state["snooze_keys"] = None
+            return want
 
         _visible = {"v": None}
         state["invisible_since"] = 0.0  # Zeit seit want=False (0 wenn sichtbar)
@@ -2144,7 +2228,10 @@ class BuddyController:
                             pass
                         return False
                     elif cmd == "refresh":
-                        # Buddy-Einstellungen neu einlesen
+                        # Buddy-Einstellungen neu einlesen. Wer an den
+                        # Einstellungen dreht will ihn sehen -> Snooze weg.
+                        state["snooze_keys"] = None
+                        state["snooze_empty_since"] = 0.0
                         new = self.api.settings.get("buddy", {})
                         new_scale = max(2, min(10, int(new.get("size", 4))))
                         new_op = max(20, min(100, int(new.get("opacity", 100)))) / 100.0
@@ -2165,19 +2252,13 @@ class BuddyController:
                                 state["target_alpha"] = new_op
                         _visible["v"] = None
                     elif cmd == "hide_toggle":
-                        # Rechtsklick -> Buddy ausblenden (in Settings)
-                        bud = self.api.settings.setdefault("buddy", {})
-                        bud["enabled"] = False
-                        try:
-                            save_json(SETTINGS_FILE, self.api.settings)
-                        except Exception:
-                            pass
-                        self._alive = False
-                        try:
-                            root.destroy()
-                        except Exception:
-                            pass
-                        return False
+                        # Doppel-/Rechtsklick -> nur wegschnoozen. Der Buddy
+                        # bleibt in den Settings aktiviert und der Thread
+                        # laeuft weiter; er kommt beim naechsten neuen
+                        # Claude-Terminal von selbst zurueck.
+                        state["snooze_keys"] = _claude_context_keys()
+                        state["snooze_empty_since"] = 0.0
+                        _visible["v"] = None
                     elif cmd == "pulse":
                         state["surprise_until"] = time.time() + 1.6
                     elif cmd == "place":
@@ -4033,7 +4114,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="row"><div class="k">Aktivieren</div><div class="v">Tab „Buddy" → Toggle „An". Beim ersten Mal steht er in der Bildschirmmitte.</div></div>
         <div class="row"><div class="k">Platzieren</div><div class="v">Ecken/Kanten per Schnellwahl (auf jedem Monitor) oder „Buddy platzieren…" für freies Ziehen mit Raster.</div></div>
         <div class="row"><div class="k">Aussehen</div><div class="v">Größe 40–200 px, Deckkraft, optionaler Rahmen in deiner Wunschfarbe.</div></div>
-        <div class="row"><div class="k">Rechtsklick</div><div class="v">Buddy auf dem Desktop rechtsklicken blendet ihn schnell aus.</div></div>
+        <div class="row"><div class="k">Rechtsklick</div><div class="v">Rechtsklick oder Doppelklick auf den Buddy schickt ihn kurz weg – ausgeschaltet wird er dadurch nicht. Beim nächsten neuen Claude-Terminal ist er wieder da.</div></div>
       </div>
     </div>
 
@@ -4452,7 +4533,7 @@ async function renderBuddy(){
       <div class="ba-headline">
         <div>
           <h2>Dein kleiner Buddy auf dem Desktop</h2>
-          <div class="sub">Ein winziger animierter Clawd (20×20 Pixel) schwebt auf dem Desktop – frameless, immer im Vordergrund. Zieh ihn mit der Maus wohin du magst. Rechtsklick auf ihn blendet ihn aus.</div>
+          <div class="sub">Ein winziger animierter Clawd (20×20 Pixel) schwebt auf dem Desktop – frameless, immer im Vordergrund. Zieh ihn mit der Maus wohin du magst. Rechts- oder Doppelklick schickt ihn kurz weg – er kommt beim nächsten neuen Claude-Terminal von selbst zurück.</div>
         </div>
         <div class="ba-toggle">
           <div class="toggle ${b.enabled?'on':''}" onclick="buddyToggle()"></div>
