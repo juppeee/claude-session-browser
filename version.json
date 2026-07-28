@@ -1,6 +1,6 @@
 {
-  "version": "1.3.5",
-  "notes": "Doppel- oder Rechtsklick auf den Buddy schaltet ihn nicht mehr in den Einstellungen ab, sondern schickt ihn nur weg. Er kommt beim naechsten neuen Claude-Terminal von selbst zurueck.",
+  "version": "1.3.6",
+  "notes": "Vorwarnung bevor das 5-Stunden-Limit voll ist, Reset-Meldung jetzt aus den echten API-Daten. Einstellungen mit Icons und Gruppen.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"
