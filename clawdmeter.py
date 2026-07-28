@@ -115,21 +115,38 @@ def _pct(value: str) -> int:
         return 0
 
 
+def _reset_epoch(reset_ts: str) -> float:
+    """Reset-Header (Epoch-Sekunden) -> float. 0.0 wenn unlesbar."""
+    try:
+        return float(reset_ts)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _reset_minutes(reset_ts: str, now: float) -> int:
     """Reset-Header (Epoch-Sekunden) -> verbleibende Minuten."""
-    try:
-        ts = float(reset_ts)
-    except (TypeError, ValueError):
-        return 0
+    ts = _reset_epoch(reset_ts)
     mins = (ts - now) / 60.0
     return int(round(mins)) if mins > 0 else 0
 
 
 def poll_usage(token: str) -> dict | None:
+    """Wie poll_usage_meta, aber nur der BLE-Payload."""
+    payload, _meta = poll_usage_meta(token)
+    return payload
+
+
+def poll_usage_meta(token: str) -> tuple[dict | None, dict]:
     """Fragt die Ratelimit-Header bei der Anthropic-API ab.
 
     Schickt eine Mini-Anfrage (1 Token) -- die Antwort interessiert nicht,
-    nur die Header. Gibt den fertigen BLE-Payload zurueck oder None."""
+    nur die Header. Gibt (BLE-Payload, Meta) zurueck; Payload ist None wenn
+    die Abfrage fehlschlug.
+
+    Meta traegt die rohen Reset-Zeitpunkte als Epoch. Der Payload kann die
+    nicht liefern: der schickt dem Geraet nur noch verbleibende MINUTEN, und
+    aus einer gerundeten Minutenzahl laesst sich kein stabiler Zeitpunkt
+    zurueckrechnen -- fuer den Reset-Timer brauchen wir aber genau den."""
     headers = dict(API_HEADERS)
     headers["Authorization"] = f"Bearer {token}"
     body = json.dumps(API_BODY).encode()
@@ -142,15 +159,22 @@ def poll_usage(token: str) -> dict | None:
         # 429 & Co. liefern die Header trotzdem mit
         hdrs = e.headers
         if e.code in (401, 403):
-            return None
+            return None, {}
     except Exception:
-        return None
+        return None, {}
 
     def hdr(name: str, default: str = "") -> str:
         return hdrs.get(name) or default
 
     now = time.time()
+    meta = {}
     if hdr("anthropic-ratelimit-unified-5h-utilization"):
+        meta = {
+            "session_reset_at": _reset_epoch(
+                hdr("anthropic-ratelimit-unified-5h-reset")),
+            "weekly_reset_at": _reset_epoch(
+                hdr("anthropic-ratelimit-unified-7d-reset")),
+        }
         payload = {
             "s": _pct(hdr("anthropic-ratelimit-unified-5h-utilization")),
             "sr": _reset_minutes(hdr("anthropic-ratelimit-unified-5h-reset"), now),
@@ -161,6 +185,11 @@ def poll_usage(token: str) -> dict | None:
             "ok": True,
         }
     elif hdr("anthropic-ratelimit-unified-overage-utilization"):
+        meta = {
+            "session_reset_at": _reset_epoch(
+                hdr("anthropic-ratelimit-unified-overage-reset")),
+            "weekly_reset_at": 0.0,
+        }
         payload = {
             "s": _pct(hdr("anthropic-ratelimit-unified-overage-utilization")),
             "sr": _reset_minutes(hdr("anthropic-ratelimit-unified-overage-reset"), now),
@@ -171,12 +200,16 @@ def poll_usage(token: str) -> dict | None:
             "ok": True,
         }
     else:
-        return None
+        return None, {}
 
     # Uhrzeit fuers Display (lokale Wall-Clock als Epoch)
     payload["t"] = int(time.time()) + time.localtime().tm_gmtoff
     payload["tf"] = 24
-    return payload
+    meta["session_pct"] = payload["s"]
+    meta["weekly_pct"] = payload["w"]
+    meta["status"] = payload["st"]
+    meta["at"] = now
+    return payload, meta
 
 
 # --------------------------------------------------------------------------
@@ -297,12 +330,16 @@ class ClawdmeterLink:
     Laeuft in einem eigenen Thread mit eigener asyncio-Loop, damit die
     pywebview-GUI davon nichts mitbekommt."""
 
-    def __init__(self, log=None, address_provider=None):
+    def __init__(self, log=None, address_provider=None, on_usage=None):
         """address_provider: Funktion die die gewuenschte Geraeteadresse liefert
         (leer/None = automatisch suchen). Wird bei jedem Versuch neu gefragt,
-        damit eine Aenderung in den Einstellungen sofort greift."""
+        damit eine Aenderung in den Einstellungen sofort greift.
+
+        on_usage: wird nach jeder erfolgreichen API-Abfrage mit dem Meta-Dict
+        gerufen (siehe poll_usage_meta)."""
         self._log = log or (lambda msg: None)
         self._address_provider = address_provider or (lambda: None)
+        self._on_usage = on_usage
         self._thread = None
         self._stop = threading.Event()
         self._status = {"connected": False, "last_send": None,
@@ -435,14 +472,86 @@ class ClawdmeterLink:
         if not token:
             self._set(last_error="Kein Claude-Token gefunden")
             return
-        payload = await asyncio.to_thread(poll_usage, token)
+        payload, meta = await asyncio.to_thread(poll_usage_meta, token)
         if not payload:
             self._set(last_error="API-Abfrage fehlgeschlagen")
             return
+        # Die Limit-Ueberwachung mitfuettern, damit sie nicht dieselben
+        # Header ein zweites Mal abfragen muss.
+        if self._on_usage and meta:
+            try:
+                self._on_usage(meta)
+            except Exception:
+                pass
         data = json.dumps(payload, separators=(",", ":")).encode()
         await client.write_gatt_char(RX_CHAR_UUID, data, response=False)
         self._set(last_send=time.time(), last_error=None)
         self._log(f"Clawdmeter: {payload['s']}% / {payload['w']}%")
+
+
+class UsageWatcher:
+    """Haelt die Ratelimit-Werte aktuell, auch ohne Clawdmeter-Hardware.
+
+    Der ClawdmeterLink fragt die Header nur ab solange eine BLE-Verbindung
+    steht. Fuer die Limit-Benachrichtigungen brauchen wir die Werte aber
+    unabhaengig davon, also pollt dieser Thread selbst -- allerdings nur
+    wenn `is_covered()` False meldet, sonst wuerden zwei Poller dieselben
+    Header holen und jeder Aufruf kostet echte Requests.
+
+    Bewusst traege getaktet: den genauen Reset-Zeitpunkt liefert die API als
+    Zeitstempel mit, den Rest erledigt ein Timer. Haeufiges Pollen wuerde
+    daran nichts verbessern.
+    """
+
+    INTERVAL = 300.0        # 5 Minuten
+    RETRY_INTERVAL = 60.0   # nach Fehlschlag frueher nochmal
+
+    def __init__(self, on_usage, log=None, is_covered=None):
+        self._on_usage = on_usage
+        self._log = log or (lambda msg: None)
+        self._is_covered = is_covered or (lambda: False)
+        self._thread = None
+        self._stop = threading.Event()
+
+    def start(self) -> bool:
+        if self._thread and self._thread.is_alive():
+            return True
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="usage-watcher")
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def is_running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            delay = self.INTERVAL
+            if not self._is_covered():
+                token = read_token()
+                if token:
+                    try:
+                        _payload, meta = poll_usage_meta(token)
+                    except Exception:
+                        meta = {}
+                    if meta:
+                        try:
+                            self._on_usage(meta)
+                        except Exception as exc:
+                            self._log(f"UsageWatcher: {exc}")
+                    else:
+                        delay = self.RETRY_INTERVAL
+                else:
+                    delay = self.RETRY_INTERVAL
+            # In Scheiben warten, damit stop() sofort greift.
+            waited = 0.0
+            while waited < delay and not self._stop.is_set():
+                self._stop.wait(1.0)
+                waited += 1.0
 
 
 # --------------------------------------------------------------------------
@@ -461,7 +570,9 @@ if __name__ == "__main__":
     _p("Token: " + ("gefunden" if tok else "NICHT gefunden"))
     if tok:
         _p("API abfragen...")
-        _p(f"Payload: {poll_usage(tok)}")
+        _pl, _mt = poll_usage_meta(tok)
+        _p(f"Payload: {_pl}")
+        _p(f"Meta:    {_mt}")
 
     link = ClawdmeterLink(log=_p)
     link.start()

@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.3.5"
+VERSION = "1.3.6"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -103,6 +103,12 @@ DEFAULT_SETTINGS = {
     "notify_limit_reset": True,  # Windows-Notification wenn Claude-Limit sich zurueckgesetzt hat
     "limit_reset_at": 0,         # Epoche wann Limit zurueckgesetzt wird (aus JSONL geparst, 0 = unbekannt)
     "limit_reset_notified_for": 0,  # Fuer welche limit_reset_at wurde schon benachrichtigt (verhindert Doppel-Feuer)
+    "notify_limit_near": True,   # Warnen bevor das 5h-Limit voll ist
+    "limit_warn_pct": 90,        # ab wieviel Prozent gewarnt wird
+    # --- intern, aus den Ratelimit-Headern der API gepflegt ---
+    "limit_window_at": 0,        # Reset-Zeitpunkt des aktuellen 5h-Fensters (Epoche)
+    "limit_window_peak": 0,      # hoechste Auslastung in diesem Fenster (Prozent)
+    "limit_warned_for": 0,       # fuer welches Fenster schon gewarnt wurde
     "onboarded": False,          # Erst-Einrichtung schon durchlaufen?
     "onboarded_version": "",     # zuletzt gesehene Onboarding-Version (fuer Re-Onboarding nach Updates)
     "buddy": {                   # Clawd-Buddy: kleines animiertes Desktop-Maskottchen
@@ -2917,8 +2923,77 @@ class Api:
         except Exception:
             return None
         self._clawdmeter = ClawdmeterLink(
-            address_provider=lambda: self.settings.get("clawdmeter_addr") or "")
+            address_provider=lambda: self.settings.get("clawdmeter_addr") or "",
+            on_usage=self.on_usage_meta)
         return self._clawdmeter
+
+    # ---- Limit-Ueberwachung aus den Ratelimit-Headern -------------------
+
+    def on_usage_meta(self, meta):
+        """Wird nach jeder API-Abfrage gerufen (Clawdmeter-Link oder Watcher).
+
+        Zwei Dinge passieren hier:
+          1) Der echte Reset-Zeitpunkt aus den Headern loest die alte
+             Schaetzung ab. Bisher kannte die App ihn nur, wenn Claude im
+             JSONL eine Limit-Meldung hinterlassen hatte -- also erst NACHDEM
+             man ins Limit gelaufen war. Jetzt steht er immer bereit.
+          2) Ein Fensterwechsel wird erkannt und gemeldet -- aber nur wenn
+             das abgelaufene Fenster ueberhaupt heiss war. Ohne diese Huerde
+             kaeme alle fuenf Stunden eine Meldung, auch wenn man das Limit
+             nie in die Naehe gebracht hat.
+        """
+        reset_at = float(meta.get("session_reset_at") or 0)
+        pct = int(meta.get("session_pct") or 0)
+        if reset_at <= 0:
+            return
+        s = self.settings
+        warn_at = max(1, min(100, int(s.get("limit_warn_pct", 90) or 90)))
+        window = float(s.get("limit_window_at", 0) or 0)
+        peak = int(s.get("limit_window_peak", 0) or 0)
+        dirty = False
+
+        if abs(window - reset_at) > 60:
+            # Neues Fenster. War das alte heiss, ist das Limit jetzt zurueck.
+            if window > 0 and peak >= warn_at:
+                s["limit_reset_at"] = window
+                try:
+                    self.buddy._notify_limit_reset()
+                except Exception:
+                    pass
+            s["limit_window_at"] = reset_at
+            s["limit_window_peak"] = pct
+            peak = pct
+            dirty = True
+        elif pct > peak:
+            s["limit_window_peak"] = pct
+            peak = pct
+            dirty = True
+
+        # Vorwarnung, einmal pro Fenster.
+        if (s.get("notify_limit_near", True) and peak >= warn_at
+                and abs(float(s.get("limit_warned_for", 0) or 0) - reset_at) > 60):
+            s["limit_warned_for"] = reset_at
+            dirty = True
+            self._notify_limit_near(pct, reset_at)
+
+        if dirty:
+            try:
+                save_json(SETTINGS_FILE, self.settings)
+            except Exception:
+                pass
+
+    def _notify_limit_near(self, pct, reset_at):
+        """Tray-Meldung dass das 5h-Limit gleich voll ist."""
+        mins = max(0, int((reset_at - time.time()) / 60))
+        when = time.strftime("%H:%M", time.localtime(reset_at))
+        tray = getattr(self, "_tray", None)
+        if tray and tray.icon:
+            try:
+                tray.icon.notify(
+                    f"{pct}% verbraucht - zurueck um {when} "
+                    f"(in {mins} min)", "Clawd")
+            except Exception:
+                pass
 
     def clawdmeter_state(self):
         """Status fuer die Einstellungs-Seite."""
@@ -3729,12 +3804,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     background:var(--surface); border:1px solid var(--border); border-radius:14px;
     padding:18px 20px; margin-bottom:14px;
   }
-  .card h2{font-size:15px; margin-bottom:4px}
+  .card h2{font-size:15px; margin-bottom:4px; display:flex; align-items:center; gap:10px}
+  /* Icon-Chip in der Kartenueberschrift. Gibt jeder Karte eine eigene
+     Silhouette - vorher waren zwoelf identische Boxen untereinander und man
+     musste jede Ueberschrift lesen um sich zu orientieren. */
+  .card h2 .ci{
+    flex:0 0 auto; width:28px; height:28px; border-radius:9px;
+    display:grid; place-items:center;
+    background:var(--bg); border:1px solid var(--border); color:var(--accent);
+  }
+  .card h2 .ci svg{width:16px; height:16px; display:block}
+  /* Sektionsband: bricht die Kartenkette in benannte Gruppen. */
+  .secthead{
+    font-size:11.5px; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--muted); margin:22px 2px 10px; display:flex; align-items:center; gap:10px;
+  }
+  .secthead:first-child{margin-top:2px}
+  .secthead::after{content:""; flex:1; height:1px; background:var(--border)}
   .card .sub{color:var(--muted); font-size:13px; margin-bottom:14px}
-  /* alle Textfelder in Karten dunkel (kein weisses Standard-Feld) */
-  .card input[type=text]{background:var(--bg); border:1px solid var(--border); color:var(--fg);
+  /* alle Eingabefelder in Karten dunkel (kein weisses Standard-Feld) */
+  .card input[type=text], .card input[type=number]{
+    background:var(--bg); border:1px solid var(--border); color:var(--fg);
     border-radius:9px; padding:9px 12px; font-family:inherit; font-size:13.5px; outline:none}
-  .card input[type=text]:focus{border-color:var(--accent)}
+  .card input[type=text]:focus, .card input[type=number]:focus{border-color:var(--accent)}
   .field{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
   .field input[type=text]{
     flex:1; min-width:240px; background:var(--bg); border:1px solid var(--border);
@@ -4248,6 +4340,35 @@ let api = window.pywebview ? window.pywebview.api : null;
 function lum(hex){const h=hex.replace('#','');const r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16);return .299*r+.587*g+.114*b;}
 function esc(s){return (s||'').replace(/[&<>"'`]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));}
 
+// Icons fuer die Kartenueberschriften. Bewusst inline und stroke-basiert:
+// die App laeuft offline und darf nichts nachladen, und so faerben sich die
+// Icons ueber currentColor automatisch mit der Akzentfarbe mit.
+const ICONS={
+  folder:'<path d="M3 6a1 1 0 0 1 1-1h4l2 2h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>',
+  eye:'<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/>',
+  hidden:'<path d="M4 4l16 16"/><path d="M9.9 5.2A9.7 9.7 0 0 1 12 5c6.5 0 10 6 10 6a17 17 0 0 1-3.2 3.8"/><path d="M6.2 8.2A17 17 0 0 0 2 11s3.5 6 10 6a9.6 9.6 0 0 0 3.6-.7"/>',
+  columns:'<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="16" rx="1"/><rect x="17" y="4" width="4" height="16" rx="1"/>',
+  window:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>',
+  power:'<path d="M12 3v9"/><path d="M6.5 6.5a8 8 0 1 0 11 0"/>',
+  bell:'<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+  // Tropfen statt Palette, halbgefuellter Kreis statt Kontrastraster: die
+  // detailreicheren Varianten waren bei 16 px nicht mehr zu erkennen.
+  palette:'<path d="M12 3.5s6 6.6 6 10.1a6 6 0 0 1-12 0c0-3.5 6-10.1 6-10.1z"/>',
+  contrast:'<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/>',
+  terminal:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 10l2.5 2.5L7 15"/><path d="M12.5 15H17"/>',
+  bluetooth:'<path d="M7 8l10 8-5 4V4l5 4-10 8"/>',
+  update:'<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M4 19h16"/>',
+  buddy:'<circle cx="12" cy="12" r="8"/><circle cx="9.5" cy="10.5" r="1"/><circle cx="14.5" cy="10.5" r="1"/><path d="M9.5 15h5"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+  wand:'<path d="M15 4l5 5"/><path d="M4 20L16 8"/><path d="M18 3v3"/><path d="M21 6h-3"/>',
+  play:'<circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/>',
+};
+function ic(k){
+  const p=ICONS[k]; if(!p) return '';
+  return '<span class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+       + 'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg></span>';
+}
+
 // Hintergrund-Palette aus einem Grundton ableiten (alle Dunkelstufen)
 const BG_TONES=[
   {key:'warm',  name:'Warm',    base:'#4a3a30'},
@@ -4532,7 +4653,7 @@ async function renderBuddy(){
     <div class="card">
       <div class="ba-headline">
         <div>
-          <h2>Dein kleiner Buddy auf dem Desktop</h2>
+          <h2>${ic('buddy')}Dein kleiner Buddy auf dem Desktop</h2>
           <div class="sub">Ein winziger animierter Clawd (20×20 Pixel) schwebt auf dem Desktop – frameless, immer im Vordergrund. Zieh ihn mit der Maus wohin du magst. Rechts- oder Doppelklick schickt ihn kurz weg – er kommt beim nächsten neuen Claude-Terminal von selbst zurück.</div>
         </div>
         <div class="ba-toggle">
@@ -4543,7 +4664,7 @@ async function renderBuddy(){
     </div>
 
     <div class="card">
-      <h2>Wann sichtbar</h2>
+      <h2>${ic('clock')}Wann sichtbar</h2>
       <div class="sub">Der Buddy kann immer da sein oder nur wenn ein bestimmtes Programm gerade im Vordergrund ist – z.B. nur wenn Claude Code im Terminal läuft.</div>
       <div class="ba-vis">
         <label class="ba-radio"><input type="radio" name="ba-vis" ${vis==='when_claude'?'checked':''} onchange="buddySet('visibility','when_claude')"> <span>Nur wenn Claude Code läuft <em class="ba-dim">(erkennt Terminal + <code>claude.exe</code>)</em></span></label>
@@ -4559,7 +4680,7 @@ async function renderBuddy(){
     </div>
 
     <div class="card">
-      <h2>Aussehen & Position</h2>
+      <h2>${ic('wand')}Aussehen &amp; Position</h2>
       <div class="sub">Größe und Deckkraft ändern sich sofort. Für die Position wähle eine Ecke oder Kante – oder ziehe den Buddy per „Platzieren" frei hin (Bewegung rastet aufs Raster und schnappt am Bildschirmrand).</div>
 
       <div class="ba-slider">
@@ -4615,7 +4736,7 @@ async function renderBuddy(){
     </div>
 
     <div class="card">
-      <h2>Animationen ausprobieren</h2>
+      <h2>${ic('play')}Animationen ausprobieren</h2>
       <div class="sub">Normalerweise wählt der Buddy die Animation automatisch nach dem, was in deinen Sessions passiert. Klick eine Animation an, um sie kurz auf dem echten Buddy vorzuspielen.</div>
       <div class="ba-grid">${previewList}</div>
       <div class="ba-actions">
@@ -4732,8 +4853,9 @@ function renderSettings(){
   const swl = ACCENTS.map(c=>`<div class="sw ${st.accent===c?'active':''}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('');
   const bgl = BG_TONES.map(t=>`<div class="sw ${st.bg_base===t.base?'active':''}" style="background:${shade(t.base,0.42)}" title="${t.name}" onclick="setBg('${t.base}')"></div>`).join('');
   document.getElementById('settings').innerHTML=`
+    <div class="secthead">Sessions</div>
     <div class="card">
-      <h2>Sessions-Ordner</h2>
+      <h2>${ic('folder')}Sessions-Ordner</h2>
       <div class="sub">Wo Claude die Session-Dateien speichert. Wird automatisch gesucht, lässt sich aber überschreiben.</div>
       <div class="field">
         <input type="text" id="pdir" value="${esc(pdir)}" readonly>
@@ -4744,7 +4866,7 @@ function renderSettings(){
     </div>
 
     <div class="card">
-      <h2>Anzeige</h2>
+      <h2>${ic('eye')}Anzeige</h2>
       <div class="row2">
         <div><div class="lbl">Heimatordner ausblenden</div>
           <div class="desc">Sessions direkt in ${esc(STATE.home)} verstecken (Unterordner bleiben sichtbar).</div></div>
@@ -4753,54 +4875,14 @@ function renderSettings(){
     </div>
 
     <div class="card">
-      <h2>Fenster schließen</h2>
-      <div class="row2">
-        <div><div class="lbl">Im Hintergrund weiterlaufen</div>
-          <div class="desc">Wenn aktiv, versteckt der X-Button die App nur (Icon im System-Tray unten rechts, Klick öffnet sie wieder). Ausschalten wenn X wirklich beenden soll.</div></div>
-        <div class="toggle ${st.close_to_tray!==false?'on':''}" onclick="toggleTray(this)"></div>
-      </div>
-      <button class="btn" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
-    </div>
-
-    <div class="card">
-      <h2>Autostart</h2>
-      <div class="row2">
-        <div><div class="lbl">Mit Windows starten</div>
-          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.</div></div>
-        <div class="toggle ${st.autostart!==false?'on':''}" onclick="toggleAutostart(this)"></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Benachrichtigungen</h2>
-      <div class="row2">
-        <div><div class="lbl">Bei Limit-Reset benachrichtigen</div>
-          <div class="desc">Windows-Systembenachrichtigung wenn dein Claude-Limit sich zurückgesetzt hat und du wieder loslegen kannst. Braucht den System-Tray aktiv.</div></div>
-        <div class="toggle ${st.notify_limit_reset!==false?'on':''}" onclick="toggleLimitNotif(this)"></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Weitere ausgeblendete Ordner</h2>
+      <h2>${ic('hidden')}Weitere ausgeblendete Ordner</h2>
       <div class="sub">Sessions in diesen Ordnern werden komplett ausgeblendet.</div>
       <ul class="hiddenlist">${hl}</ul>
       <button class="btn" onclick="hideCurrent()" style="margin-top:6px">+ Ordner der gewählten Session ausblenden</button>
     </div>
 
     <div class="card">
-      <h2>Akzentfarbe</h2>
-      <div class="sub">Farbe für Buttons, Auswahl und Hervorhebungen.</div>
-      <div class="swatches">${swl}</div>
-    </div>
-
-    <div class="card">
-      <h2>Hintergrund</h2>
-      <div class="sub">Grundton der Oberfläche – Flächen, Zeilen und Ränder werden daraus abgeleitet.</div>
-      <div class="swatches">${bgl}</div>
-    </div>
-
-    <div class="card">
-      <h2>Spalten</h2>
+      <h2>${ic('columns')}Spalten</h2>
       <div class="sub">Welche Spalten in der Tabelle erscheinen und in welcher Reihenfolge.</div>
       ${normCols().map((c,i,arr)=>`
         <div class="row2">
@@ -4813,8 +4895,63 @@ function renderSettings(){
         </div>`).join('')}
     </div>
 
+    <div class="secthead">Darstellung</div>
     <div class="card">
-      <h2>Terminal & Claude</h2>
+      <h2>${ic('palette')}Akzentfarbe</h2>
+      <div class="sub">Farbe für Buttons, Auswahl und Hervorhebungen.</div>
+      <div class="swatches">${swl}</div>
+    </div>
+
+    <div class="card">
+      <h2>${ic('contrast')}Hintergrund</h2>
+      <div class="sub">Grundton der Oberfläche – Flächen, Zeilen und Ränder werden daraus abgeleitet.</div>
+      <div class="swatches">${bgl}</div>
+    </div>
+
+    <div class="secthead">Verhalten</div>
+    <div class="card">
+      <h2>${ic('window')}Fenster schließen</h2>
+      <div class="row2">
+        <div><div class="lbl">Im Hintergrund weiterlaufen</div>
+          <div class="desc">Wenn aktiv, versteckt der X-Button die App nur (Icon im System-Tray unten rechts, Klick öffnet sie wieder). Ausschalten wenn X wirklich beenden soll.</div></div>
+        <div class="toggle ${st.close_to_tray!==false?'on':''}" onclick="toggleTray(this)"></div>
+      </div>
+      <button class="btn" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
+    </div>
+
+    <div class="card">
+      <h2>${ic('power')}Autostart</h2>
+      <div class="row2">
+        <div><div class="lbl">Mit Windows starten</div>
+          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.</div></div>
+        <div class="toggle ${st.autostart!==false?'on':''}" onclick="toggleAutostart(this)"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>${ic('bell')}Benachrichtigungen</h2>
+      <div class="row2">
+        <div><div class="lbl">Bei Limit-Reset benachrichtigen</div>
+          <div class="desc">Windows-Systembenachrichtigung wenn dein Claude-Limit sich zurückgesetzt hat und du wieder loslegen kannst. Braucht den System-Tray aktiv.</div></div>
+        <div class="toggle ${st.notify_limit_reset!==false?'on':''}" onclick="toggleLimitNotif(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Vorwarnen bevor das Limit voll ist</div>
+          <div class="desc">Meldet sich einmal pro 5-Stunden-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht. Bei 100 % ist es zum Reagieren zu spät.</div></div>
+        <div class="toggle ${st.notify_limit_near!==false?'on':''}" onclick="toggleLimitNear(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Schwelle für die Vorwarnung</div>
+          <div class="desc">Ab wie viel Prozent des 5-Stunden-Limits gewarnt wird.</div></div>
+        <div><input type="number" min="10" max="100" step="5"
+             value="${st.limit_warn_pct||90}" onchange="setWarnPct(this)"
+             style="width:74px;text-align:right"> %</div>
+      </div>
+    </div>
+
+    <div class="secthead">Verbindungen</div>
+    <div class="card">
+      <h2>${ic('terminal')}Terminal &amp; Claude</h2>
       <div class="row2">
         <div><div class="lbl">Womit öffnen?</div><div class="desc">Wie eine Session gestartet wird.</div></div>
         <select class="sel-input" onchange="api.update_setting('terminal',this.value)">
@@ -4831,7 +4968,7 @@ function renderSettings(){
     </div>
 
     <div class="card">
-      <h2>Clawdmeter</h2>
+      <h2>${ic('bluetooth')}Clawdmeter</h2>
       <div class="sub">Schickt deine Claude-Auslastung per Bluetooth an ein Clawdmeter-Gerät. Das Gerät muss einmalig in den Windows-Bluetooth-Einstellungen gekoppelt werden.</div>
       <div class="row2">
         <div><div class="lbl">Anbindung aktiv</div><div class="desc" id="clawd-status">…</div></div>
@@ -4848,8 +4985,9 @@ function renderSettings(){
       </div>
     </div>
 
+    <div class="secthead">App</div>
     <div class="card">
-      <h2>Updates</h2>
+      <h2>${ic('update')}Updates</h2>
       <div class="sub">Aktuelle Version: v${esc(STATE.version||'?')} — beim Start wird automatisch nach Updates gesucht (ohne Internet wird das übersprungen).</div>
       <div class="field">
         <button class="btn" onclick="manualCheck(this)">Nach Updates suchen</button>
@@ -4920,6 +5058,17 @@ async function toggleLimitNotif(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   ingest(await api.update_setting('notify_limit_reset', on));
   toast(on?'Limit-Benachrichtigung an ✓':'Limit-Benachrichtigung aus');
+}
+async function toggleLimitNear(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  ingest(await api.update_setting('notify_limit_near', on));
+  toast(on?'Vorwarnung an ✓':'Vorwarnung aus');
+}
+async function setWarnPct(el){
+  let v=parseInt(el.value,10); if(isNaN(v)) v=90;
+  v=Math.max(10,Math.min(100,v)); el.value=v;
+  ingest(await api.update_setting('limit_warn_pct', v));
+  toast('Warnschwelle: '+v+'%');
 }
 async function toggleAutostart(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
@@ -5551,6 +5700,22 @@ def main():
             link = api._clawd_link()
             if link:
                 link.start()
+        except Exception:
+            pass
+
+    # Limit-Ueberwachung. Laeuft auch ohne Clawdmeter-Hardware, pausiert aber
+    # solange der BLE-Link dieselben Header ohnehin schon abfragt.
+    if s.get("notify_limit_reset", True) or s.get("notify_limit_near", True):
+        try:
+            from clawdmeter import UsageWatcher
+
+            def _link_covers():
+                link = getattr(api, "_clawdmeter", None)
+                return bool(link and link.status().get("connected"))
+
+            api._usage_watcher = UsageWatcher(api.on_usage_meta,
+                                              is_covered=_link_covers)
+            api._usage_watcher.start()
         except Exception:
             pass
 
