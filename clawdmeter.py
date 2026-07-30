@@ -50,8 +50,15 @@ API_BODY = {
 }
 
 POLL_INTERVAL = 60      # Sekunden zwischen zwei API-Abfragen
-RETRY_INTERVAL = 15     # Wartezeit nach einem Verbindungsfehler
+RETRY_INTERVAL = 15     # Obergrenze der Wartezeit nach einem Fehlschlag
+# Erster Versuch kurz: ein BLE-Geraet, das gerade wirklich erreichbar ist,
+# antwortet in wenigen Sekunden. Wartet man stattdessen 20 s in einen
+# Fehlversuch hinein und legt danach 15 s Pause ein, vergehen bis zum
+# zweiten Versuch mehr als 30 Sekunden - obwohl das Geraet vielleicht schon
+# nach fuenf wieder da war. Deshalb kurz anklopfen und zuegig nachfassen.
+CONNECT_TIMEOUT_FIRST = 8
 CONNECT_TIMEOUT = 20    # Abbruch wenn das Geraet nicht antwortet
+RETRY_BACKOFF = (2, 4, 8, 15)   # Wartezeit nach dem 1., 2., 3., n-ten Fehlschlag
 
 
 # --------------------------------------------------------------------------
@@ -359,10 +366,25 @@ class ClawdmeterLink:
         self._stop = threading.Event()
         self._status = {"connected": False, "last_send": None,
                         "last_error": None, "address": None,
-                        "battery": None}   # Ladestand in %, None = unbekannt
+                        "battery": None,   # Ladestand in %, None = unbekannt
+                        "attempt": 0}      # laufender Verbindungsversuch
         self._lock = threading.Lock()
+        # Bricht eine laufende Wartezeit ab ("Jetzt verbinden").
+        self._wake = threading.Event()
 
     # -- oeffentliche API --------------------------------------------------
+
+    def reconnect(self) -> bool:
+        """Sofort einen neuen Verbindungsversuch anstossen.
+
+        Laeuft der Thread schon, wird nur die Wartezeit abgekuerzt - ein
+        Neustart waere unnoetig und wuerde eine gerade aufgebaute Verbindung
+        wegwerfen. Laeuft er nicht, wird er gestartet.
+        """
+        if self._thread and self._thread.is_alive() and not self._stop.is_set():
+            self._wake.set()
+            return True
+        return self.start()
 
     def start(self) -> bool:
         old = self._thread
@@ -395,10 +417,13 @@ class ClawdmeterLink:
             self._status.update(kw)
 
     async def _sleep(self, seconds: float) -> None:
-        """Wartet, bricht aber sofort ab wenn stop() gerufen wurde."""
+        """Wartet, bricht aber sofort ab wenn stop() oder reconnect() kam."""
         import asyncio
         waited = 0.0
         while waited < seconds and not self._stop.is_set():
+            if self._wake.is_set():
+                self._wake.clear()
+                return
             await asyncio.sleep(0.5)
             waited += 0.5
 
@@ -412,6 +437,7 @@ class ClawdmeterLink:
 
     async def _loop(self) -> None:
         import asyncio
+        fails = 0
         while not self._stop.is_set():
             try:
                 preferred = self._address_provider()
@@ -423,18 +449,21 @@ class ClawdmeterLink:
                           last_error="Kein Gerät ausgewählt")
                 await self._sleep(RETRY_INTERVAL)
                 continue
-            self._set(address=address)
+            self._set(address=address, attempt=fails + 1)
             try:
                 await self._session(address)
+                fails = 0
                 # Sauber beendete Sitzung (Geraet weg / abgeschaltet):
                 # kurz warten, damit kein Reconnect-Karussell entsteht.
                 await self._sleep(3)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                fails += 1
                 self._set(connected=False, last_error=str(e))
                 self._log(f"Clawdmeter-Verbindung verloren: {e}")
-                await self._sleep(RETRY_INTERVAL)
+                wait = RETRY_BACKOFF[min(fails - 1, len(RETRY_BACKOFF) - 1)]
+                await self._sleep(wait)
 
     async def _session(self, address: str) -> None:
         import asyncio
@@ -445,7 +474,11 @@ class ClawdmeterLink:
         def on_refresh(_char, _data) -> None:
             refresh.set()
 
-        async with BleakClient(address, timeout=CONNECT_TIMEOUT) as client:
+        # Beim ersten Anlauf kurz anklopfen, danach laenger Geduld haben.
+        with self._lock:
+            erster = int(self._status.get("attempt") or 1) <= 1
+        timeout = CONNECT_TIMEOUT_FIRST if erster else CONNECT_TIMEOUT
+        async with BleakClient(address, timeout=timeout) as client:
             # Fehlt der Service, hat das zwei moegliche Gruende: falsches
             # Geraet gewaehlt -- oder das Geraet haengt schon an einem anderen
             # Programm, dann liefert Windows eine unvollstaendige Service-Liste.

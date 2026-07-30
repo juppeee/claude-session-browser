@@ -3312,6 +3312,18 @@ class Api:
         auto = cm.discover_address(None)
         return {"ok": True, "devices": devices, "auto": auto or ""}
 
+    def clawdmeter_reconnect(self):
+        """Sofort neu verbinden, ohne die naechste Wartezeit abzusitzen."""
+        if not self.settings.get("clawdmeter"):
+            return self.clawdmeter_state()
+        link = self._clawd_link()
+        if link is not None:
+            try:
+                link.reconnect()
+            except Exception:
+                pass
+        return self.clawdmeter_state()
+
     def clawdmeter_pick(self, address):
         """Geraet festlegen (leer = wieder automatisch suchen)."""
         self.settings["clawdmeter_addr"] = (address or "").strip().upper()
@@ -5442,6 +5454,7 @@ function renderSettings(){
         <div class="toggle ${st.clawdmeter_buddy!==false?'on':''}" onclick="toggleClawdBuddy(this)"></div>
       </div>
       <div class="field">
+        <button class="btn accent" onclick="clawdReconnect(this)">Jetzt verbinden</button>
         <button class="btn" onclick="loadClawdDevices(true)">Geräte neu suchen</button>
       </div>
     </div>
@@ -5584,8 +5597,12 @@ function clawdInfo(r){
     return {dot:'ok', text: (ago===null ? 'Verbunden.'
                                         : `Verbunden — zuletzt gesendet vor ${ago}s.`) + akku};
   }
+  // Beim Verbinden den Versuch mitzaehlen. Ein stummes "Verbinde…" ueber
+  // eine Minute sieht aus wie ein Haenger, obwohl im Hintergrund immer
+  // wieder angeklopft wird.
+  const nr = s.attempt > 1 ? ` (${s.attempt}. Versuch)` : '';
   return s.last_error ? {dot:'err',  text:`Nicht verbunden: ${s.last_error}`}
-                      : {dot:'wait', text:'Verbinde…'};
+                      : {dot:'wait', text:'Verbinde…' + nr};
 }
 function setClawdStatus(el, r){
   if(!el) return;
@@ -5602,6 +5619,19 @@ async function toggleClawd(el){
   const r = await api.clawdmeter_set(on);
   setClawdStatus(document.getElementById('clawd-status'), r);
   toast(on?'Clawdmeter an ✓':'Clawdmeter aus');
+}
+async function clawdReconnect(btn){
+  const alt = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Verbinde…';
+  try{
+    setClawdStatus(document.getElementById('clawd-status'),
+                   await api.clawdmeter_reconnect());
+  }catch(e){}
+  // Kurz nachfassen: der Versuch laeuft im Hintergrund weiter, der erste
+  // Status kommt noch aus der alten Lage.
+  setTimeout(refreshClawd, 1500);
+  setTimeout(refreshClawd, 5000);
+  btn.disabled = false; btn.textContent = alt;
 }
 async function toggleClawdBuddy(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
