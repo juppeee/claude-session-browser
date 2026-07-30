@@ -3251,6 +3251,8 @@ class Api:
         # Speicher: der Wert ist Sekunden spaeter veraltet, in der
         # Einstellungsdatei waere er beim naechsten Start eine Luege.
         self._usage_meta = {"pct": pct, "reset_at": reset_at,
+                            "wpct": int(meta.get("weekly_pct") or 0),
+                            "wreset_at": float(meta.get("weekly_reset_at") or 0),
                             "at": time.time()}
         if reset_at <= 0:
             return
@@ -3335,7 +3337,11 @@ class Api:
         if reset_at and reset_at <= time.time():
             hit, reset_at = False, 0.0    # Fenster ist durch
 
+        wreset = float(meta.get("wreset_at") or 0)
+        if wreset and wreset <= time.time():
+            wreset = 0.0
         return {"pct": pct, "reset_at": reset_at or 0, "hit": hit,
+                "wpct": int(meta.get("wpct") or 0), "wreset_at": wreset,
                 "known": bool(stand_von or hit), "now": time.time()}
 
     def clawdmeter_state(self):
@@ -4272,13 +4278,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* Aktueller Stand des 5-Stunden-Limits, ueber den Schaltern zu denen er
      gehoert. Faerbt sich mit der Lage - im vollen Limit soll man nicht erst
      lesen muessen. */
-  .limitbox{display:flex; align-items:center; gap:9px; margin:0 0 14px;
-    padding:10px 13px; border-radius:10px; font-size:13px;
-    background:var(--bg); border:1px solid var(--border); color:var(--muted)}
-  .limitbox .ltext{color:var(--fg)}
-  .limitbox .lsub{color:var(--muted); margin-left:auto; font-variant-numeric:tabular-nums}
-  .limitbox.hit{background:rgba(255,107,107,.10); border-color:rgba(255,107,107,.35)}
-  .limitbox.near{background:rgba(255,180,84,.10); border-color:rgba(255,180,84,.32)}
+  /* Zwei Kacheln nach dem Vorbild des Clawdmeter: grosse Zahl, Balken,
+     Restzeit. Eine Zeile ueber die volle Breite war fast nur Leerraum. */
+  .limitbox{display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));
+    gap:10px; margin:0 0 14px}
+  .lcard{background:var(--bg); border:1px solid var(--border); border-radius:10px;
+    padding:11px 13px 12px}
+  .lcard .top{display:flex; align-items:baseline; gap:8px}
+  .lcard .num{font-size:23px; font-weight:700; color:var(--fg); line-height:1;
+    font-variant-numeric:tabular-nums}
+  .lcard .tag{margin-left:auto; font-size:11px; color:var(--muted);
+    background:var(--surface2); border-radius:999px; padding:3px 9px}
+  .lcard .bar{height:7px; border-radius:4px; background:var(--surface2);
+    margin:9px 0 7px; overflow:hidden}
+  .lcard .bar i{display:block; height:100%; border-radius:4px; background:#3ecf8e;
+    transition:width .4s ease}
+  .lcard.mid .bar i{background:#ffb454}
+  .lcard.hot .bar i{background:#ff6b6b}
+  .lcard .sub{font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .lcard.hot{border-color:rgba(255,107,107,.38)}
+  .lcard.full .sub{color:#ff9a9a}
+  .limitbox .lempty{grid-column:1/-1; padding:10px 13px; border-radius:10px;
+    background:var(--bg); border:1px solid var(--border); font-size:12.5px}
   .warnnote{display:flex; align-items:flex-start; gap:7px; margin-top:6px;
     color:#ffc98a; font-size:12.5px; line-height:1.45}
   .warnnote .ci{flex:none; margin-top:1px; color:#ffb454}
@@ -5598,35 +5619,34 @@ function fmtDauer(sek){
   if(m > 0) return m + ' min ' + String(s).padStart(2,'0') + ' s';
   return s + ' s';
 }
+// Eine Kachel: grosse Zahl, Balken, Restzeit - wie auf dem Clawdmeter.
+function limitCard(pct, resetAt, tag, voll){
+  const rest = resetAt ? (resetAt*1000 - Date.now())/1000 : 0;
+  const stufe = voll || pct >= 90 ? 'hot' : (pct >= 60 ? 'mid' : '');
+  const sub = voll
+    ? (resetAt ? `voll – frei in ${fmtDauer(rest)}` : 'voll')
+    : (resetAt ? `frei in ${fmtDauer(rest)}` : 'Reset-Zeit noch unbekannt');
+  return `<div class="lcard ${stufe}${voll?' full':''}">`
+    + `<div class="top"><span class="num">${pct}%</span>`
+    +   `<span class="tag">${esc(tag)}</span></div>`
+    + `<div class="bar"><i style="width:${Math.max(0,Math.min(100,pct))}%"></i></div>`
+    + `<div class="sub">${esc(sub)}</div></div>`;
+}
 function paintLimit(){
   const box = document.getElementById('limitbox');
   if(!box) return;
   const d = LIMIT;
   if(!d || !d.known){
-    box.className = 'limitbox';
-    box.innerHTML = '<span class="dot off"></span><span class="ltext">'
-      + 'Noch keine Auslastungsdaten – kommt mit der nächsten Abfrage.</span>';
+    box.innerHTML = '<div class="lempty">Noch keine Auslastungsdaten – '
+      + 'kommt mit der nächsten Abfrage.</div>';
     return;
   }
-  const rest = d.reset_at ? (d.reset_at*1000 - Date.now())/1000 : 0;
-  if(d.reset_at && rest <= 0){ refreshLimit(); return; }   // Fenster ist um
-  const uhr = d.reset_at
-    ? new Date(d.reset_at*1000).toLocaleTimeString('de-DE',
-        {hour:'2-digit', minute:'2-digit'})
-    : null;
-  let klasse = '', punkt = 'ok', text;
-  if(d.hit){
-    klasse = 'hit'; punkt = 'err';
-    text = 'Limit ist voll – Claude antwortet erst wieder nach dem Reset.';
-  } else if(d.pct >= 90){
-    klasse = 'near'; punkt = 'wait';
-    text = `${d.pct}% des 5-Stunden-Limits verbraucht.`;
-  } else {
-    text = `${d.pct}% des 5-Stunden-Limits verbraucht.`;
-  }
-  box.className = 'limitbox ' + klasse;
-  box.innerHTML = `<span class="dot ${punkt}"></span><span class="ltext">${esc(text)}</span>`
-    + (uhr ? `<span class="lsub">zurück um ${uhr} · noch ${fmtDauer(rest)}</span>` : '');
+  if(d.reset_at && d.reset_at*1000 <= Date.now()){ refreshLimit(); return; }
+  let html = limitCard(d.hit ? 100 : d.pct, d.reset_at, '5 Stunden', d.hit);
+  // Wochenwert nur wenn er wirklich vorliegt - ohne Clawdmeter-Abfrage
+  // steht er auf 0 und eine leere Kachel waere irrefuehrend.
+  if(d.wpct > 0 || d.wreset_at) html += limitCard(d.wpct, d.wreset_at, 'Woche', false);
+  box.innerHTML = html;
 }
 async function refreshLimit(){
   if(!document.getElementById('limitbox')) return;
