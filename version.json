@@ -1,6 +1,6 @@
 {
-  "version": "1.3.7",
-  "notes": "Wichtig: das Fenster kann nicht mehr unsichtbar ausserhalb aller Bildschirme starten (Eintrag in der Taskleiste, aber nichts zu sehen). Buddy platzieren funktioniert wieder. Das Clawdmeter zeigt jetzt dieselbe Animation wie der Buddy auf dem Desktop. Buddy-Einstellungen werden ausgegraut wenn er aus ist, Statuspunkt fuer die Clawdmeter-Verbindung, deutlicheres Hover auf den Farbkacheln.",
+  "version": "1.3.8",
+  "notes": "Clawd zeigt endlich das Richtige: das Limit wird erkannt, und ein laufendes Werkzeug gilt nicht mehr als Rückfrage. Das Clawdmeter spiegelt Clawd vom Desktop und meldet seinen Akkustand. Neu: Limit-Anzeige mit Countdown und Wochenwert, Sprungleiste in den Einstellungen, aufgeräumtes Detail-Panel, Knopf zum sofortigen Verbinden.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"
