@@ -4898,6 +4898,7 @@ const ICONS={
   wand:'<path d="M15 4l5 5"/><path d="M4 20L16 8"/><path d="M18 3v3"/><path d="M21 6h-3"/>',
   play:'<circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.8v.4"/>',
+  link:'<path d="M10 13a4 4 0 0 0 5.7.3l3-3a4 4 0 1 0-5.7-5.7l-1.7 1.7"/><path d="M14 11a4 4 0 0 0-5.7-.3l-3 3a4 4 0 1 0 5.7 5.7l1.7-1.7"/>',
   warn:'<path d="M12 4.5L21 19H3z"/><path d="M12 10v4"/><path d="M12 16.7v.3"/>',
 };
 function ic(k){
@@ -5599,6 +5600,21 @@ function renderSettings(){
         <span id="upd-status" class="badge"></span>
       </div>
     </div>
+
+    <div class="card">
+      <h2>${ic('link')}Projekt</h2>
+      <div class="sub">Quelltext, Fehler melden, Änderungen nachlesen.</div>
+      <div class="row2">
+        <div><div class="lbl">Claude Session Browser</div>
+          <div class="desc">Diese App – Quelltext und Releases auf GitHub.</div></div>
+        <button class="btn" onclick="api.open_url('https://github.com/juppeee/claude-session-browser')">Öffnen</button>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Clawdmeter</div>
+          <div class="desc">Das Gerät und seine Firmware stammen von Hermann Björgvin. Der Session Browser bringt nur die Anbindung für Windows mit.</div></div>
+        <button class="btn" onclick="api.open_url('https://github.com/HermannBjorgvin/Clawdmeter')">Öffnen</button>
+      </div>
+    </div>
   `;
   buildSettingsJump();
   refreshLimit();
@@ -5671,10 +5687,24 @@ function buildSettingsJump(){
 
   // Mitlaufende Hervorhebung: aktiv ist die letzte Ueberschrift, die noch
   // ueber der Oberkante des sichtbaren Bereichs liegt.
+  //
+  // Die letzten Gruppen erreichen diese Kante nie: unter „App" steht zu wenig
+  // Inhalt, um sie nach oben zu schieben - das Scrollen endet vorher am
+  // Anschlag. Deshalb gewinnt am unteren Ende immer die letzte Ueberschrift,
+  // sonst blieb die Markierung bei „Verhalten" haengen, obwohl man laengst
+  // bei „Verbindungen" war.
   const mark = ()=>{
-    const top = box.getBoundingClientRect().top + 12;
-    let cur = heads[0];
-    for(const h of heads){ if(h.getBoundingClientRect().top <= top) cur = h; }
+    // Nach einem Klick kurz nicht dazwischenfunken: das weiche Scrollen
+    // laeuft noch, und der Nutzer hat sein Ziel ja gerade selbst benannt.
+    if(Date.now() < JUMP_LOCK) return;
+    let cur;
+    if(box.scrollTop + box.clientHeight >= box.scrollHeight - 6){
+      cur = heads[heads.length - 1];
+    } else {
+      const top = box.getBoundingClientRect().top + 12;
+      cur = heads[0];
+      for(const h of heads){ if(h.getBoundingClientRect().top <= top) cur = h; }
+    }
     bar.querySelectorAll('button').forEach(b=>
       b.classList.toggle('active', b.dataset.target === cur.id));
   };
@@ -5683,7 +5713,14 @@ function buildSettingsJump(){
   box.addEventListener('scroll', mark, {passive:true});
   mark();
 }
+let JUMP_LOCK = 0;
 function jumpSettings(id){
+  // Sofort markieren und kurz festhalten: das weiche Scrollen laeuft danach
+  // noch, und die letzten Gruppen erreichen den oberen Rand gar nicht mehr -
+  // die Markierung waere sonst nie dort angekommen.
+  document.querySelectorAll('#settings-jump button').forEach(b=>
+    b.classList.toggle('active', b.dataset.target === id));
+  JUMP_LOCK = Date.now() + 900;
   const el = document.getElementById(id);
   if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
 }
