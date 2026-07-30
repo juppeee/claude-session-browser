@@ -187,6 +187,27 @@ BUDDY_STATE_MAP = {
 # Sehr spezifische Muster in der neuesten .jsonl-Datei die eindeutig auf ein
 # erreichtes Claude-Nutzungslimit hindeuten. Absichtlich streng gewaehlt
 # damit normale Chat-Erwaehnungen von „rate limit" o.ae. NICHT triggern.
+# Wie lange ein Werkzeug ohne Ergebnis laufen darf, bevor der Buddy es als
+# Rueckfrage deutet. Grosszuegig gewaehlt: die meisten Aufrufe sind in
+# Sekunden durch, eine echte Rueckfrage steht dagegen bis jemand antwortet.
+APPROVAL_AFTER_S = 30.0
+
+
+def _line_age(obj):
+    """Alter einer Protokollzeile in Sekunden. Ohne brauchbaren Zeitstempel
+    0.0 - dann gilt sie als frisch, und im Zweifel heisst das "arbeitet"."""
+    ts = obj.get("timestamp") if isinstance(obj, dict) else None
+    if not isinstance(ts, str) or not ts:
+        return 0.0
+    try:
+        t = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=dt.timezone.utc)
+    return max(0.0, (dt.datetime.now(dt.timezone.utc) - t).total_seconds())
+
+
 _LIMIT_PATTERNS = re.compile(
     # Klare "erreicht"-Phrasen (5h / weekly / session / max)
     r"(?:you'?ve (?:reached|hit) your (?:5.?hour|weekly|daily|24.?hour|max|session) limit)"
@@ -532,17 +553,30 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
                         if result["last_block_type"] == "tool_use":
                             result["last_tool_name"] = str(last.get("name") or "")
 
-            # ALLOW nur wenn tool_use UND kein tool_result danach kam
             if sr == "tool_use" or has_tool_use:
                 has_result_after = _has_tool_result_after(real_last_idx)
                 if not has_result_after:
-                    result["awaiting_approval"] = True
                     result["has_pending_tool"] = True
-                    result["internal_state"] = "tool_pending_approval"
                     if last_tool_use_name:
                         result["last_tool_name"] = last_tool_use_name
+                    # "Noch kein Ergebnis" hiess bisher pauschal "wartet auf
+                    # Erlaubnis". Das stimmt nur zur Haelfte - genauso gut
+                    # laeuft das Werkzeug einfach noch. Waehrend eines
+                    # zweiminuetigen Builds stand deshalb die ganze Zeit die
+                    # Nachfrage-Animation auf dem Schirm.
+                    #
+                    # Ein sicheres Merkmal gibt es nicht: Claude Code schreibt
+                    # die Rueckfrage ("Do you want to proceed?") nur ins
+                    # Terminal, nicht ins Protokoll. Also ueber die Dauer: ein
+                    # laufendes Werkzeug liefert irgendwann ein Ergebnis, eine
+                    # Rueckfrage bleibt stehen bis jemand antwortet. Im Zweifel
+                    # "arbeitet" - das ist der haeufigere Fall.
+                    wartet = _line_age(real_last) >= APPROVAL_AFTER_S
+                    result["awaiting_approval"] = wartet
+                    result["internal_state"] = ("tool_pending_approval" if wartet
+                                                else "tool_running")
                 else:
-                    # Tool laeuft gerade
+                    # Ergebnis ist da - Claude verarbeitet es
                     result["internal_state"] = "tool_running"
             elif sr in ("end_turn", "stop_sequence"):
                 result["waiting"] = True
@@ -3251,8 +3285,8 @@ class Api:
         if tray and tray.icon:
             try:
                 tray.icon.notify(
-                    f"{pct}% verbraucht - zurueck um {when} "
-                    f"(in {mins} min)", "Clawd")
+                    f"{pct}% deines 5-Stunden-Limits verbraucht. "
+                    f"Frei um {when} – in {mins} Minuten.", "Clawd")
             except Exception:
                 pass
 
@@ -5394,7 +5428,7 @@ function renderSettings(){
       <div class="row2">
         <div><div class="lbl">Vorwarnen bevor das Limit voll ist</div>
           <div class="desc">Meldet sich einmal pro 5-Stunden-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht.</div>
-          <div class="warnnote">${ic('warn')}<span>Ohne Vorwarnung merkst du es erst bei 100 % – dann ist es zum Reagieren zu spät.</span></div></div>
+          ${st.notify_limit_near===false ? `<div class="warnnote">${ic('warn')}<span>Ohne Vorwarnung merkst du es erst bei 100 % – dann ist es zum Reagieren zu spät.</span></div>` : ''}</div>
         <div class="toggle ${st.notify_limit_near!==false?'on':''}" onclick="toggleLimitNear(this)"></div>
       </div>
       <div class="row2">
@@ -5653,6 +5687,7 @@ async function toggleLimitNotif(el){
 async function toggleLimitNear(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   ingest(await api.update_setting('notify_limit_near', on));
+  renderSettings();   // der Hinweis darunter haengt am Schalter
   toast(on?'Vorwarnung an ✓':'Vorwarnung aus');
 }
 async function setWarnPct(el){
