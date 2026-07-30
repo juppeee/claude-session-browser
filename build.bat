@@ -33,12 +33,17 @@ pyinstaller ^
 if errorlevel 1 goto :error
 
 echo.
-echo [3/4] Inno Setup: Installer bauen...
+echo [3/5] Separater Updater (setup.iss erwartet dist\csb_updater.exe)...
+pyinstaller --clean --noconfirm csb_updater.spec
+if errorlevel 1 goto :error
+
+echo.
+echo [4/5] Inno Setup: Installer bauen...
 %ISCC% setup.iss
 if errorlevel 1 goto :error
 
 echo.
-echo [4/4] PyInstaller: Onefile-Fallback (fuer alte v1.0.x-Auto-Updater)...
+echo [5/5] PyInstaller: Onefile-Fallback (fuer alte v1.0.x-Auto-Updater)...
 REM Zweiter Build als Onefile - alte Versionen die noch keinen installer_url
 REM kennen laden diesen via exe_url wie eine normale App-EXE. Diese Version
 REM checkt beim Start ob eine echte Installation da ist und delegiert sonst
