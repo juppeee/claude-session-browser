@@ -2854,7 +2854,7 @@ def _png_rgba(width, height, rows):
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
-def _sprite_icon_png(anim, scale=6):
+def _sprite_icon_png(anim, box_px=40):
     """Erster Frame einer Animation, auf die Figur zugeschnitten, quadratisch
     aufgefuellt und mit durchsichtigem Rand.
 
@@ -2865,6 +2865,12 @@ def _sprite_icon_png(anim, scale=6):
 
     Quadratisch aufgefuellt statt auf die Kachel gedehnt: die Figur ist
     breiter als hoch, gedehnt saehe sie gequetscht aus.
+
+    Das Bild wird in genau der Kantenlaenge geliefert, in der es auch
+    angezeigt wird (`box_px`), und die Figur darin mit GANZZAHLIGEM Faktor
+    vergroessert. Ein hoeher aufgeloestes Bild per CSS herunterzurechnen sah
+    matschig aus - bei Pixelgrafik zerfaellt jede krumme Skalierung, aus
+    108 px auf 34 wird Brei.
     """
     if not anim or not anim.get("frames"):
         return ""
@@ -2880,29 +2886,32 @@ def _sprite_icon_png(anim, scale=6):
         return ""
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     bw, bh = x1 - x0 + 1, y1 - y0 + 1
-    side = max(bw, bh)
-    ox, oy = (side - bw) // 2, (side - bh) // 2   # zentriert auffuellen
+
+    scale = max(1, box_px // max(bw, bh))     # ganzzahlig, sonst wird es Brei
+    mw, mh = bw * scale, bh * scale
+    ox, oy = (box_px - mw) // 2, (box_px - mh) // 2   # im Kaesten zentrieren
 
     frame = frames[0]
+    leer = bytes((0, 0, 0, 0))
     rows = []
-    for sy in range(side):
+    for py in range(box_px):
         row = bytearray()
-        gy = sy - oy + y0
-        for sx in range(side):
-            gx = sx - ox + x0
-            if 0 <= gx < 20 and 0 <= gy < 20 and oy <= sy < oy + bh and ox <= sx < ox + bw:
-                v = frame[gy * 20 + gx]
-            else:
-                v = 0
+        gy = (py - oy) // scale + y0
+        drin_y = oy <= py < oy + mh
+        for px_ in range(box_px):
+            gx = (px_ - ox) // scale + x0
+            if not (drin_y and ox <= px_ < ox + mw):
+                row += leer
+                continue
+            v = frame[gy * 20 + gx]
             if v in empty:
-                px = bytes((0, 0, 0, 0))
+                row += leer
             else:
                 hx = (palette[v] if v < len(palette) else "#000000").lstrip("#")
-                px = bytes((int(hx[0:2], 16), int(hx[2:4], 16),
-                            int(hx[4:6], 16), 255))
-            row += px * scale
-        rows.extend([row] * scale)
-    return _png_rgba(side * scale, side * scale, rows)
+                row += bytes((int(hx[0:2], 16), int(hx[2:4], 16),
+                              int(hx[4:6], 16), 255))
+        rows.append(row)
+    return _png_rgba(box_px, box_px, rows)
 
 
 class Api:
@@ -4385,8 +4394,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
      ein Kaestchen drumherum wuerde die Figur wieder klein wirken lassen.
      object-fit:contain haelt das Seitenverhaeltnis, falls das PNG doch mal
      nicht quadratisch ankommt. */
-  .buddy-hp{width:34px; height:34px; object-fit:contain;
-    image-rendering:pixelated; image-rendering:crisp-edges}
+  /* Genau 40 px - so gross wird das PNG auch geliefert. Jede andere Groesse
+     hier wuerde die Pixel wieder krumm rechnen. */
+  .buddy-hp{width:40px; height:40px; image-rendering:pixelated}
   .ba-headline{display:flex; align-items:flex-start; gap:22px; justify-content:space-between}
   .ba-headline > div:first-child{flex:1}
   /* Alles unterhalb des Haupt-Schalters. Ist der Buddy aus, bleibt es
@@ -4591,7 +4601,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="view" id="view-buddy">
     <div class="head">
       <h1 class="titlewrap">
-        <span class="hlogo" style="width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center">
+        <span class="hlogo" style="width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center">
           <img id="buddy-heading-preview" class="buddy-hp" alt="">
         </span>
         <span><span class="g">Dein</span> Clawd-Buddy</span>
