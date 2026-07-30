@@ -331,6 +331,16 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
         is_struct_error = is_struct_error or obj.get("isError") is True
         is_struct_error = is_struct_error or obj.get("is_error") is True
         is_struct_error = is_struct_error or obj.get("isApiError") is True
+        # Die echte Limit-Meldung von Claude Code sieht so aus:
+        #   type="assistant", isApiErrorMessage=True, apiErrorStatus=429,
+        #   error="rate_limit", Text "You've hit your session limit · resets ..."
+        # Bisher wurde nur auf isApiError geprueft - ohne "Message". Wegen
+        # dieses einen Wortes galt die Zeile nie als Fehler, und der Buddy
+        # blieb beim Limit ahnungslos.
+        is_struct_error = is_struct_error or obj.get("isApiErrorMessage") is True
+        status_code = obj.get("apiErrorStatus")
+        if isinstance(status_code, int):
+            is_struct_error = True
         msg = obj.get("message")
         if isinstance(msg, dict):
             sr = msg.get("stop_reason")
@@ -344,11 +354,27 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
                             is_struct_error = True
                         if it.get("type") in ("tool_use_error", "error"):
                             is_struct_error = True
+        # `error` kommt mal als Objekt, mal als blosser Text ("rate_limit").
         err = obj.get("error")
+        err_name = ""
         if isinstance(err, dict) and err.get("type"):
             is_struct_error = True
+            err_name = str(err.get("type")).lower()
+        elif isinstance(err, str) and err:
+            is_struct_error = True
+            err_name = err.lower()
         if not is_struct_error:
             return None
+
+        # Eindeutige Signale zuerst - die haengen nicht am Wortlaut und
+        # ueberleben eine geaenderte Formulierung.
+        if status_code == 429 or "rate_limit" in err_name:
+            return "rate_limited"
+        if status_code == 401 or "auth" in err_name:
+            return "auth_required"
+        if status_code in (500, 502, 503, 529) or "overload" in err_name:
+            return "api_overloaded"
+
         # Jetzt klassifizieren basierend auf Text-Patterns
         lt = line_text.lower()
         if "authentication" in lt or "auth" in lt and "error" in lt:
@@ -1100,12 +1126,21 @@ def _claude_context_active():
         # Wird auch dann durchlaufen wenn schon ein Prozess passte: die Titel
         # gehoeren mit in den Fingerabdruck, sonst faellt ein zweites Terminal
         # desselben Prozessbaums nicht auf.
-        browser_hints = (
-            " — google chrome", " - google chrome",
-            " — firefox", " - firefox",
-            " — brave", " - brave",
-            " — microsoft edge", " - microsoft edge",
-            " — opera", " - opera",
+        # Titel als Ausschlusskriterium taugt nur bedingt: die alte Liste
+        # suchte nach " - firefox", Firefox schreibt aber "— Mozilla Firefox".
+        # Ein Browser-Tab wie "3D design claudeV6 - Tinkercad" rutschte damit
+        # durch und der Buddy erschien ohne jedes Terminal. Deshalb wird jetzt
+        # gefragt, WELCHES PROGRAMM das Fenster besitzt - das laesst sich nicht
+        # durch einen Seitentitel vortaeuschen.
+        browsers = {
+            "firefox.exe", "chrome.exe", "msedge.exe", "brave.exe",
+            "opera.exe", "opera_gx.exe", "vivaldi.exe", "librewolf.exe",
+            "zen.exe", "arc.exe", "iexplore.exe", "safari.exe",
+            "thorium.exe", "chromium.exe", "waterfox.exe", "floorp.exe",
+        }
+        # Der Titel bleibt als zweites Netz - fuer Browser, die hier nicht
+        # gelistet sind, und fuer Web-Claude in einem beliebigen Programm.
+        title_hints = (
             " and 1 more page", " and 2 more page",
             "chat.openai.com", "claude.ai",   # Web-Claude nicht mitzaehlen
             "anthropic.com",
@@ -1116,7 +1151,9 @@ def _claude_context_active():
                 continue
             if "claude" not in t:
                 continue
-            if any(b in t for b in browser_hints):
+            if _win_hwnd_process(hwnd) in browsers:
+                continue
+            if any(b in t for b in title_hints):
                 continue
             # Fenster-Handle statt Titel: der Titel eines Claude-Terminals
             # aendert sich staendig (Spinner-Zeichen, aktueller Task) - als
@@ -1161,6 +1198,46 @@ def _claude_context_keys():
     """
     _claude_context_active()
     return _CLAUDE_CACHE["keys"]
+
+
+_HWND_PROC_CACHE = {}
+
+
+def _win_hwnd_process(hwnd):
+    """Dateiname des Programms, dem ein Fenster gehoert (klein, z.B.
+    'firefox.exe'). Leer wenn nicht ermittelbar.
+
+    Zwischengespeichert: das Handle bleibt fuer die Lebensdauer des Fensters
+    gleich, der Prozess dahinter auch - und die Abfrage kostet zwei
+    Systemaufrufe pro Fenster, das waere im 2-Sekunden-Takt Verschwendung.
+    """
+    if not _IS_WIN:
+        return ""
+    hit = _HWND_PROC_CACHE.get(hwnd)
+    if hit is not None:
+        return hit
+    name = ""
+    try:
+        u, k = ctypes.windll.user32, ctypes.windll.kernel32
+        pid = ctypes.c_ulong()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        # PROCESS_QUERY_LIMITED_INFORMATION - reicht fuer den Pfad und geht
+        # auch bei Prozessen anderer Rechte-Stufe.
+        h = k.OpenProcess(0x1000, False, pid.value)
+        if h:
+            try:
+                buf = ctypes.create_unicode_buffer(520)
+                size = ctypes.c_ulong(520)
+                if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                    name = os.path.basename(buf.value).lower()
+            finally:
+                k.CloseHandle(h)
+    except Exception:
+        name = ""
+    if len(_HWND_PROC_CACHE) > 400:
+        _HWND_PROC_CACHE.clear()      # geschlossene Fenster nicht ewig halten
+    _HWND_PROC_CACHE[hwnd] = name
+    return name
 
 
 def _win_list_windows_hwnd():
@@ -1433,6 +1510,9 @@ class BuddyController:
         # Clawdmeter-Link) sie mitlesen koennen ohne in den Tk-Thread zu
         # greifen. Ein einzelner String-Zuweisung braucht kein Lock.
         self._pub_anim = ""
+        # Limit-Lage zum Mitlesen (Einstellungs-Seite). Ein Tupel wird in
+        # einem Rutsch ersetzt, nie halb beschrieben - deshalb kein Lock.
+        self._pub_limit = (False, 0.0)   # (im Limit?, bis wann)
 
     def _app_window_visible(self):
         """True wenn das Session-Browser-Hauptfenster gerade wirklich als
@@ -2384,6 +2464,8 @@ class BuddyController:
                     state["pending_anim"] = None
                     state["pending_since"] = 0.0
             self._pub_anim = state["anim"]
+            self._pub_limit = (bool(state.get("is_limited")),
+                               float(state.get("limited_until") or 0.0))
             # Frame-Rate getrennt von tick-Rate: Frame-Advance nur alle
             # _FRAME_MS, aber tick bleibt schnell fuer Visibility/Fade/Hover.
             if state["current_alpha"] > 0.01:
@@ -3118,6 +3200,11 @@ class Api:
         """
         reset_at = float(meta.get("session_reset_at") or 0)
         pct = int(meta.get("session_pct") or 0)
+        # Fuer die Anzeige in den Einstellungen festhalten. Absichtlich nur im
+        # Speicher: der Wert ist Sekunden spaeter veraltet, in der
+        # Einstellungsdatei waere er beim naechsten Start eine Luege.
+        self._usage_meta = {"pct": pct, "reset_at": reset_at,
+                            "at": time.time()}
         if reset_at <= 0:
             return
         s = self.settings
@@ -3168,6 +3255,41 @@ class Api:
                     f"(in {mins} min)", "Clawd")
             except Exception:
                 pass
+
+    def limit_state(self):
+        """Aktueller Stand des 5-Stunden-Limits fuer die Einstellungs-Seite.
+
+        Zwei Quellen, bewusst in dieser Reihenfolge: die Ratelimit-Header der
+        API sind genau und kennen auch den Stand unterhalb von 100%. Die
+        Limit-Meldung im Transcript kennt nur "voll", ist dafuer aber sofort
+        da - auch wenn gerade keine API-Abfrage lief.
+        """
+        meta = getattr(self, "_usage_meta", None) or {}
+        pct = int(meta.get("pct") or 0)
+        reset_at = float(meta.get("reset_at") or 0)
+        stand_von = float(meta.get("at") or 0)
+
+        # Laeuft der Buddy, hat er die Lage ohnehin im Blick - dann kostet es
+        # nichts. Ist er aus, wird selbst nachgesehen; die Anzeige darf nicht
+        # davon abhaengen, ob der Buddy eingeschaltet ist.
+        hit, until = False, 0.0
+        if self.buddy.is_alive():
+            hit, until = getattr(self.buddy, "_pub_limit", (False, 0.0))
+        else:
+            try:
+                st = _latest_jsonl_status(self._projects_dir())
+                hit = bool(st.get("is_limit"))
+                until = float(st.get("reset_at") or 0)
+            except Exception:
+                pass
+        if hit and not reset_at:
+            reset_at = until
+
+        if reset_at and reset_at <= time.time():
+            hit, reset_at = False, 0.0    # Fenster ist durch
+
+        return {"pct": pct, "reset_at": reset_at or 0, "hit": hit,
+                "known": bool(stand_von or hit), "now": time.time()}
 
     def clawdmeter_state(self):
         """Status fuer die Einstellungs-Seite."""
@@ -4063,6 +4185,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* Folgenhinweise. Beschreibungen duerfen im gedaempften Grau stehen, aber
      ein Satz ueber eine Folge, die man nicht mehr zurueckdrehen kann, geht
      darin unter - der bekommt Farbe und ein Zeichen davor. */
+  /* Aktueller Stand des 5-Stunden-Limits, ueber den Schaltern zu denen er
+     gehoert. Faerbt sich mit der Lage - im vollen Limit soll man nicht erst
+     lesen muessen. */
+  .limitbox{display:flex; align-items:center; gap:9px; margin:0 0 14px;
+    padding:10px 13px; border-radius:10px; font-size:13px;
+    background:var(--bg); border:1px solid var(--border); color:var(--muted)}
+  .limitbox .ltext{color:var(--fg)}
+  .limitbox .lsub{color:var(--muted); margin-left:auto; font-variant-numeric:tabular-nums}
+  .limitbox.hit{background:rgba(255,107,107,.10); border-color:rgba(255,107,107,.35)}
+  .limitbox.near{background:rgba(255,180,84,.10); border-color:rgba(255,180,84,.32)}
   .warnnote{display:flex; align-items:flex-start; gap:7px; margin-top:6px;
     color:#ffc98a; font-size:12.5px; line-height:1.45}
   .warnnote .ci{flex:none; margin-top:1px; color:#ffb454}
@@ -5241,6 +5373,7 @@ function renderSettings(){
 
     <div class="card">
       <h2>${ic('bell')}Benachrichtigungen</h2>
+      <div class="limitbox" id="limitbox"><span class="dot off"></span><span class="ltext">…</span></div>
       <div class="row2">
         <div><div class="lbl">Bei Limit-Reset benachrichtigen</div>
           <div class="desc">Windows-Systembenachrichtigung wenn dein Claude-Limit sich zurückgesetzt hat und du wieder loslegen kannst. Braucht den System-Tray aktiv.</div></div>
@@ -5324,9 +5457,61 @@ function renderSettings(){
     </div>
   `;
   buildSettingsJump();
+  refreshLimit();
   refreshClawd();
   loadClawdDevices(false);
 }
+
+// ---- Limit-Anzeige ----
+// LIMIT haelt den zuletzt geholten Stand; der Countdown laeuft daraus jede
+// Sekunde weiter, ohne dafuer neu nachzufragen. Frische Zahlen holt
+// refreshLimit() im 20-Sekunden-Takt - haeufiger waere sinnlos, die
+// Auslastung kommt ohnehin nur aus periodischen API-Abfragen.
+let LIMIT = null;
+function fmtDauer(sek){
+  sek = Math.max(0, Math.round(sek));
+  const h = Math.floor(sek/3600), m = Math.floor((sek%3600)/60), s = sek%60;
+  if(h > 0) return h + ' h ' + String(m).padStart(2,'0') + ' min';
+  if(m > 0) return m + ' min ' + String(s).padStart(2,'0') + ' s';
+  return s + ' s';
+}
+function paintLimit(){
+  const box = document.getElementById('limitbox');
+  if(!box) return;
+  const d = LIMIT;
+  if(!d || !d.known){
+    box.className = 'limitbox';
+    box.innerHTML = '<span class="dot off"></span><span class="ltext">'
+      + 'Noch keine Auslastungsdaten – kommt mit der nächsten Abfrage.</span>';
+    return;
+  }
+  const rest = d.reset_at ? (d.reset_at*1000 - Date.now())/1000 : 0;
+  if(d.reset_at && rest <= 0){ refreshLimit(); return; }   // Fenster ist um
+  const uhr = d.reset_at
+    ? new Date(d.reset_at*1000).toLocaleTimeString('de-DE',
+        {hour:'2-digit', minute:'2-digit'})
+    : null;
+  let klasse = '', punkt = 'ok', text;
+  if(d.hit){
+    klasse = 'hit'; punkt = 'err';
+    text = 'Limit ist voll – Claude antwortet erst wieder nach dem Reset.';
+  } else if(d.pct >= 90){
+    klasse = 'near'; punkt = 'wait';
+    text = `${d.pct}% des 5-Stunden-Limits verbraucht.`;
+  } else {
+    text = `${d.pct}% des 5-Stunden-Limits verbraucht.`;
+  }
+  box.className = 'limitbox ' + klasse;
+  box.innerHTML = `<span class="dot ${punkt}"></span><span class="ltext">${esc(text)}</span>`
+    + (uhr ? `<span class="lsub">zurück um ${uhr} · noch ${fmtDauer(rest)}</span>` : '');
+}
+async function refreshLimit(){
+  if(!document.getElementById('limitbox')) return;
+  try{ LIMIT = await api.limit_state(); }catch(e){ return; }
+  paintLimit();
+}
+setInterval(()=>{ if(document.getElementById('limitbox')) paintLimit(); }, 1000);
+setInterval(()=>{ if(document.getElementById('limitbox')) refreshLimit(); }, 20000);
 
 // ---- Sprungleiste ueber den Einstellungen ----
 // Baut sich aus den vorhandenen Sektionsbaendern auf, statt die Namen ein
