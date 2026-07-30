@@ -105,6 +105,9 @@ DEFAULT_SETTINGS = {
     "limit_reset_notified_for": 0,  # Fuer welche limit_reset_at wurde schon benachrichtigt (verhindert Doppel-Feuer)
     "notify_limit_near": True,   # Warnen bevor das 5h-Limit voll ist
     "limit_warn_pct": 90,        # ab wieviel Prozent gewarnt wird
+    "notify_clawd_battery": True,  # Warnen wenn der Clawdmeter leer wird
+    "clawd_battery_pct": 15,       # ab wieviel Prozent Restladung
+    "clawd_battery_warned": False,  # Sperre, damit es nicht dauernd meldet
     # --- intern, aus den Ratelimit-Headern der API gepflegt ---
     "limit_window_at": 0,        # Reset-Zeitpunkt des aktuellen 5h-Fensters (Epoche)
     "limit_window_peak": 0,      # hoechste Auslastung in diesem Fenster (Prozent)
@@ -3062,8 +3065,41 @@ class Api:
         self._clawdmeter = ClawdmeterLink(
             address_provider=lambda: self.settings.get("clawdmeter_addr") or "",
             on_usage=self.on_usage_meta,
-            anim_provider=self._clawd_anim)
+            anim_provider=self._clawd_anim,
+            on_battery=self.on_clawd_battery)
         return self._clawdmeter
+
+    def on_clawd_battery(self, pct):
+        """Meldet sich einmal, wenn der Clawdmeter unter die Schwelle faellt.
+
+        Die Sperre loest erst wieder aus, wenn der Ladestand die Schwelle
+        deutlich ueberschreitet -- ohne diesen Abstand wuerde ein Wert, der um
+        die Schwelle pendelt, dauernd neu melden. Beim Laden also einmal
+        Ruhe, bis er wieder runter ist.
+        """
+        s = self.settings
+        if not s.get("notify_clawd_battery", True):
+            return
+        warn_at = max(5, min(90, int(s.get("clawd_battery_pct", 15) or 15)))
+        warned = bool(s.get("clawd_battery_warned"))
+
+        if pct <= warn_at and not warned:
+            s["clawd_battery_warned"] = True
+            tray = getattr(self, "_tray", None)
+            if tray and tray.icon:
+                try:
+                    tray.icon.notify(
+                        f"Clawdmeter hat nur noch {pct}% Akku", "Clawd")
+                except Exception:
+                    pass
+        elif warned and pct >= warn_at + 10:
+            s["clawd_battery_warned"] = False
+        else:
+            return
+        try:
+            save_json(SETTINGS_FILE, s)
+        except Exception:
+            pass
 
     # ---- Limit-Ueberwachung aus den Ratelimit-Headern -------------------
 
@@ -5223,6 +5259,18 @@ function renderSettings(){
              value="${st.limit_warn_pct||90}" onchange="setWarnPct(this)"
              style="width:74px;text-align:right"> %</div>
       </div>
+      <div class="row2">
+        <div><div class="lbl">Wenn der Clawdmeter leer wird</div>
+          <div class="desc">Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.</div></div>
+        <div class="toggle ${st.notify_clawd_battery!==false?'on':''}" onclick="toggleClawdBattery(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Schwelle für den Geräte-Akku</div>
+          <div class="desc">Ab wie viel Restladung gewarnt wird.</div></div>
+        <div><input type="number" min="5" max="90" step="5"
+             value="${st.clawd_battery_pct||15}" onchange="setClawdBatteryPct(this)"
+             style="width:74px;text-align:right"> %</div>
+      </div>
     </div>
 
     <div class="secthead" id="sect-verbindungen">Verbindungen</div>
@@ -5345,8 +5393,11 @@ function clawdInfo(r){
   const s = r.status || {};
   if(s.connected){
     const ago = s.last_send ? Math.round(Date.now()/1000 - s.last_send) : null;
-    return {dot:'ok', text: ago===null ? 'Verbunden.'
-                                       : `Verbunden — zuletzt gesendet vor ${ago}s.`};
+    // Akku nur zeigen wenn das Geraet ihn meldet - aeltere Firmware tut das
+    // nicht, dann steht dort einfach nichts statt "unbekannt".
+    const akku = (typeof s.battery === 'number') ? ` · Akku ${s.battery}%` : '';
+    return {dot:'ok', text: (ago===null ? 'Verbunden.'
+                                        : `Verbunden — zuletzt gesendet vor ${ago}s.`) + akku};
   }
   return s.last_error ? {dot:'err',  text:`Nicht verbunden: ${s.last_error}`}
                       : {dot:'wait', text:'Verbinde…'};
@@ -5394,6 +5445,19 @@ async function setWarnPct(el){
   v=Math.max(10,Math.min(100,v)); el.value=v;
   ingest(await api.update_setting('limit_warn_pct', v));
   toast('Warnschwelle: '+v+'%');
+}
+async function toggleClawdBattery(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  ingest(await api.update_setting('notify_clawd_battery', on));
+}
+async function setClawdBatteryPct(el){
+  let v=parseInt(el.value,10); if(isNaN(v)) v=15;
+  v=Math.max(5,Math.min(90,v)); el.value=v;
+  ingest(await api.update_setting('clawd_battery_pct', v));
+  // Sperre loesen: nach einer neuen Schwelle soll wieder gewarnt werden
+  // duerfen, sonst bliebe eine frueher ausgeloeste Meldung fuer immer stumm.
+  await api.update_setting('clawd_battery_warned', false);
+  toast('Akku-Warnung ab '+v+'%');
 }
 async function toggleAutostart(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);

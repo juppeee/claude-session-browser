@@ -31,6 +31,10 @@ DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
+# Standard-Batteriedienst. Die Firmware haengt ihn ueber NimBLEs HID-Geraet
+# mit an (ble_set_battery_level -> hid_dev->setBatteryLevel), also nichts
+# Eigenes - jedes Werkzeug kann den Ladestand lesen.
+BATTERY_CHAR_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS = {
@@ -331,7 +335,7 @@ class ClawdmeterLink:
     pywebview-GUI davon nichts mitbekommt."""
 
     def __init__(self, log=None, address_provider=None, on_usage=None,
-                 anim_provider=None):
+                 anim_provider=None, on_battery=None):
         """address_provider: Funktion die die gewuenschte Geraeteadresse liefert
         (leer/None = automatisch suchen). Wird bei jedem Versuch neu gefragt,
         damit eine Aenderung in den Einstellungen sofort greift.
@@ -346,12 +350,16 @@ class ClawdmeterLink:
         self._address_provider = address_provider or (lambda: None)
         self._on_usage = on_usage
         self._anim_provider = anim_provider or (lambda: "")
+        # Wird nur bei einer Aenderung gerufen, nicht bei jedem Nachlesen -
+        # sonst haengt an jedem Poll eine Auswertung.
+        self._on_battery = on_battery
         self._last_payload = None    # letzte API-Antwort, fuer Anim-Updates
         self._last_anim = ""         # "" = nichts vorgegeben, wie beim Geraet
         self._thread = None
         self._stop = threading.Event()
         self._status = {"connected": False, "last_send": None,
-                        "last_error": None, "address": None}
+                        "last_error": None, "address": None,
+                        "battery": None}   # Ladestand in %, None = unbekannt
         self._lock = threading.Lock()
 
     # -- oeffentliche API --------------------------------------------------
@@ -459,10 +467,25 @@ class ClawdmeterLink:
             except Exception:
                 pass  # Refresh-Kanal ist optional, der Poll-Loop reicht
 
+            def on_battery(_char, data) -> None:
+                if data:
+                    self._battery(int(data[0]))
+
+            # Ladestand: einmal lesen, danach auf Meldungen horchen. Das
+            # Abonnement ist nicht garantiert (aeltere Firmware, oder Windows
+            # gibt den Dienst nicht frei), deshalb wird im Poll-Loop zusaetzlich
+            # nachgelesen.
+            await self._read_battery(client)
+            try:
+                await client.start_notify(BATTERY_CHAR_UUID, on_battery)
+            except Exception:
+                pass
+
             self._last_payload = None    # frische Sitzung, nichts zwischenlagern
             self._last_anim = ""
             while not self._stop.is_set() and client.is_connected:
                 await self._send_once(client)
+                await self._read_battery(client)
                 # Auf den naechsten Poll warten -- oder frueher, wenn das
                 # Geraet selbst um Daten bittet.
                 # In kleinen Scheiben warten, damit stop() sofort greift und
@@ -481,7 +504,32 @@ class ClawdmeterLink:
                         # Request kosten.
                         if self._anim_changed():
                             await self._send_once(client, poll=False)
-        self._set(connected=False)
+        # Ohne Verbindung ist der Ladestand unbekannt, nicht "wie zuletzt" -
+        # ein stehengebliebener Wert waere schlimmer als gar keiner.
+        self._set(connected=False, battery=None)
+
+    async def _read_battery(self, client) -> None:
+        """Ladestand lesen. Fehlt der Dienst, bleibt der Wert None - das ist
+        kein Fehlerfall, aeltere Firmware meldet ihn schlicht nicht."""
+        try:
+            data = await client.read_gatt_char(BATTERY_CHAR_UUID)
+        except Exception:
+            return
+        if data:
+            self._battery(int(data[0]))
+
+    def _battery(self, pct: int) -> None:
+        """Neuen Ladestand uebernehmen und nur bei Aenderung weitermelden."""
+        pct = max(0, min(100, int(pct)))
+        with self._lock:
+            if self._status.get("battery") == pct:
+                return
+            self._status["battery"] = pct
+        if self._on_battery:
+            try:
+                self._on_battery(pct)
+            except Exception:
+                pass
 
     def _anim_changed(self) -> bool:
         if self._last_payload is None:
