@@ -5416,7 +5416,7 @@ function renderSettings(){
       <div class="row2">
         <div><div class="lbl">Im Hintergrund weiterlaufen</div>
           <div class="desc">Wenn aktiv, versteckt der X-Button die App nur (Icon im System-Tray unten rechts, Klick öffnet sie wieder).</div>
-          <div class="warnnote">${ic('warn')}<span>Ausgeschaltet beendet das X die App wirklich – dann laufen Clawd, das Clawdmeter und die Benachrichtigungen nicht mehr.</span></div></div>
+          ${st.close_to_tray===false ? `<div class="warnnote">${ic('warn')}<span>Das X beendet die App jetzt wirklich – Clawd, das Clawdmeter und die Benachrichtigungen laufen dann nicht mehr.</span></div>` : ''}</div>
         <div class="toggle ${st.close_to_tray!==false?'on':''}" onclick="toggleTray(this)"></div>
       </div>
       <button class="btn danger" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
@@ -5692,6 +5692,7 @@ async function toggleTray(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   ingest(await api.update_setting('close_to_tray', on));
   await api.buddy_apply_tray(on);
+  renderSettings();   // der Hinweis darunter haengt am Schalter
 }
 async function toggleLimitNotif(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
