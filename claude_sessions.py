@@ -2692,6 +2692,16 @@ class TrayManager:
             win.restore()
         except Exception:
             pass
+        # Notausgang: liegt das Fenster ausserhalb jedes Bildschirms (Monitor
+        # abgesteckt, Anordnung geaendert), holt "Oeffnen" es in die Mitte
+        # zurueck. Sonst waere es ueber das Tray-Menue nicht erreichbar.
+        try:
+            w, h = int(win.width or 1180), int(win.height or 760)
+            if not _position_is_usable(int(win.x), int(win.y), w, h):
+                win.move(max(0, (_screen_w() - w) // 2),
+                         max(0, (_screen_h() - h) // 2))
+        except Exception:
+            pass
 
     def stop(self):
         if self.icon:
@@ -2766,7 +2776,14 @@ class Api:
                 self._geo["w"], self._geo["h"] = a[0], a[1]
 
         def on_moved(*a):
+            # Windows meldet fuer ein minimiertes Fenster -32000/-32000. Wer
+            # die App minimiert und in dem Zustand beendet, haette sonst diese
+            # Position gespeichert - und beim naechsten Start ein Fenster
+            # ausserhalb jedes Bildschirms: Eintrag in der Taskleiste, aber
+            # nichts zu sehen, und das dauerhaft.
             if len(a) >= 2 and not self._max:
+                if a[0] <= -30000 or a[1] <= -30000:
+                    return
                 self._geo["x"], self._geo["y"] = a[0], a[1]
 
         def on_max(*a):
@@ -3697,7 +3714,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   }
 
   .updatebar{display:none; align-items:center; gap:11px; margin:4px 18px 0; padding:10px 14px;
-    background:rgba(236,116,86,.13); border:1px solid var(--accent); border-radius:11px; color:var(--accent2)}
+    background:color-mix(in srgb, var(--accent) 13%, transparent);
+    border:1px solid var(--accent); border-radius:11px; color:var(--accent2)}
   .updatebar.show{display:flex}
   .updatebar .utext{font-weight:700; color:var(--fg)}
   .updatebar .unotes{color:var(--muted); font-size:12.5px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
@@ -3766,7 +3784,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     border:1px solid var(--border); border-radius:12px; padding:0 14px; height:42px;
     transition:border-color .15s, box-shadow .15s;
   }
-  .search:focus-within{border-color:var(--accent); box-shadow:0 0 0 3px rgba(236,116,86,.20)}
+  .search:focus-within{border-color:var(--accent);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent)}
   .search svg{flex:none; color:var(--muted)}
   .search input{
     flex:1; background:transparent; border:none; outline:none; color:var(--fg);
@@ -3890,6 +3909,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .row2 + .row2{border-top:1px solid var(--border)}
   .row2 .lbl{font-weight:600}
   .row2 .desc{color:var(--muted); font-size:12.5px; margin-top:2px}
+  /* Folgenhinweise. Beschreibungen duerfen im gedaempften Grau stehen, aber
+     ein Satz ueber eine Folge, die man nicht mehr zurueckdrehen kann, geht
+     darin unter - der bekommt Farbe und ein Zeichen davor. */
+  .warnnote{display:flex; align-items:flex-start; gap:7px; margin-top:6px;
+    color:#ffc98a; font-size:12.5px; line-height:1.45}
+  .warnnote .ci{flex:none; margin-top:1px; color:#ffb454}
+  .warnnote .ci svg{width:14px; height:14px}
+  .btn.danger{border-color:rgba(255,107,107,.42); color:#ff9a9a}
+  .btn.danger:hover{background:rgba(255,107,107,.14); border-color:#ff6b6b; color:#ffbdbd}
 
   /* Toggle */
   .toggle{width:46px; height:26px; border-radius:20px; background:var(--surface2);
@@ -3899,11 +3927,30 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-radius:50%; background:#fff; transition:left .15s}
   .toggle.on::after{left:22px}
 
+  /* Statuspunkt vor einer Zustandszeile. Groesse und Abstand sind auf die
+     .desc-Zeile abgestimmt, damit er auf der Textmitte sitzt. */
+  .dot{display:inline-block; width:8px; height:8px; border-radius:50%;
+    margin-right:8px; vertical-align:middle; position:relative; top:-1px;
+    background:var(--muted); flex:none}
+  .dot.ok{background:#3ecf8e; box-shadow:0 0 0 3px rgba(62,207,142,.18)}
+  .dot.err{background:#ff6b6b; box-shadow:0 0 0 3px rgba(255,107,107,.18)}
+  .dot.wait{background:#ffb454; box-shadow:0 0 0 3px rgba(255,180,84,.18);
+    animation:dotpulse 1.4s ease-in-out infinite}
+  .dot.off{background:#5c6068}
+  @keyframes dotpulse{0%,100%{opacity:1} 50%{opacity:.35}}
+
   .swatches{display:flex; gap:9px; flex-wrap:wrap}
+  /* Die Kacheln sahen wie Dekoration aus. Reine Skalierung um 10% faellt bei
+     30 px nicht auf - erst Ring + Schatten machen sichtbar, dass man klicken
+     kann. Der Ring liegt aussen (box-shadow), damit die Farbflaeche selbst
+     unveraendert bleibt und man sie weiter beurteilen kann. */
   .sw{width:30px; height:30px; border-radius:9px; cursor:pointer; border:2px solid transparent;
-    transition:transform .08s}
-  .sw:hover{transform:scale(1.1)}
+    transition:transform .13s ease, box-shadow .13s ease}
+  .sw:hover{transform:scale(1.18);
+    box-shadow:0 0 0 2px rgba(255,255,255,.45), 0 5px 16px rgba(0,0,0,.5)}
+  .sw:active{transform:scale(1.04); transition-duration:.05s}
   .sw.active{border-color:#fff}
+  .sw.active:hover{box-shadow:0 0 0 3px rgba(255,255,255,.3), 0 5px 16px rgba(0,0,0,.5)}
 
   select.sel-input{
     background:var(--bg); border:1px solid var(--border); color:var(--fg);
@@ -4009,6 +4056,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-radius:6px; background:var(--surface2)}
   .ba-headline{display:flex; align-items:flex-start; gap:22px; justify-content:space-between}
   .ba-headline > div:first-child{flex:1}
+  /* Alles unterhalb des Haupt-Schalters. Ist der Buddy aus, bleibt es
+     sichtbar (man soll ja sehen was einen erwartet), aber deutlich
+     zurueckgenommen und nicht bedienbar - sonst dreht man an Reglern
+     ohne Wirkung. */
+  .ba-sub{transition:opacity .18s ease}
+  .ba-sub.off{opacity:.38; filter:grayscale(.75); pointer-events:none}
+  .ba-off-hint{display:none; align-items:center; gap:10px; margin:0 0 14px;
+    padding:11px 14px; border-radius:10px;
+    background:color-mix(in srgb, var(--accent) 10%, transparent);
+    border:1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+    color:var(--text); font-size:13px}
+  .ba-off-hint.show{display:flex}
   .ba-toggle{display:flex; flex-direction:column; align-items:center; gap:6px}
   .ba-toggle-lbl{font-size:12px; color:var(--muted); letter-spacing:.02em}
   .ba-vis{display:flex; flex-direction:column; gap:10px; margin-bottom:12px}
@@ -4079,7 +4138,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .ba-style.active{background:var(--accent); color:#fff; border-color:transparent}
   .ba-frame-colors{display:flex; gap:6px; transition:opacity .15s}
   .ba-frame-colors.dim{opacity:.35; pointer-events:none}
-  .ba-fc{width:22px; height:22px; border-radius:6px; cursor:pointer; border:2px solid transparent; transition:transform .08s}
+  .ba-fc{width:22px; height:22px; border-radius:6px; cursor:pointer; border:2px solid transparent;
+    transition:transform .13s ease, box-shadow .13s ease}
+  .ba-fc:hover{transform:scale(1.2);
+    box-shadow:0 0 0 2px rgba(255,255,255,.45), 0 4px 12px rgba(0,0,0,.5)}
+  .ba-fc:active{transform:scale(1.05); transition-duration:.05s}
   .ba-fc:hover{transform:scale(1.15)}
   .ba-fc.active{border-color:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.4)}
   .ba-frame-label{margin:6px 0 6px; transition:opacity .15s}
@@ -4411,6 +4474,8 @@ const ICONS={
   clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
   wand:'<path d="M15 4l5 5"/><path d="M4 20L16 8"/><path d="M18 3v3"/><path d="M21 6h-3"/>',
   play:'<circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/>',
+  info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.8v.4"/>',
+  warn:'<path d="M12 4.5L21 19H3z"/><path d="M12 10v4"/><path d="M12 16.7v.3"/>',
 };
 function ic(k){
   const p=ICONS[k]; if(!p) return '';
@@ -4712,6 +4777,12 @@ async function renderBuddy(){
       </div>
     </div>
 
+    <div class="ba-off-hint ${b.enabled?'':'show'}">
+      ${ic('info')}<span>Der Buddy ist ausgeschaltet. Die Einstellungen darunter
+      wirken erst, wenn du ihn oben einschaltest.</span>
+    </div>
+
+    <div class="ba-sub ${b.enabled?'':'off'}">
     <div class="card">
       <h2>${ic('clock')}Wann sichtbar</h2>
       <div class="sub">Der Buddy kann immer da sein oder nur wenn ein bestimmtes Programm gerade im Vordergrund ist – z.B. nur wenn Claude Code im Terminal läuft.</div>
@@ -4795,6 +4866,7 @@ async function renderBuddy(){
           <div class="toggle ${b.party?'on':''}" onclick="buddySetToggle('party')"></div>
         </div>
       </div>
+    </div>
     </div>
   `;
 
@@ -4962,10 +5034,11 @@ function renderSettings(){
       <h2>${ic('window')}Fenster schließen</h2>
       <div class="row2">
         <div><div class="lbl">Im Hintergrund weiterlaufen</div>
-          <div class="desc">Wenn aktiv, versteckt der X-Button die App nur (Icon im System-Tray unten rechts, Klick öffnet sie wieder). Ausschalten wenn X wirklich beenden soll.</div></div>
+          <div class="desc">Wenn aktiv, versteckt der X-Button die App nur (Icon im System-Tray unten rechts, Klick öffnet sie wieder).</div>
+          <div class="warnnote">${ic('warn')}<span>Ausgeschaltet beendet das X die App wirklich – dann laufen Buddy, Clawdmeter und Benachrichtigungen nicht mehr.</span></div></div>
         <div class="toggle ${st.close_to_tray!==false?'on':''}" onclick="toggleTray(this)"></div>
       </div>
-      <button class="btn" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
+      <button class="btn danger" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
     </div>
 
     <div class="card">
@@ -4986,7 +5059,8 @@ function renderSettings(){
       </div>
       <div class="row2">
         <div><div class="lbl">Vorwarnen bevor das Limit voll ist</div>
-          <div class="desc">Meldet sich einmal pro 5-Stunden-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht. Bei 100 % ist es zum Reagieren zu spät.</div></div>
+          <div class="desc">Meldet sich einmal pro 5-Stunden-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht.</div>
+          <div class="warnnote">${ic('warn')}<span>Ohne Vorwarnung merkst du es erst bei 100 % – dann ist es zum Reagieren zu spät.</span></div></div>
         <div class="toggle ${st.notify_limit_near!==false?'on':''}" onclick="toggleLimitNear(this)"></div>
       </div>
       <div class="row2">
@@ -5073,31 +5147,38 @@ async function loadClawdDevices(rescan){
 async function pickClawd(addr){
   const r = await api.clawdmeter_pick(addr);
   ingest(await api.get_state());
-  const s = document.getElementById('clawd-status');
-  if(s) s.textContent = clawdText(r);
+  setClawdStatus(document.getElementById('clawd-status'), r);
   toast(addr ? 'Gerät gewählt ✓' : 'Gerät wird automatisch gesucht');
 }
-function clawdText(r){
-  if(!r) return '';
-  if(!r.available) return 'Bluetooth-Modul nicht verfügbar (bleak fehlt).';
-  if(!r.enabled) return 'Aus.';
+// Verbindungszustand als {dot, text}. Der Punkt spart das Lesen - man sieht
+// auf einen Blick ob die Verbindung steht, wie beim "Aktuell ✓" der Updates.
+function clawdInfo(r){
+  if(!r) return {dot:'off', text:''};
+  if(!r.available) return {dot:'err', text:'Bluetooth-Modul nicht verfügbar (bleak fehlt).'};
+  if(!r.enabled)   return {dot:'off', text:'Aus.'};
   const s = r.status || {};
   if(s.connected){
     const ago = s.last_send ? Math.round(Date.now()/1000 - s.last_send) : null;
-    return ago===null ? 'Verbunden.' : `Verbunden — zuletzt gesendet vor ${ago}s.`;
+    return {dot:'ok', text: ago===null ? 'Verbunden.'
+                                       : `Verbunden — zuletzt gesendet vor ${ago}s.`};
   }
-  return s.last_error ? `Nicht verbunden: ${s.last_error}` : 'Verbinde…';
+  return s.last_error ? {dot:'err',  text:`Nicht verbunden: ${s.last_error}`}
+                      : {dot:'wait', text:'Verbinde…'};
+}
+function setClawdStatus(el, r){
+  if(!el) return;
+  const i = clawdInfo(r);
+  el.innerHTML = `<span class="dot ${i.dot}"></span>${esc(i.text)}`;
 }
 async function refreshClawd(){
   const el = document.getElementById('clawd-status');
   if(!el) return;
-  try{ el.textContent = clawdText(await api.clawdmeter_state()); }catch(e){}
+  try{ setClawdStatus(el, await api.clawdmeter_state()); }catch(e){}
 }
 async function toggleClawd(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   const r = await api.clawdmeter_set(on);
-  const s = document.getElementById('clawd-status');
-  if(s) s.textContent = clawdText(r);
+  setClawdStatus(document.getElementById('clawd-status'), r);
   toast(on?'Clawdmeter an ✓':'Clawdmeter aus');
 }
 async function toggleClawdBuddy(el){
@@ -5629,6 +5710,47 @@ def _acquire_single_instance():
     return owned, handle
 
 
+def _screen_w():
+    try:
+        return int(ctypes.windll.user32.GetSystemMetrics(0)) if _IS_WIN else 1920
+    except Exception:
+        return 1920
+
+
+def _screen_h():
+    try:
+        return int(ctypes.windll.user32.GetSystemMetrics(1)) if _IS_WIN else 1080
+    except Exception:
+        return 1080
+
+
+def _position_is_usable(x, y, w, h):
+    """True wenn ein Fenster an (x,y) mit Groesse (w,h) noch greifbar waere.
+
+    Gemerkte Positionen koennen ins Nichts zeigen: ein Monitor wurde
+    abgesteckt, die Anordnung hat sich geaendert, oder es steht die
+    Minimiert-Position -32000 drin. Das Fenster laege dann ausserhalb jedes
+    Bildschirms - in der Taskleiste sichtbar, auf dem Schreibtisch nicht.
+
+    Verlangt wird nicht die volle Flaeche, sondern ein Stueck Titelleiste, das
+    man mit der Maus noch treffen kann.
+    """
+    if not _IS_WIN:
+        return True
+    try:
+        u = ctypes.windll.user32
+        vx, vy = u.GetSystemMetrics(76), u.GetSystemMetrics(77)
+        vw, vh = u.GetSystemMetrics(78), u.GetSystemMetrics(79)
+        if vw <= 0 or vh <= 0:
+            return True                      # nichts Verlaessliches -> zulassen
+        # Ueberlappung von Fenster und Gesamt-Schreibtisch
+        ox = min(x + w, vx + vw) - max(x, vx)
+        oy = min(y + h, vy + vh) - max(y, vy)
+        return ox >= 160 and oy >= 40
+    except Exception:
+        return True
+
+
 def _restore_existing_window():
     """Sucht das Hauptfenster der laufenden Instanz und bringt es nach vorne
     (auch aus dem Tray heraus falls verstecked). Return True wenn was gefunden
@@ -5728,8 +5850,19 @@ def main():
         maximized=bool(s.get("win_max")),
     )
     if s.get("win_x") is not None and s.get("win_y") is not None:
-        kw["x"] = int(s["win_x"])
-        kw["y"] = int(s["win_y"])
+        wx, wy = int(s["win_x"]), int(s["win_y"])
+        if _position_is_usable(wx, wy, kw["width"], kw["height"]):
+            kw["x"], kw["y"] = wx, wy
+        else:
+            # Unerreichbar gewordene Position wegwerfen statt das Fenster ins
+            # Nichts zu setzen. Ohne x/y zentriert pywebview von selbst.
+            s["win_x"] = s["win_y"] = None
+            s["win_max"] = False
+            kw["maximized"] = False
+            try:
+                save_json(SETTINGS_FILE, s)
+            except Exception:
+                pass
     win = webview.create_window("Claude Session Browser", **kw)
     api.bind_window(win)
 
