@@ -4324,16 +4324,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
      Restzeit. Eine Zeile ueber die volle Breite war fast nur Leerraum. */
   .limitbox{display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));
     gap:10px; margin:0 0 14px}
-  .lcard{background:var(--bg); border:1px solid var(--border); border-radius:10px;
-    padding:11px 13px 12px}
+  .lcard{background:var(--bg); border:1px solid var(--border); border-radius:9px;
+    padding:8px 11px 9px}
   .lcard .top{display:flex; align-items:baseline; gap:8px}
-  .lcard .num{font-size:23px; font-weight:700; color:var(--fg); line-height:1;
+  .lcard .num{font-size:17px; font-weight:700; color:var(--fg); line-height:1;
     font-variant-numeric:tabular-nums}
-  .lcard .tag{margin-left:auto; font-size:11px; color:var(--muted);
-    background:var(--surface2); border-radius:999px; padding:3px 9px}
-  .lcard .bar{height:7px; border-radius:4px; background:var(--surface2);
-    margin:9px 0 7px; overflow:hidden}
-  .lcard .bar i{display:block; height:100%; border-radius:4px; background:#3ecf8e;
+  .lcard .tag{margin-left:auto; font-size:10.5px; color:var(--muted);
+    background:var(--surface2); border-radius:999px; padding:2px 8px}
+  .lcard .bar{height:5px; border-radius:3px; background:var(--surface2);
+    margin:7px 0 5px; overflow:hidden}
+  .lcard .bar i{display:block; height:100%; border-radius:3px; background:#3ecf8e;
     transition:width .4s ease}
   .lcard.mid .bar i{background:#ffb454}
   .lcard.hot .bar i{background:#ff6b6b}
@@ -5672,18 +5672,21 @@ function renderSettings(){
 let LIMIT = null;
 function fmtDauer(sek){
   sek = Math.max(0, Math.round(sek));
-  const h = Math.floor(sek/3600), m = Math.floor((sek%3600)/60), s = sek%60;
+  const t = Math.floor(sek/86400), h = Math.floor(sek/3600), m = Math.floor((sek%3600)/60);
+  // Ab einem Tag in Tagen rechnen - "101 h 58 min" muss man erst umrechnen,
+  // bevor man weiss, ob das viel ist.
+  if(t > 0) return t + ' d ' + (h - t*24) + ' h';
   if(h > 0) return h + ' h ' + String(m).padStart(2,'0') + ' min';
-  if(m > 0) return m + ' min ' + String(s).padStart(2,'0') + ' s';
-  return s + ' s';
+  if(m > 0) return m + ' min ' + String(sek%60).padStart(2,'0') + ' s';
+  return sek + ' s';
 }
 // Eine Kachel: grosse Zahl, Balken, Restzeit - wie auf dem Clawdmeter.
 function limitCard(pct, resetAt, tag, voll){
   const rest = resetAt ? (resetAt*1000 - Date.now())/1000 : 0;
   const stufe = voll || pct >= 90 ? 'hot' : (pct >= 60 ? 'mid' : '');
   const sub = voll
-    ? (resetAt ? `voll – frei in ${fmtDauer(rest)}` : 'voll')
-    : (resetAt ? `frei in ${fmtDauer(rest)}` : 'Reset-Zeit noch unbekannt');
+    ? (resetAt ? `voll – zurückgesetzt in ${fmtDauer(rest)}` : 'voll')
+    : (resetAt ? `zurückgesetzt in ${fmtDauer(rest)}` : 'Reset-Zeit noch unbekannt');
   return `<div class="lcard ${stufe}${voll?' full':''}">`
     + `<div class="top"><span class="num">${pct}%</span>`
     +   `<span class="tag">${esc(tag)}</span></div>`
