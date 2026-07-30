@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.3.7"
+VERSION = "1.3.8"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -4175,19 +4175,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .dt-rows .v{color:var(--fg); overflow:hidden; text-overflow:ellipsis;
     white-space:nowrap}
   .dt-rows .v.path{font-family:Consolas,monospace; font-size:12px}
-  .dt-quote{
-    border-left:2px solid var(--border); padding-left:10px; color:var(--fg);
-    line-height:1.55; display:-webkit-box; -webkit-line-clamp:6;
+  /* Die Zeilenbegrenzung sitzt im inneren Element, nicht auf dem Flex-Kind:
+     -webkit-box als direktes Flex-Kind streckt sich, dann laeuft die
+     Randlinie durch das halbe Panel. */
+  .dt-quote{border-left:2px solid var(--border); padding-left:10px; flex:none}
+  .dt-quote .k{display:block; color:var(--muted); font-size:11.5px; margin-bottom:3px}
+  .dt-quote .t{
+    color:var(--fg); line-height:1.55; display:-webkit-box; -webkit-line-clamp:6;
     -webkit-box-orient:vertical; overflow:hidden;
   }
-  .dt-quote .k{display:block; color:var(--muted); font-size:11.5px; margin-bottom:3px}
-  .dt-id{margin-top:auto; padding-top:9px; border-top:1px solid var(--border);
-    display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px}
-  .dt-id code{font-family:Consolas,monospace; font-size:11px; color:var(--muted)}
-  .dt-id button{margin-left:auto; background:transparent; border:1px solid var(--border);
-    color:var(--muted); border-radius:7px; padding:2px 8px; font-family:inherit;
-    font-size:11px; cursor:pointer}
-  .dt-id button:hover{color:var(--fg); border-color:var(--accent)}
+  /* ID als normale Zeile, gekuerzt. Ein eigener Kopieren-Knopf waere doppelt:
+     direkt darunter steht schon der Knopf "ID" in der Aktionsreihe. */
+  .dt-rows .v.id{font-family:Consolas,monospace; font-size:11.5px; color:var(--muted)}
   .actions{display:flex; flex-direction:column; gap:9px; flex:none}
   .actions .btn{width:100%; justify-content:center}
   .actions .hint{color:var(--muted); font-size:12px; text-align:center; margin-top:2px}
@@ -5023,10 +5022,11 @@ function updateDetail(){
    +   `<div class="v path" title="${esc(pfad)}">${esc(pfad)}</div>`
    +   `<div class="k">Verlauf</div>`
    +   `<div class="v">${s.user_msgs} von dir · ${s.assistant_msgs} von Claude</div>`
+   +   `<div class="k">ID</div>`
+   +   `<div class="v id" title="${esc(s.id)}">${esc(kurz)}</div>`
    + `</div>`
-   + (start ? `<div class="dt-quote"><span class="k">Erste Frage</span>${esc(start)}</div>` : '')
-   + `<div class="dt-id"><code title="${esc(s.id)}">${esc(kurz)}</code>`
-   +   `<button onclick="doCopy()" title="Vollständige ID kopieren">kopieren</button></div>`;
+   + (start ? `<div class="dt-quote"><span class="k">Erste Frage</span>`
+            + `<div class="t">${esc(start)}</div></div>` : '');
 }
 
 function sortBy(c){
@@ -5495,18 +5495,6 @@ function renderSettings(){
              value="${st.limit_warn_pct||90}" onchange="setWarnPct(this)"
              style="width:74px;text-align:right"> %</div>
       </div>
-      <div class="row2">
-        <div><div class="lbl">Wenn der Clawdmeter leer wird</div>
-          <div class="desc">Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.</div></div>
-        <div class="toggle ${st.notify_clawd_battery!==false?'on':''}" onclick="toggleClawdBattery(this)"></div>
-      </div>
-      <div class="row2">
-        <div><div class="lbl">Schwelle für den Geräte-Akku</div>
-          <div class="desc">Ab wie viel Restladung gewarnt wird.</div></div>
-        <div><input type="number" min="5" max="90" step="5"
-             value="${st.clawd_battery_pct||15}" onchange="setClawdBatteryPct(this)"
-             style="width:74px;text-align:right"> %</div>
-      </div>
     </div>
 
     <div class="secthead" id="sect-verbindungen">Verbindungen</div>
@@ -5543,6 +5531,18 @@ function renderSettings(){
       <div class="row2">
         <div><div class="lbl">Clawd-Buddy spiegeln</div><div class="desc">Das Gerät zeigt dieselbe Animation wie dein Clawd-Buddy auf dem Desktop — statt selbst eine nach Auslastung zu wählen. Braucht einen eingeschalteten Buddy.</div></div>
         <div class="toggle ${st.clawdmeter_buddy!==false?'on':''}" onclick="toggleClawdBuddy(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Warnen wenn der Akku zur Neige geht</div>
+          <div class="desc">Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.</div></div>
+        <div class="toggle ${st.notify_clawd_battery!==false?'on':''}" onclick="toggleClawdBattery(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Schwelle für die Akku-Warnung</div>
+          <div class="desc">Ab wie viel Restladung gewarnt wird.</div></div>
+        <div><input type="number" min="5" max="90" step="5"
+             value="${st.clawd_battery_pct||15}" onchange="setClawdBatteryPct(this)"
+             style="width:74px;text-align:right"> %</div>
       </div>
       <div class="field">
         <button class="btn accent" onclick="clawdReconnect(this)">Jetzt verbinden</button>
