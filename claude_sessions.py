@@ -2714,6 +2714,78 @@ class TrayManager:
 # --------------------------------------------------------------------------- #
 #  API (von JavaScript aufrufbar)
 # --------------------------------------------------------------------------- #
+def _png_rgba(width, height, rows):
+    """Minimales RGBA-PNG als data-URI. `rows` ist eine Liste von bytearrays
+    (je 4*width Bytes). Pillow waere hier ein Import zu viel - PNG mit zlib
+    selbst zu schreiben sind zwanzig Zeilen."""
+    raw = bytearray()
+    for r in rows:
+        raw.append(0)          # Filter "None" pro Zeile
+        raw += r
+
+    def chunk(tag, data):
+        out = len(data).to_bytes(4, "big") + tag + data
+        return out + (zlib.crc32(tag + data) & 0xFFFFFFFF).to_bytes(4, "big")
+
+    ihdr = (width.to_bytes(4, "big") + height.to_bytes(4, "big")
+            + bytes((8, 6, 0, 0, 0)))       # 8 bit, Farbtyp 6 = RGBA
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+           + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+           + chunk(b"IEND", b""))
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def _sprite_icon_png(anim, scale=6):
+    """Erster Frame einer Animation, auf die Figur zugeschnitten, quadratisch
+    aufgefuellt und mit durchsichtigem Rand.
+
+    Zugeschnitten wird gegen zwei "leere" Werte: Index 0 (nie gesetzt) und den
+    Wert der linken oberen Ecke - das ist bei diesen Sprites die schwarze
+    Hintergrundflaeche. Die Ausmasse werden ueber ALLE Frames bestimmt, sonst
+    wackelt das Bild je nachdem welcher Frame gerade dran ist.
+
+    Quadratisch aufgefuellt statt auf die Kachel gedehnt: die Figur ist
+    breiter als hoch, gedehnt saehe sie gequetscht aus.
+    """
+    if not anim or not anim.get("frames"):
+        return ""
+    frames, palette = anim["frames"], anim["palette"]
+    empty = {0, frames[0][0]}
+    xs, ys = [], []
+    for f in frames:
+        for i, v in enumerate(f):
+            if v not in empty:
+                xs.append(i % 20)
+                ys.append(i // 20)
+    if not xs:
+        return ""
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    bw, bh = x1 - x0 + 1, y1 - y0 + 1
+    side = max(bw, bh)
+    ox, oy = (side - bw) // 2, (side - bh) // 2   # zentriert auffuellen
+
+    frame = frames[0]
+    rows = []
+    for sy in range(side):
+        row = bytearray()
+        gy = sy - oy + y0
+        for sx in range(side):
+            gx = sx - ox + x0
+            if 0 <= gx < 20 and 0 <= gy < 20 and oy <= sy < oy + bh and ox <= sx < ox + bw:
+                v = frame[gy * 20 + gx]
+            else:
+                v = 0
+            if v in empty:
+                px = bytes((0, 0, 0, 0))
+            else:
+                hx = (palette[v] if v < len(palette) else "#000000").lstrip("#")
+                px = bytes((int(hx[0:2], 16), int(hx[2:4], 16),
+                            int(hx[4:6], 16), 255))
+            row += px * scale
+        rows.extend([row] * scale)
+    return _png_rgba(side * scale, side * scale, rows)
+
+
 class Api:
     def __init__(self):
         self.overrides = load_json(TITLES_FILE, {})
@@ -3207,6 +3279,17 @@ class Api:
     def buddy_preview(self, name):
         """Liefert einen Vorschau-Frame als PNG-Data-URL."""
         return self._buddy_preview_gif(name)
+
+    def buddy_icon(self, name):
+        """Wie buddy_preview, aber auf die Figur zugeschnitten und mit
+        durchsichtigem Rand - fuer kleine Stellen wie die Ueberschrift.
+
+        Die Sprites sind 20x20, die Figur belegt davon nur etwa 15x13; der
+        Rest ist schwarze Flaeche. Ungeschnitten in ein 32-px-Kaestchen
+        gesetzt ergibt das einen kleinen Klecks in einem schwarzen Quadrat,
+        der wegen des Seitenverhaeltnisses gedrueckt aussieht.
+        """
+        return _sprite_icon_png(BUDDY_ANIMS.get(name))
 
     def _buddy_preview_gif(self, name):
         """Baut aus dem ersten Frame einer Animation ein 80x80 PNG-Data-URL.
@@ -3865,6 +3948,26 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .actions{display:flex; flex-direction:column; gap:9px; flex:none}
   .actions .btn{width:100%; justify-content:center}
   .actions .hint{color:var(--muted); font-size:12px; text-align:center; margin-top:2px}
+  /* Zweitrangige Aktionen nebeneinander statt gestapelt. */
+  .iconrow{display:flex; gap:6px}
+  .iconbtn{flex:1; display:flex; flex-direction:column; align-items:center; gap:4px;
+    background:var(--surface2); border:1px solid var(--border); color:var(--fg);
+    border-radius:10px; padding:9px 4px 7px; cursor:pointer; font-family:inherit;
+    font-size:11px; letter-spacing:.02em; transition:border-color .12s, background .12s}
+  .iconbtn svg{width:17px; height:17px}
+  .iconbtn:hover:not(:disabled){border-color:var(--accent); background:var(--bg)}
+  .iconbtn:disabled{opacity:.4; cursor:default}
+
+  /* Fusszeile mit den Tastaturkuerzeln - auf jedem Tab, mit dem jeweils
+     passenden Inhalt. Steht ausserhalb der Ansichten, damit sie beim
+     Wechseln nicht springt. */
+  .shortcutbar{display:flex; gap:16px; flex-wrap:wrap; align-items:center;
+    padding:8px 18px 10px; border-top:1px solid var(--border);
+    color:var(--muted); font-size:11.5px}
+  .shortcutbar b{color:var(--fg); font-weight:600}
+  .shortcutbar kbd{background:var(--surface2); border:1px solid var(--border);
+    border-bottom-width:2px; border-radius:5px; padding:1px 5px; margin-right:5px;
+    font-family:Consolas,monospace; font-size:10.5px; color:var(--fg)}
 
   /* ---- Einstellungen ---- */
   .settings{overflow-y:auto; flex:1; padding-right:6px}
@@ -3888,6 +3991,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     color:var(--muted); margin:22px 2px 10px; display:flex; align-items:center; gap:10px;
   }
   .secthead:first-child{margin-top:2px}
+  /* Sprungleiste: die Einstellungen sind auf fuenf Gruppen und weit ueber
+     eine Bildschirmhoehe angewachsen. scroll-margin-top sorgt dafuer, dass
+     die angesprungene Ueberschrift nicht am oberen Rand klebt. */
+  .secthead{scroll-margin-top:8px}
+  .jumpbar{display:flex; gap:6px; flex-wrap:wrap; margin:0 0 12px; padding-bottom:11px;
+    border-bottom:1px solid var(--border)}
+  .jumpbar button{background:transparent; border:1px solid transparent; color:var(--muted);
+    font-family:inherit; font-size:12px; font-weight:600; letter-spacing:.03em;
+    padding:5px 11px; border-radius:8px; cursor:pointer; transition:color .12s, background .12s}
+  .jumpbar button:hover{color:var(--fg); background:var(--surface2)}
+  .jumpbar button.active{color:var(--fg); background:var(--surface2);
+    border-color:color-mix(in srgb, var(--accent) 45%, transparent)}
   .secthead::after{content:""; flex:1; height:1px; background:var(--border)}
   .card .sub{color:var(--muted); font-size:13px; margin-bottom:14px}
   /* alle Eingabefelder in Karten dunkel (kein weisses Standard-Feld) */
@@ -4052,8 +4167,12 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cp-hex:focus{border-color:var(--accent)}
 
   /* ---- Buddy-Tab ---- */
-  .buddy-hp{width:32px; height:32px; image-rendering:pixelated; image-rendering:crisp-edges;
-    border-radius:6px; background:var(--surface2)}
+  /* Freigestellt und randlos: das Bild ist zugeschnitten und durchsichtig,
+     ein Kaestchen drumherum wuerde die Figur wieder klein wirken lassen.
+     object-fit:contain haelt das Seitenverhaeltnis, falls das PNG doch mal
+     nicht quadratisch ankommt. */
+  .buddy-hp{width:34px; height:34px; object-fit:contain;
+    image-rendering:pixelated; image-rendering:crisp-edges}
   .ba-headline{display:flex; align-items:flex-start; gap:22px; justify-content:space-between}
   .ba-headline > div:first-child{flex:1}
   /* Alles unterhalb des Haupt-Schalters. Ist der Buddy aus, bleibt es
@@ -4228,19 +4347,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z"/></svg>
             In Session einsteigen
           </button>
-          <button class="btn" id="btn-rename" disabled onclick="openRename()">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
-            Titel ändern
-          </button>
-          <button class="btn" id="btn-color" disabled onclick="openColor()">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10.5" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/><circle cx="15.5" cy="10.5" r="1.2" fill="currentColor"/></svg>
-            Farbe
-          </button>
-          <button class="btn" id="btn-copy" disabled onclick="doCopy()">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
-            ID kopieren
-          </button>
-          <span class="hint">Doppelklick = einsteigen · F2 = umbenennen</span>
+          <!-- Zweitrangige Aktionen als Reihe statt drei volle Knoepfe
+               untereinander. Beschriftung bleibt drunter stehen - ein reines
+               Symbolfeld waere zwar kleiner, aber "Farbe" und "ID kopieren"
+               errraet man an einem Symbol nicht zuverlaessig. -->
+          <div class="iconrow">
+            <button class="iconbtn" id="btn-rename" disabled onclick="openRename()"
+                    title="Titel ändern (F2)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+              <span>Titel</span>
+            </button>
+            <button class="iconbtn" id="btn-color" disabled onclick="openColor()"
+                    title="Farbe der Session festlegen">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="8.5" cy="10.5" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/><circle cx="15.5" cy="10.5" r="1.2" fill="currentColor"/></svg>
+              <span>Farbe</span>
+            </button>
+            <button class="iconbtn" id="btn-copy" disabled onclick="doCopy()"
+                    title="Session-ID in die Zwischenablage kopieren">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+              <span>ID</span>
+            </button>
+          </div>
         </div>
       </aside>
     </div>
@@ -4263,8 +4390,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <!-- Einstellungen -->
   <div class="view" id="view-settings">
     <div class="head"><h1>Einstellungen</h1></div>
+    <div class="jumpbar" id="settings-jump"></div>
     <div class="settings" id="settings"></div>
   </div>
+
+  <div class="shortcutbar" id="shortcutbar"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -4526,6 +4656,7 @@ async function boot(){
     renderHead();
     render();
     renderSettings();
+    renderShortcutBar('sessions');   // Startansicht
     // Onboarding zeigen bei Erstinstallation ODER wenn seit dem letzten Anzeigen
     // eine neue Onboarding-Version hinzugekommen ist (nach Update). Einstellungen
     // werden dabei nicht angetastet – die Schritte spiegeln nur die aktuellen Werte.
@@ -4647,7 +4778,27 @@ function switchView(v){
   } else if(BUDDY_STATUS_TIMER){
     clearInterval(BUDDY_STATUS_TIMER); BUDDY_STATUS_TIMER = null;
   }
+  renderShortcutBar(v);
   try{ api.buddy_notify_view(v); }catch(_){}
+}
+
+// Tastaturkuerzel je Ansicht. Bewusst nur das, was der keydown-Handler und
+// die Maus-Bindungen wirklich koennen - eine Fusszeile, die Kuerzel erfindet,
+// ist schlimmer als gar keine. F11 gilt ueberall und steht deshalb ueberall.
+const SHORTCUTS = {
+  sessions: [['Doppelklick','einsteigen'], ['Enter','einsteigen'],
+             ['F2','umbenennen'], ['Rechtsklick','Menü'], ['F11','Vollbild']],
+  buddy:    [['Rechtsklick','Buddy kurz wegschicken'],
+             ['Doppelklick','dasselbe'], ['Ziehen','verschieben'],
+             ['F11','Vollbild']],
+  settings: [['Esc','Dialog schließen'], ['F11','Vollbild']],
+};
+function renderShortcutBar(v){
+  const bar = document.getElementById('shortcutbar');
+  if(!bar) return;
+  const list = SHORTCUTS[v] || [];
+  bar.innerHTML = list.map(([k, t])=>
+    `<span><kbd>${esc(k)}</kbd>${esc(t)}</span>`).join('');
 }
 async function refreshBuddyStatus(){
   try{
@@ -4737,8 +4888,10 @@ async function renderBuddy(){
   const previewName = data.preview_name || 'idle breathe';
   const previewSrc = data.preview || '';
   // Kopf-Vorschau (Miniatur im Titel)
+  // Ueberschrift bekommt die freigestellte Fassung, nicht den vollen
+  // 20x20-Rahmen - sonst sitzt ein kleiner Klecks in einem schwarzen Quadrat.
   const hp = document.getElementById('buddy-heading-preview');
-  if (hp && previewSrc) hp.src = previewSrc;
+  if (hp) { try { hp.src = await api.buddy_icon(previewName); } catch(e){} }
 
   let statusTxt;
   if (!data.have_sprites) statusTxt = 'Sprite-Daten fehlen – bitte neu installieren.';
@@ -4928,7 +5081,7 @@ async function buddyPickAnim(name, cell){
   if(cell) cell.classList.add('active');
   setTimeout(()=>{ if(cell) cell.classList.remove('active'); }, 3600);
   const hp = document.getElementById('buddy-heading-preview');
-  if(hp){ hp.src = await api.buddy_preview(name); }
+  if(hp){ hp.src = await api.buddy_icon(name); }
   await api.buddy_preview_anim(name);
   toast('Buddy zeigt: ' + name);
 }
@@ -4974,7 +5127,7 @@ function renderSettings(){
   const swl = ACCENTS.map(c=>`<div class="sw ${st.accent===c?'active':''}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('');
   const bgl = BG_TONES.map(t=>`<div class="sw ${st.bg_base===t.base?'active':''}" style="background:${shade(t.base,0.42)}" title="${t.name}" onclick="setBg('${t.base}')"></div>`).join('');
   document.getElementById('settings').innerHTML=`
-    <div class="secthead">Sessions</div>
+    <div class="secthead" id="sect-sessions">Sessions</div>
     <div class="card">
       <h2>${ic('folder')}Sessions-Ordner</h2>
       <div class="sub">Wo Claude die Session-Dateien speichert. Wird automatisch gesucht, lässt sich aber überschreiben.</div>
@@ -5016,7 +5169,7 @@ function renderSettings(){
         </div>`).join('')}
     </div>
 
-    <div class="secthead">Darstellung</div>
+    <div class="secthead" id="sect-darstellung">Darstellung</div>
     <div class="card">
       <h2>${ic('palette')}Akzentfarbe</h2>
       <div class="sub">Farbe für Buttons, Auswahl und Hervorhebungen.</div>
@@ -5029,7 +5182,7 @@ function renderSettings(){
       <div class="swatches">${bgl}</div>
     </div>
 
-    <div class="secthead">Verhalten</div>
+    <div class="secthead" id="sect-verhalten">Verhalten</div>
     <div class="card">
       <h2>${ic('window')}Fenster schließen</h2>
       <div class="row2">
@@ -5072,7 +5225,7 @@ function renderSettings(){
       </div>
     </div>
 
-    <div class="secthead">Verbindungen</div>
+    <div class="secthead" id="sect-verbindungen">Verbindungen</div>
     <div class="card">
       <h2>${ic('terminal')}Terminal &amp; Claude</h2>
       <div class="row2">
@@ -5112,7 +5265,7 @@ function renderSettings(){
       </div>
     </div>
 
-    <div class="secthead">App</div>
+    <div class="secthead" id="sect-app">App</div>
     <div class="card">
       <h2>${ic('update')}Updates</h2>
       <div class="sub">Aktuelle Version: v${esc(STATE.version||'?')} — beim Start wird automatisch nach Updates gesucht (ohne Internet wird das übersprungen).</div>
@@ -5122,8 +5275,41 @@ function renderSettings(){
       </div>
     </div>
   `;
+  buildSettingsJump();
   refreshClawd();
   loadClawdDevices(false);
+}
+
+// ---- Sprungleiste ueber den Einstellungen ----
+// Baut sich aus den vorhandenen Sektionsbaendern auf, statt die Namen ein
+// zweites Mal zu pflegen: kommt eine Gruppe dazu, steht sie automatisch drin.
+function buildSettingsJump(){
+  const bar = document.getElementById('settings-jump');
+  const box = document.getElementById('settings');
+  if(!bar || !box) return;
+  const heads = [...box.querySelectorAll('.secthead[id]')];
+  if(heads.length < 2){ bar.innerHTML = ''; return; }
+  bar.innerHTML = heads.map(h=>
+    `<button data-target="${h.id}" onclick="jumpSettings('${h.id}')">${esc(h.textContent)}</button>`
+  ).join('');
+
+  // Mitlaufende Hervorhebung: aktiv ist die letzte Ueberschrift, die noch
+  // ueber der Oberkante des sichtbaren Bereichs liegt.
+  const mark = ()=>{
+    const top = box.getBoundingClientRect().top + 12;
+    let cur = heads[0];
+    for(const h of heads){ if(h.getBoundingClientRect().top <= top) cur = h; }
+    bar.querySelectorAll('button').forEach(b=>
+      b.classList.toggle('active', b.dataset.target === cur.id));
+  };
+  box.removeEventListener('scroll', box._jumpMark || (()=>{}));
+  box._jumpMark = mark;
+  box.addEventListener('scroll', mark, {passive:true});
+  mark();
+}
+function jumpSettings(id){
+  const el = document.getElementById(id);
+  if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 async function loadClawdDevices(rescan){
