@@ -4155,13 +4155,39 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   @keyframes slidein{from{opacity:0; transform:translateX(22px)} to{opacity:1; transform:none}}
 
   /* ---- Detail + Aktionen (rechtes Panel) ---- */
+  /* Frueher ein einziges Monospace-Feld mit pre-wrap: die ID brach ueber zwei
+     Zeilen um, die erste Frage stand als Textklotz darunter, und alles hatte
+     dasselbe Gewicht. Jetzt echte Zeilen mit Beschriftung, Fliesstext im
+     normalen Schnitt und die ID klein am Fuss - sie ist selten interessant,
+     nahm aber den meisten Platz. */
   .detail{
     flex:1; min-height:90px; background:var(--surface); border:1px solid var(--border);
-    border-radius:12px; padding:13px 15px; font-family:"Cascadia Code",Consolas,monospace;
-    font-size:12.5px; color:var(--muted); overflow:auto;
-    white-space:pre-wrap; line-height:1.7; user-select:text;
+    border-radius:12px; padding:14px 15px 12px; font-size:12.5px;
+    color:var(--muted); overflow:auto; line-height:1.5; user-select:text;
+    display:flex; flex-direction:column; gap:11px;
   }
-  .detail b{color:var(--fg); font-weight:600}
+  .detail .dt-empty{margin:auto; text-align:center; padding:0 10px}
+  .dt-head{color:var(--fg); font-size:14px; font-weight:700; line-height:1.35;
+    word-break:break-word}
+  .dt-rows{display:grid; grid-template-columns:auto minmax(0,1fr); gap:5px 12px}
+  .dt-rows .k{color:var(--muted); font-size:11.5px; letter-spacing:.02em;
+    padding-top:1px}
+  .dt-rows .v{color:var(--fg); overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap}
+  .dt-rows .v.path{font-family:Consolas,monospace; font-size:12px}
+  .dt-quote{
+    border-left:2px solid var(--border); padding-left:10px; color:var(--fg);
+    line-height:1.55; display:-webkit-box; -webkit-line-clamp:6;
+    -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .dt-quote .k{display:block; color:var(--muted); font-size:11.5px; margin-bottom:3px}
+  .dt-id{margin-top:auto; padding-top:9px; border-top:1px solid var(--border);
+    display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11px}
+  .dt-id code{font-family:Consolas,monospace; font-size:11px; color:var(--muted)}
+  .dt-id button{margin-left:auto; background:transparent; border:1px solid var(--border);
+    color:var(--muted); border-radius:7px; padding:2px 8px; font-family:inherit;
+    font-size:11px; cursor:pointer}
+  .dt-id button:hover{color:var(--fg); border-color:var(--accent)}
   .actions{display:flex; flex-direction:column; gap:9px; flex:none}
   .actions .btn{width:100%; justify-content:center}
   .actions .hint{color:var(--muted); font-size:12px; text-align:center; margin-top:2px}
@@ -4979,11 +5005,28 @@ function updateDetail(){
   document.querySelector('.main').classList.toggle('show-side', en);
   ['btn-resume','btn-rename','btn-color','btn-copy'].forEach(b=>document.getElementById(b).disabled=!en);
   const d=document.getElementById('detail');
-  if(!s){d.textContent='Wähle eine Session aus, um Details zu sehen.';return;}
-  const start=(s.first_user||'—').replace(/\s+/g,' ').trim().slice(0,260);
-  d.innerHTML=`<b>ID</b>      ${esc(s.id)}\n<b>Ordner</b>  ${esc(s.cwd||'(unbekannt)')}\n`
-    +`<b>Verlauf</b> ${s.user_msgs} von dir · ${s.assistant_msgs} von Claude\n`
-    +`<b>Start</b>   ${esc(start)}`;
+  if(!s){
+    d.innerHTML='<div class="dt-empty">Wähle eine Session aus, um Details zu sehen.</div>';
+    return;
+  }
+  const start = (s.first_user||'').replace(/\s+/g,' ').trim().slice(0,600);
+  const pfad  = s.cwd || '(unbekannt)';
+  // Nur Anfang und Ende der ID: die vollen 36 Zeichen brachen ueber zwei
+  // Zeilen um und standen ganz oben, obwohl man sie fast nie braucht.
+  const kurz = s.id.length > 16
+    ? s.id.slice(0,8) + '…' + s.id.slice(-4)
+    : s.id;
+  d.innerHTML =
+     `<div class="dt-head">${esc(s.display_title || '(ohne Titel)')}</div>`
+   + `<div class="dt-rows">`
+   +   `<div class="k">Ordner</div>`
+   +   `<div class="v path" title="${esc(pfad)}">${esc(pfad)}</div>`
+   +   `<div class="k">Verlauf</div>`
+   +   `<div class="v">${s.user_msgs} von dir · ${s.assistant_msgs} von Claude</div>`
+   + `</div>`
+   + (start ? `<div class="dt-quote"><span class="k">Erste Frage</span>${esc(start)}</div>` : '')
+   + `<div class="dt-id"><code title="${esc(s.id)}">${esc(kurz)}</code>`
+   +   `<button onclick="doCopy()" title="Vollständige ID kopieren">kopieren</button></div>`;
 }
 
 function sortBy(c){
