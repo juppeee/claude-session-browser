@@ -44,7 +44,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.3.6"
+VERSION = "1.3.7"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -127,6 +127,9 @@ DEFAULT_SETTINGS = {
     },
     "clawdmeter": False,         # Usage-Werte per BLE ans Clawdmeter-Geraet schicken
     "clawdmeter_addr": "",       # gewaehltes Geraet (leer = automatisch suchen)
+    # Zeigt das Geraet dieselbe Animation wie der Buddy? Aus = es waehlt selbst
+    # nach Auslastung aus (Originalverhalten der Firmware).
+    "clawdmeter_buddy": True,
 }
 
 # Wenn diese Konstante sich aendert, sehen bestehende Nutzer das Onboarding erneut
@@ -1423,6 +1426,10 @@ class BuddyController:
         self._alive = False
         self._q = queue.Queue()     # Commands aus dem UI-Thread
         self._pulse = 0             # fuer die kurzen "surprise"-Momente
+        # Name der gerade laufenden Animation, damit andere Threads (z.B. der
+        # Clawdmeter-Link) sie mitlesen koennen ohne in den Tk-Thread zu
+        # greifen. Ein einzelner String-Zuweisung braucht kein Lock.
+        self._pub_anim = ""
 
     def _app_window_visible(self):
         """True wenn das Session-Browser-Hauptfenster gerade wirklich als
@@ -1457,6 +1464,16 @@ class BuddyController:
     # ---- oeffentliche API (aus Api heraus aufgerufen) ----
     def is_alive(self):
         return bool(self._thread and self._thread.is_alive())
+
+    def current_anim(self):
+        """Name der Animation die der Buddy gerade zeigt, sonst "".
+
+        Laeuft der Buddy nicht (in den Einstellungen aus), gibt es nichts zu
+        spiegeln -- dann liefert das hier "" und das Clawdmeter waehlt wieder
+        selbst nach Auslastung aus."""
+        if not self.is_alive():
+            return ""
+        return self._pub_anim or ""
 
     def start(self):
         if self.is_alive():
@@ -2346,6 +2363,7 @@ class BuddyController:
                 if state.get("pending_anim") is not None:
                     state["pending_anim"] = None
                     state["pending_since"] = 0.0
+            self._pub_anim = state["anim"]
             # Frame-Rate getrennt von tick-Rate: Frame-Advance nur alle
             # _FRAME_MS, aber tick bleibt schnell fuer Visibility/Fade/Hover.
             if state["current_alpha"] > 0.01:
@@ -2913,6 +2931,19 @@ class Api:
 
     # ---- Clawdmeter (BLE-Usage-Anzeige) --------------------------------
 
+    def _clawd_anim(self):
+        """Welche Animation soll das Clawdmeter zeigen?
+
+        "" heisst: keine Vorgabe, das Geraet entscheidet nach Auslastung. Das
+        ist auch der Fall wenn der Buddy selbst aus ist -- ohne laufenden
+        Buddy gibt es keinen Zustand zu spiegeln."""
+        if not self.settings.get("clawdmeter_buddy", True):
+            return ""
+        try:
+            return self.buddy.current_anim()
+        except Exception:
+            return ""
+
     def _clawd_link(self):
         """Lazy-Init des BLE-Links. None wenn das Modul nicht verfuegbar ist."""
         link = getattr(self, "_clawdmeter", None)
@@ -2924,7 +2955,8 @@ class Api:
             return None
         self._clawdmeter = ClawdmeterLink(
             address_provider=lambda: self.settings.get("clawdmeter_addr") or "",
-            on_usage=self.on_usage_meta)
+            on_usage=self.on_usage_meta,
+            anim_provider=self._clawd_anim)
         return self._clawdmeter
 
     # ---- Limit-Ueberwachung aus den Ratelimit-Headern -------------------
@@ -4980,6 +5012,10 @@ function renderSettings(){
           <option value="">Wird geladen…</option>
         </select>
       </div>
+      <div class="row2">
+        <div><div class="lbl">Buddy spiegeln</div><div class="desc">Das Gerät zeigt dieselbe Animation wie dein Buddy — statt selbst eine nach Auslastung zu wählen. Braucht einen eingeschalteten Buddy.</div></div>
+        <div class="toggle ${st.clawdmeter_buddy!==false?'on':''}" onclick="toggleClawdBuddy(this)"></div>
+      </div>
       <div class="field">
         <button class="btn" onclick="loadClawdDevices(true)">Geräte neu suchen</button>
       </div>
@@ -5046,6 +5082,11 @@ async function toggleClawd(el){
   const s = document.getElementById('clawd-status');
   if(s) s.textContent = clawdText(r);
   toast(on?'Clawdmeter an ✓':'Clawdmeter aus');
+}
+async function toggleClawdBuddy(el){
+  const on=!el.classList.contains('on'); el.classList.toggle('on',on);
+  ingest(await api.update_setting('clawdmeter_buddy', on));
+  toast(on?'Gerät spiegelt den Buddy ✓':'Gerät wählt wieder selbst');
 }
 setInterval(()=>{ if(document.getElementById('clawd-status')) refreshClawd(); }, 5000);
 

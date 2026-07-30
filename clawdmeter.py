@@ -330,16 +330,24 @@ class ClawdmeterLink:
     Laeuft in einem eigenen Thread mit eigener asyncio-Loop, damit die
     pywebview-GUI davon nichts mitbekommt."""
 
-    def __init__(self, log=None, address_provider=None, on_usage=None):
+    def __init__(self, log=None, address_provider=None, on_usage=None,
+                 anim_provider=None):
         """address_provider: Funktion die die gewuenschte Geraeteadresse liefert
         (leer/None = automatisch suchen). Wird bei jedem Versuch neu gefragt,
         damit eine Aenderung in den Einstellungen sofort greift.
 
         on_usage: wird nach jeder erfolgreichen API-Abfrage mit dem Meta-Dict
-        gerufen (siehe poll_usage_meta)."""
+        gerufen (siehe poll_usage_meta).
+
+        anim_provider: liefert den Namen der Animation die das Geraet zeigen
+        soll (= was der Desktop-Buddy gerade zeigt), oder "" wenn das Geraet
+        selbst entscheiden soll. Wird oft gefragt, muss also billig sein."""
         self._log = log or (lambda msg: None)
         self._address_provider = address_provider or (lambda: None)
         self._on_usage = on_usage
+        self._anim_provider = anim_provider or (lambda: "")
+        self._last_payload = None    # letzte API-Antwort, fuer Anim-Updates
+        self._last_anim = ""         # "" = nichts vorgegeben, wie beim Geraet
         self._thread = None
         self._stop = threading.Event()
         self._status = {"connected": False, "last_send": None,
@@ -451,42 +459,75 @@ class ClawdmeterLink:
             except Exception:
                 pass  # Refresh-Kanal ist optional, der Poll-Loop reicht
 
+            self._last_payload = None    # frische Sitzung, nichts zwischenlagern
+            self._last_anim = ""
             while not self._stop.is_set() and client.is_connected:
                 await self._send_once(client)
                 # Auf den naechsten Poll warten -- oder frueher, wenn das
                 # Geraet selbst um Daten bittet.
-                # In kleinen Scheiben warten, damit stop() sofort greift.
+                # In kleinen Scheiben warten, damit stop() sofort greift und
+                # damit ein Buddy-Wechsel schnell durchkommt.
                 refresh.clear()
                 waited = 0.0
                 while (waited < POLL_INTERVAL and not self._stop.is_set()
                        and not refresh.is_set()):
                     try:
-                        await asyncio.wait_for(refresh.wait(), 2.0)
+                        await asyncio.wait_for(refresh.wait(), 1.0)
                     except asyncio.TimeoutError:
-                        waited += 2.0
+                        waited += 1.0
+                        # Der Buddy wechselt viel haeufiger als die Nutzungs-
+                        # zahlen. Solche Wechsel gehen ohne neue API-Abfrage
+                        # raus -- sonst wuerde jedes Blinzeln einen echten
+                        # Request kosten.
+                        if self._anim_changed():
+                            await self._send_once(client, poll=False)
         self._set(connected=False)
 
-    async def _send_once(self, client) -> None:
+    def _anim_changed(self) -> bool:
+        if self._last_payload is None:
+            return False            # noch keine Zahlen -> nichts zu ergaenzen
+        try:
+            return self._current_anim() != self._last_anim
+        except Exception:
+            return False
+
+    def _current_anim(self) -> str:
+        try:
+            return str(self._anim_provider() or "")
+        except Exception:
+            return ""
+
+    async def _send_once(self, client, poll: bool = True) -> None:
         import asyncio
-        token = read_token()
-        if not token:
-            self._set(last_error="Kein Claude-Token gefunden")
-            return
-        payload, meta = await asyncio.to_thread(poll_usage_meta, token)
-        if not payload:
-            self._set(last_error="API-Abfrage fehlgeschlagen")
-            return
-        # Die Limit-Ueberwachung mitfuettern, damit sie nicht dieselben
-        # Header ein zweites Mal abfragen muss.
-        if self._on_usage and meta:
-            try:
-                self._on_usage(meta)
-            except Exception:
-                pass
+        if poll or self._last_payload is None:
+            token = read_token()
+            if not token:
+                self._set(last_error="Kein Claude-Token gefunden")
+                return
+            payload, meta = await asyncio.to_thread(poll_usage_meta, token)
+            if not payload:
+                self._set(last_error="API-Abfrage fehlgeschlagen")
+                return
+            self._last_payload = payload
+            # Die Limit-Ueberwachung mitfuettern, damit sie nicht dieselben
+            # Header ein zweites Mal abfragen muss.
+            if self._on_usage and meta:
+                try:
+                    self._on_usage(meta)
+                except Exception:
+                    pass
+
+        payload = dict(self._last_payload)
+        anim = self._current_anim()
+        payload["a"] = anim          # "" = Geraet entscheidet selbst
+        self._last_anim = anim
+
         data = json.dumps(payload, separators=(",", ":")).encode()
         await client.write_gatt_char(RX_CHAR_UUID, data, response=False)
         self._set(last_send=time.time(), last_error=None)
-        self._log(f"Clawdmeter: {payload['s']}% / {payload['w']}%")
+        if poll:
+            self._log(f"Clawdmeter: {payload['s']}% / {payload['w']}%"
+                      + (f" [{anim}]" if anim else ""))
 
 
 class UsageWatcher:
