@@ -4304,6 +4304,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .dot.wait{background:#ffb454; box-shadow:0 0 0 3px rgba(255,180,84,.18);
     animation:dotpulse 1.4s ease-in-out infinite}
   .dot.off{background:#5c6068}
+
+  /* Ladestand als kleine Batterie statt angehaengtem Text. Die Farbe traegt
+     die Aussage, die Zahl bestaetigt sie nur. */
+  .batt{display:inline-flex; align-items:center; gap:6px; margin-left:9px;
+    padding:2px 8px 2px 6px; border-radius:999px; background:var(--bg);
+    border:1px solid var(--border); font-size:11px; line-height:1;
+    font-variant-numeric:tabular-nums; vertical-align:middle}
+  .batt .cell{position:relative; width:20px; height:10px; border:1.5px solid currentColor;
+    border-radius:3px; flex:none}
+  .batt .cell::after{content:""; position:absolute; right:-4px; top:2px;
+    width:2.5px; height:4px; background:currentColor; border-radius:0 2px 2px 0}
+  .batt .fill{position:absolute; left:1px; top:1px; bottom:1px; min-width:1px;
+    border-radius:1px; background:currentColor}
+  .batt .pct{color:var(--fg)}
+  .batt.ok{color:#3ecf8e}
+  .batt.mid{color:#ffb454}
+  .batt.low{color:#ff6b6b}
+  .batt.low .cell{animation:battpulse 1.6s ease-in-out infinite}
+  @keyframes battpulse{0%,100%{opacity:1} 50%{opacity:.45}}
   @keyframes dotpulse{0%,100%{opacity:1} 50%{opacity:.35}}
 
   .swatches{display:flex; gap:9px; flex-wrap:wrap}
@@ -5684,9 +5703,12 @@ function clawdInfo(r){
     const ago = s.last_send ? Math.round(Date.now()/1000 - s.last_send) : null;
     // Akku nur zeigen wenn das Geraet ihn meldet - aeltere Firmware tut das
     // nicht, dann steht dort einfach nichts statt "unbekannt".
-    const akku = (typeof s.battery === 'number') ? ` · Akku ${s.battery}%` : '';
-    return {dot:'ok', text: (ago===null ? 'Verbunden.'
-                                        : `Verbunden — zuletzt gesendet vor ${ago}s.`) + akku};
+    // Akku nur wenn das Geraet ihn meldet - aeltere Firmware tut das nicht,
+    // dann steht dort einfach nichts statt "unbekannt".
+    const akku = (typeof s.battery === 'number') ? s.battery : null;
+    return {dot:'ok', akku,
+            text: ago===null ? 'Verbunden.'
+                             : `Verbunden — zuletzt gesendet vor ${ago}s.`};
   }
   // Beim Verbinden den Versuch mitzaehlen. Ein stummes "Verbinde…" ueber
   // eine Minute sieht aus wie ein Haenger, obwohl im Hintergrund immer
@@ -5695,10 +5717,19 @@ function clawdInfo(r){
   return s.last_error ? {dot:'err',  text:`Nicht verbunden: ${s.last_error}`}
                       : {dot:'wait', text:'Verbinde…' + nr};
 }
+function battHtml(pct){
+  if(typeof pct !== 'number') return '';
+  const stufe = pct <= 15 ? 'low' : (pct <= 40 ? 'mid' : 'ok');
+  // Fuellung nie ganz auf 0, sonst sieht die Batterie kaputt statt leer aus.
+  const breite = Math.max(2, Math.round(pct * 0.18));   // 18px Innenraum
+  return `<span class="batt ${stufe}" title="Akku des Clawdmeter: ${pct} %">`
+       +   `<span class="cell"><span class="fill" style="width:${breite}px"></span></span>`
+       +   `<span class="pct">${pct} %</span></span>`;
+}
 function setClawdStatus(el, r){
   if(!el) return;
   const i = clawdInfo(r);
-  el.innerHTML = `<span class="dot ${i.dot}"></span>${esc(i.text)}`;
+  el.innerHTML = `<span class="dot ${i.dot}"></span>${esc(i.text)}` + battHtml(i.akku);
 }
 async function refreshClawd(){
   const el = document.getElementById('clawd-status');
