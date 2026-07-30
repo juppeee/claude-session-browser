@@ -4,8 +4,10 @@ Stand: 30.07.2026. Sieben Commits seit 1.3.7 (`b3ecb4c` … `169a5b4`).
 Noch **nicht** gebaut und **nicht** veröffentlicht — dies ist der Stand im
 Quellcode zum Durchsehen.
 
-Sprachregelung ab dieser Version: **Claude-Buddy** ist das Feature als Ganzes,
-**Clawd** ist die Figur, die auf dem Desktop sitzt.
+Namen: die Überschrift der Buddy-Seite heisst jetzt **„Dein Claude-Buddy"**
+(vorher „Dein Clawd-Buddy"), und im **Clawdmeter**-Abschnitt der Einstellungen
+steht **„Clawd-Buddy spiegeln"**. Sonst bleibt der Wortlaut überall wie
+gehabt.
 
 ---
 
