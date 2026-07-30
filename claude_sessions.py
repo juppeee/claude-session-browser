@@ -2255,20 +2255,24 @@ class BuddyController:
             if int_state == "done" and age < 180:
                 return "waiting"
 
-            # STATE-STABILISIERUNG: Wenn wir in einem "working" State sind,
-            # bleiben wir dort solange frische Aktivitaet da ist.
-            # Kurze thinking/text Zwischenzustaende unterbrechen nicht.
+            # Arbeitszustaende. Frueher galt hier: einmal "active", und die
+            # naechsten FUENF MINUTEN blieb es dabei, egal was Claude
+            # tatsaechlich tat. Das sollte Flackern verhindern, war als Mittel
+            # aber viel zu grob - Clawd stand minutenlang auf "arbeitet",
+            # waehrend Claude laengst nachdachte oder Text schrieb. Genau
+            # deshalb passten die Animationen so oft nicht.
+            #
+            # Jetzt folgt der Zustand dem Geschehen; gegen Flackern reicht die
+            # kurze Standzeit (_STATE_DEBOUNCE_S), die weiter unten beim
+            # Anim-Wechsel greift.
             if int_state in _WORKING_STATES and age < 300:
-                # Neuer working state oder gleicher wie vorher?
-                if state["stable_state"] in _WORKING_STATES:
-                    # Schon im working state - bleiben (max 5 min)
-                    if now - state["stable_since"] < 300:
-                        return "active"
-                # Neuer working state starten
-                state["stable_state"] = int_state
-                state["stable_since"] = now
-                if int_state == "thinking" or int_state == "user_sent_prompt":
+                if state["stable_state"] != int_state:
+                    state["stable_state"] = int_state
+                    state["stable_since"] = now
+                if int_state in ("thinking", "user_sent_prompt"):
                     return "thinking"
+                if int_state == "tool_pending_approval":
+                    return "awaiting_approval"
                 return "active"
 
             # Nicht mehr aktiv arbeitend - stable state zuruecksetzen
@@ -4527,7 +4531,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <!-- Tabs -->
   <div class="tabs">
     <div class="tab active" data-view="sessions" onclick="switchView('sessions')">Sessions</div>
-    <div class="tab" data-view="buddy" onclick="switchView('buddy')">Buddy</div>
+    <div class="tab" data-view="buddy" onclick="switchView('buddy')">Claude-Buddy</div>
     <div class="tab" data-view="settings" onclick="switchView('settings')">Einstellungen</div>
   </div>
 
@@ -4604,7 +4608,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <span class="hlogo" style="width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center">
           <img id="buddy-heading-preview" class="buddy-hp" alt="">
         </span>
-        <span><span class="g">Dein</span> Clawd-Buddy</span>
+        <span><span class="g">Dein</span> Claude-Buddy</span>
       </h1>
       <div class="count" id="buddy-status"></div>
     </div>
@@ -4666,13 +4670,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
 
     <div class="ob-step" data-step="4" hidden>
-      <h2>Neu: Dein Clawd-Buddy ✨</h2>
+      <h2>Neu: Dein Claude-Buddy ✨</h2>
       <p>Ein winziger animierter Clawd (20×20 Pixel) schwebt auf dem Desktop und zeigt, was gerade passiert – schreibt Claude gerade Code, denkt er nach, wurde ein Limit erreicht? Standardmäßig taucht er nur auf wenn Claude Code läuft, blendet sich weich rein und wieder aus.</p>
       <div class="ob-list">
-        <div class="row"><div class="k">Aktivieren</div><div class="v">Tab „Buddy" → Toggle „An". Beim ersten Mal steht er in der Bildschirmmitte.</div></div>
-        <div class="row"><div class="k">Platzieren</div><div class="v">Ecken/Kanten per Schnellwahl (auf jedem Monitor) oder „Buddy platzieren…" für freies Ziehen mit Raster.</div></div>
+        <div class="row"><div class="k">Aktivieren</div><div class="v">Tab „Claude-Buddy" → Toggle „An". Beim ersten Mal steht Clawd in der Bildschirmmitte.</div></div>
+        <div class="row"><div class="k">Platzieren</div><div class="v">Ecken/Kanten per Schnellwahl (auf jedem Monitor) oder „Clawd platzieren…" für freies Ziehen mit Raster.</div></div>
         <div class="row"><div class="k">Aussehen</div><div class="v">Größe 40–200 px, Deckkraft, optionaler Rahmen in deiner Wunschfarbe.</div></div>
-        <div class="row"><div class="k">Rechtsklick</div><div class="v">Rechtsklick oder Doppelklick auf den Buddy schickt ihn kurz weg – ausgeschaltet wird er dadurch nicht. Beim nächsten neuen Claude-Terminal ist er wieder da.</div></div>
+        <div class="row"><div class="k">Rechtsklick</div><div class="v">Rechtsklick oder Doppelklick auf Clawd schickt ihn kurz weg – ausgeschaltet wird er dadurch nicht. Beim nächsten neuen Claude-Terminal ist er wieder da.</div></div>
       </div>
     </div>
 
@@ -4734,7 +4738,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div class="overlay" id="overlay-buddy-win">
   <div class="pop" style="width:520px; max-height:70vh; display:flex; flex-direction:column">
     <h3>Fenster auswählen</h3>
-    <div class="sub" style="margin-bottom:10px">Der Buddy erscheint nur, wenn das gewählte Fenster gerade im Vordergrund ist.</div>
+    <div class="sub" style="margin-bottom:10px">Clawd erscheint nur, wenn das gewählte Fenster gerade im Vordergrund ist.</div>
     <div class="ba-wlist"></div>
     <div class="actions2">
       <button class="btn" onclick="closeOverlay('overlay-buddy-win')">Abbrechen</button>
@@ -5012,7 +5016,7 @@ function switchView(v){
 const SHORTCUTS = {
   sessions: [['Doppelklick','einsteigen'], ['Enter','einsteigen'],
              ['F2','umbenennen'], ['Rechtsklick','Menü'], ['F11','Vollbild']],
-  buddy:    [['Rechtsklick','Buddy kurz wegschicken'],
+  buddy:    [['Rechtsklick','Clawd kurz wegschicken'],
              ['Doppelklick','dasselbe'], ['Ziehen','verschieben'],
              ['F11','Vollbild']],
   settings: [['Esc','Dialog schließen'], ['F11','Vollbild']],
@@ -5031,10 +5035,10 @@ async function refreshBuddyStatus(){
     const b = d.config || {};
     let s;
     if (!d.have_sprites) s = 'Sprite-Daten fehlen – bitte neu installieren.';
-    else if (!b.enabled) s = 'Buddy aus';
+    else if (!b.enabled) s = 'Clawd ist aus';
     else if (!d.running) s = 'Startet…';
-    else if (d.reason) s = 'Buddy läuft · ' + d.reason;
-    else s = 'Buddy läuft';
+    else if (d.reason) s = 'Clawd läuft · ' + d.reason;
+    else s = 'Clawd läuft';
     const el = document.getElementById('buddy-status');
     if(el) el.textContent = s;
   }catch(_){}
@@ -5119,10 +5123,10 @@ async function renderBuddy(){
 
   let statusTxt;
   if (!data.have_sprites) statusTxt = 'Sprite-Daten fehlen – bitte neu installieren.';
-  else if (!b.enabled) statusTxt = 'Buddy aus';
+  else if (!b.enabled) statusTxt = 'Clawd ist aus';
   else if (!data.running) statusTxt = 'Startet…';
-  else if (data.reason) statusTxt = 'Buddy läuft · ' + data.reason;
-  else statusTxt = 'Buddy läuft';
+  else if (data.reason) statusTxt = 'Clawd läuft · ' + data.reason;
+  else statusTxt = 'Clawd läuft';
   document.getElementById('buddy-status').textContent = statusTxt;
 
   const size = Math.max(2, Math.min(10, +b.size||4));
@@ -5144,7 +5148,7 @@ async function renderBuddy(){
     <div class="card">
       <div class="ba-headline">
         <div>
-          <h2>${ic('buddy')}Dein kleiner Buddy auf dem Desktop</h2>
+          <h2>${ic('buddy')}Clawd auf deinem Desktop</h2>
           <div class="sub">Ein winziger animierter Clawd (20×20 Pixel) schwebt auf dem Desktop – frameless, immer im Vordergrund. Zieh ihn mit der Maus wohin du magst. Rechts- oder Doppelklick schickt ihn kurz weg – er kommt beim nächsten neuen Claude-Terminal von selbst zurück.</div>
         </div>
         <div class="ba-toggle">
@@ -5155,14 +5159,14 @@ async function renderBuddy(){
     </div>
 
     <div class="ba-off-hint ${b.enabled?'':'show'}">
-      ${ic('info')}<span>Der Buddy ist ausgeschaltet. Die Einstellungen darunter
+      ${ic('info')}<span>Der Claude-Buddy ist ausgeschaltet. Die Einstellungen darunter
       wirken erst, wenn du ihn oben einschaltest.</span>
     </div>
 
     <div class="ba-sub ${b.enabled?'':'off'}">
     <div class="card">
       <h2>${ic('clock')}Wann sichtbar</h2>
-      <div class="sub">Der Buddy kann immer da sein oder nur wenn ein bestimmtes Programm gerade im Vordergrund ist – z.B. nur wenn Claude Code im Terminal läuft.</div>
+      <div class="sub">Clawd kann immer da sein oder nur wenn ein bestimmtes Programm gerade im Vordergrund ist – z.B. nur wenn Claude Code im Terminal läuft.</div>
       <div class="ba-vis">
         <label class="ba-radio"><input type="radio" name="ba-vis" ${vis==='when_claude'?'checked':''} onchange="buddySet('visibility','when_claude')"> <span>Nur wenn Claude Code läuft <em class="ba-dim">(erkennt Terminal + <code>claude.exe</code>)</em></span></label>
         <label class="ba-radio"><input type="radio" name="ba-vis" ${vis==='always'?'checked':''} onchange="buddySet('visibility','always')"> <span>Immer sichtbar</span></label>
@@ -5178,7 +5182,7 @@ async function renderBuddy(){
 
     <div class="card">
       <h2>${ic('wand')}Aussehen &amp; Position</h2>
-      <div class="sub">Größe und Deckkraft ändern sich sofort. Für die Position wähle eine Ecke oder Kante – oder ziehe den Buddy per „Platzieren" frei hin (Bewegung rastet aufs Raster und schnappt am Bildschirmrand).</div>
+      <div class="sub">Größe und Deckkraft ändern sich sofort. Für die Position wähle eine Ecke oder Kante – oder ziehe Clawd per „Platzieren" frei hin (Bewegung rastet aufs Raster und schnappt am Bildschirmrand).</div>
 
       <div class="ba-slider">
         <label>Größe <span class="ba-val" id="ba-size-val">${size*20} px</span></label>
@@ -5228,13 +5232,13 @@ async function renderBuddy(){
 
       <div class="ba-actions">
         <div class="ba-pos-hint">Aktuell bei <code>${b.x||200}, ${b.y||200}</code></div>
-        <button class="btn accent" onclick="buddyPlace()">Buddy platzieren…</button>
+        <button class="btn accent" onclick="buddyPlace()">Clawd platzieren…</button>
       </div>
     </div>
 
     <div class="card">
       <h2>${ic('play')}Animationen ausprobieren</h2>
-      <div class="sub">Normalerweise wählt der Buddy die Animation automatisch nach dem, was in deinen Sessions passiert. Klick eine Animation an, um sie kurz auf dem echten Buddy vorzuspielen.</div>
+      <div class="sub">Normalerweise wählt Clawd die Animation automatisch nach dem, was in deinen Sessions passiert. Klick eine Animation an, um sie kurz auf dem echten Clawd vorzuspielen.</div>
       <div class="ba-grid">${previewList}</div>
       <div class="ba-actions">
         <button class="btn accent" onclick="buddySurprise()">Kurz „Überraschung" zeigen</button>
@@ -5277,7 +5281,7 @@ async function buddyToggle(){
   const next = !b.enabled;
   await api.buddy_set('enabled', next);
   await renderBuddy();
-  toast(next ? 'Buddy an ✓' : 'Buddy aus');
+  toast(next ? 'Claude-Buddy an ✓' : 'Claude-Buddy aus');
 }
 async function buddySet(key, value){
   await api.buddy_set(key, value);
@@ -5294,7 +5298,7 @@ function buddyLive(key, value){
 }
 async function buddySurprise(){
   await api.buddy_surprise();
-  toast('Buddy: Überraschung!');
+  toast('Clawd: Überraschung!');
 }
 async function buddyPlace(){
   await api.buddy_place();
@@ -5307,7 +5311,7 @@ async function buddyPickAnim(name, cell){
   const hp = document.getElementById('buddy-heading-preview');
   if(hp){ hp.src = await api.buddy_icon(name); }
   await api.buddy_preview_anim(name);
-  toast('Buddy zeigt: ' + name);
+  toast('Clawd zeigt: ' + name);
 }
 let BUDDY_MON_IDX = null;   // Auswahl im Monitor-Picker (null = aktueller unter Buddy)
 async function buddyAnchor(pos){
@@ -5412,7 +5416,7 @@ function renderSettings(){
       <div class="row2">
         <div><div class="lbl">Im Hintergrund weiterlaufen</div>
           <div class="desc">Wenn aktiv, versteckt der X-Button die App nur (Icon im System-Tray unten rechts, Klick öffnet sie wieder).</div>
-          <div class="warnnote">${ic('warn')}<span>Ausgeschaltet beendet das X die App wirklich – dann laufen Buddy, Clawdmeter und Benachrichtigungen nicht mehr.</span></div></div>
+          <div class="warnnote">${ic('warn')}<span>Ausgeschaltet beendet das X die App wirklich – dann laufen Clawd, das Clawdmeter und die Benachrichtigungen nicht mehr.</span></div></div>
         <div class="toggle ${st.close_to_tray!==false?'on':''}" onclick="toggleTray(this)"></div>
       </div>
       <button class="btn danger" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
@@ -5422,7 +5426,7 @@ function renderSettings(){
       <h2>${ic('power')}Autostart</h2>
       <div class="row2">
         <div><div class="lbl">Mit Windows starten</div>
-          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.</div></div>
+          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit Clawd und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.</div></div>
         <div class="toggle ${st.autostart!==false?'on':''}" onclick="toggleAutostart(this)"></div>
       </div>
     </div>
@@ -5494,7 +5498,7 @@ function renderSettings(){
         </select>
       </div>
       <div class="row2">
-        <div><div class="lbl">Buddy spiegeln</div><div class="desc">Das Gerät zeigt dieselbe Animation wie dein Buddy — statt selbst eine nach Auslastung zu wählen. Braucht einen eingeschalteten Buddy.</div></div>
+        <div><div class="lbl">Clawd spiegeln</div><div class="desc">Das Gerät zeigt dieselbe Animation wie Clawd auf deinem Desktop — statt selbst eine nach Auslastung zu wählen. Braucht einen eingeschalteten Claude-Buddy.</div></div>
         <div class="toggle ${st.clawdmeter_buddy!==false?'on':''}" onclick="toggleClawdBuddy(this)"></div>
       </div>
       <div class="field">
@@ -5680,7 +5684,7 @@ async function clawdReconnect(btn){
 async function toggleClawdBuddy(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   ingest(await api.update_setting('clawdmeter_buddy', on));
-  toast(on?'Gerät spiegelt den Buddy ✓':'Gerät wählt wieder selbst');
+  toast(on?'Gerät spiegelt Clawd ✓':'Gerät wählt wieder selbst');
 }
 setInterval(()=>{ if(document.getElementById('clawd-status')) refreshClawd(); }, 5000);
 
@@ -5842,8 +5846,8 @@ function obShow(){
     document.getElementById('ob-title').textContent = 'Neu in dieser Version ✨';
     document.getElementById('ob-intro').innerHTML =
       'Kurzer Rundgang – deine Einstellungen bleiben unberührt.<br><br>' +
-      '<b>Neu:</b> Ein animierter Clawd-Buddy für deinen Desktop, der zeigt was Claude gerade macht. ' +
-      'Neuer Tab „Buddy" mit allen Einstellungen – Position, Größe, Rahmen, Sichtbarkeit nur wenn Claude Code läuft.';
+      '<b>Neu:</b> Ein animierter Clawd für deinen Desktop, der zeigt was Claude gerade macht. ' +
+      'Neuer Tab „Claude-Buddy" mit allen Einstellungen – Position, Größe, Rahmen, Sichtbarkeit nur wenn Claude Code läuft.';
   }
   const cur=STATE.settings.accent;
   document.getElementById('ob-swatches').innerHTML=OB_ACCENTS.map(c=>
