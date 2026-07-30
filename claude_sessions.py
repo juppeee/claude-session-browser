@@ -193,6 +193,43 @@ BUDDY_STATE_MAP = {
 APPROVAL_AFTER_S = 30.0
 
 
+_BUSY_CACHE = {"t": 0.0, "v": False}
+
+
+def _claude_is_busy():
+    """True wenn irgendein Claude-Terminal gerade sichtbar arbeitet.
+
+    Claude Code stellt dem Fenstertitel waehrend der Arbeit ein Braille-Zeichen
+    als Laufanzeige voran (U+2800..U+28FF, z.B. '⠂ Mein Projekt'). Sobald
+    Claude auf eine Eingabe oder eine Erlaubnis wartet, verschwindet es.
+
+    Das ist das einzige Lebenszeichen von aussen: waehrend ein Werkzeug laeuft,
+    schreibt Claude Code nichts ins Protokoll, und die Rueckfrage steht nur im
+    Terminal. Cache 1,5 s - der Aufruf zaehlt alle Fenster durch.
+
+    Vorsicht: der Titel gehoert zum Fenster, nicht zum Tab. Arbeitet Claude in
+    einem Hintergrund-Tab, fehlt die Laufanzeige. Deshalb ist das hier nur ein
+    zusaetzliches Indiz und nicht die alleinige Entscheidung.
+    """
+    now = time.time()
+    if now - _BUSY_CACHE["t"] < 1.5:
+        return _BUSY_CACHE["v"]
+    _BUSY_CACHE["t"] = now
+    busy = False
+    try:
+        for hwnd, title in _win_list_windows_hwnd():
+            t = title.strip()
+            if not t or "claude" not in t.lower():
+                continue
+            if 0x2800 <= ord(t[0]) <= 0x28FF:
+                busy = True
+                break
+    except Exception:
+        pass
+    _BUSY_CACHE["v"] = busy
+    return busy
+
+
 def _line_age(obj):
     """Alter einer Protokollzeile in Sekunden. Ohne brauchbaren Zeitstempel
     0.0 - dann gilt sie als frisch, und im Zweifel heisst das "arbeitet"."""
@@ -571,7 +608,12 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
                     # laufendes Werkzeug liefert irgendwann ein Ergebnis, eine
                     # Rueckfrage bleibt stehen bis jemand antwortet. Im Zweifel
                     # "arbeitet" - das ist der haeufigere Fall.
-                    wartet = _line_age(real_last) >= APPROVAL_AFTER_S
+                    # Dreht die Laufanzeige im Fenstertitel, arbeitet Claude
+                    # gerade - dann ist es keine Rueckfrage, egal wie lange es
+                    # schon dauert. Ein Build ueber zwei Minuten galt vorher
+                    # nach 30 Sekunden als Nachfrage.
+                    wartet = (not _claude_is_busy()
+                              and _line_age(real_last) >= APPROVAL_AFTER_S)
                     result["awaiting_approval"] = wartet
                     result["internal_state"] = ("tool_pending_approval" if wartet
                                                 else "tool_running")
