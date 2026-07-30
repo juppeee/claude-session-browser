@@ -1854,18 +1854,35 @@ class BuddyController:
                         lambda e: end_place_mode(save_pos=False))
                 cv.bind("<Escape>",
                         lambda e: end_place_mode(save_pos=False))
-                # Overlay unter dem Buddy halten (kein Click-Stealing) – erst
-                # das Overlay bauen, dann den Buddy re-topmost setzen und
-                # explizit anheben. Beide bleiben topmost; der zuletzt
-                # angehobene liegt vorn.
+                # Das Raster darf die Maus nie sehen. Sonst faengt es den Griff
+                # nach dem Buddy ab und Platzieren tut schlicht nichts.
+                # Tastatur (ESC) kommt trotzdem an - WS_EX_TRANSPARENT
+                # betrifft nur den Maus-Treffertest.
+                if _IS_WIN:
+                    try:
+                        ov.update_idletasks()
+                        u = ctypes.windll.user32
+                        hwnd = ov.winfo_id()
+                        parent = u.GetParent(hwnd)
+                        if parent:
+                            hwnd = parent
+                        GWL_EXSTYLE, WS_EX_TRANSPARENT = -20, 0x00000020
+                        ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                        u.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                                         ex | WS_EX_TRANSPARENT)
+                    except Exception:
+                        pass
+
+                # Beide Fenster sind topmost, vorn liegt der zuletzt
+                # angehobene. focus_force() holt das Overlay nach vorn, also
+                # muss der Buddy DANACH angehoben werden - nicht davor.
                 try:
                     ov.update_idletasks()
+                    cv.focus_set()
+                    ov.focus_force()      # ESC-Fokus; hebt das Overlay an
                     root.attributes("-topmost", False)
                     root.attributes("-topmost", True)
-                    root.lift()
-                    # ESC-Fokus - ohne den kommt kein Escape an
-                    cv.focus_set()
-                    ov.focus_force()
+                    root.lift()           # ... und der Buddy wieder darueber
                 except Exception:
                     pass
                 return ov
