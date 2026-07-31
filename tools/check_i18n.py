@@ -20,6 +20,7 @@ import ast
 import os
 import re
 import sys
+from html import unescape
 from html.parser import HTMLParser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -175,9 +176,15 @@ def template_literale(block):
 
 
 HAT_BUCHSTABE = re.compile(r"[A-Za-zÄÖÜäöüß]")
-ZWISCHEN_TAGS = re.compile(r">([^<>{}`]+)<")
+ZWISCHEN_TAGS = re.compile(r">([^<>`]+)<")
+# Eingesetzte Werte, auch mit einer Ebene geschweifter Klammern darin -
+# ${t('…', {n: x})} muss als Ganzes erkannt werden.
+WERT = re.compile(r"\$\{(?:[^{}]|\{[^{}]*\})*\}")
 UNINTERESSANT = re.compile(
     r"^(?:[\d\s.,:;%/–—·✓✕▲▼…]+|[A-Za-z_]+\s*=|https?://\S+)$")
+# Erkennungsmerkmale von Quelltext, der zufaellig zwischen zwei spitzen
+# Klammern steht - etwa die Ersetzungstabelle in esc().
+CODE = re.compile(r"['\"]\s*:\s*['\"]|=>|\bfunction\b|\breturn\b")
 
 
 def js_rohtexte(block):
@@ -187,14 +194,27 @@ def js_rohtexte(block):
         return set()
     out = set()
     for lit in template_literale(block[beginn:ende]):
-        ohne_werte = re.sub(r"\$\{[^{}]*\}", "\x00", lit)
+        ohne_werte = WERT.sub("\x00", lit)
         for treffer in ZWISCHEN_TAGS.findall(ohne_werte):
             kern = re.sub(r"\s+", " ", treffer).strip()
+            # Ein eingesetzter Wert am Rand ist harmlos: `<h2>${ic('x')}Titel`
+            # ergibt im Baum ein Symbol und daneben den reinen Text "Titel" -
+            # genau das schlaegt translateDom() nach. Steckt der Wert dagegen
+            # mitten im Satz, ist der Textknoten samt Wert eine Einheit und
+            # niemals in der Tabelle zu finden; solche Stellen brauchen ein
+            # ausgeschriebenes t() mit Platzhalter und werden hier uebergangen.
+            kern = kern.strip("\x00").strip()
             if not kern or "\x00" in kern:
                 continue
             if not HAT_BUCHSTABE.search(kern) or UNINTERESSANT.match(kern):
                 continue
-            out.add(kern)
+            # Masseinheiten und Codeschnipsel sind kein Anzeigetext. „px"
+            # steht immer hinter einer Zahl, im Baum also nie allein.
+            if len(kern) < 3 or CODE.search(kern):
+                continue
+            # Im Quelltext steht &amp;, im Fenster ein & - nachgeschlagen
+            # wird der Text, wie er im Baum steht.
+            out.add(unescape(kern))
     return out
 
 

@@ -620,6 +620,36 @@ TRANSLATIONS = {
         "Einstellungen festlegen.":
             "No sessions folder found – you can set it later in the settings.",
 
+        # ---- Karten-Ueberschriften ---------------------------------------
+        # Vor jeder steht ein Symbol. Der Sammler hielt den Text deshalb fuer
+        # untrennbar mit einem eingesetzten Wert verbunden und liess ihn aus -
+        # im Baum sind Symbol und Text aber getrennt.
+        "Sessions-Ordner": "Sessions folder",
+        "Anzeige": "Display",
+        "Weitere ausgeblendete Ordner": "More hidden folders",
+        "Spalten": "Columns",
+        "Dein Limit": "Your limit",
+        "Akzentfarbe": "Accent colour",
+        "Hintergrund": "Background",
+        "Fenster schließen": "Closing the window",
+        "Autostart": "Start with Windows",
+        "Benachrichtigungen": "Notifications",
+        "Terminal & Claude": "Terminal & Claude",
+        "Updates": "Updates",
+        "Projekt": "Project",
+        "Dein kleiner Buddy auf dem Desktop": "Your little desktop buddy",
+        "Wann sichtbar": "When to show him",
+        "Aussehen & Position": "Looks & position",
+        "Animationen ausprobieren": "Try the animations",
+        "Aktuelle Version: v{v} — beim Start wird automatisch nach Updates "
+        "gesucht (ohne Internet wird das übersprungen).":
+            "You have v{v} — the app checks for updates on start, and skips "
+            "the check when you're offline.",
+
+        # Tastennamen in der Fusszeile
+        "Doppelklick": "Double-click",
+        "Rechtsklick": "Right-click",
+
         # ---- In Bedingungen versteckt ------------------------------------
         # Diese stehen als 'a' : 'b' mitten in einer Abfrage. Im fertigen
         # Baum sind sie normaler Text und werden dort ersetzt, aber keine

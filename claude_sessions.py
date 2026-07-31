@@ -5219,6 +5219,10 @@ function applyStaticT(){
 }
 async function setLanguage(code){
   try{ I18N = await api.set_language(code); }catch(e){ return; }
+  // Auch im hiesigen Abbild nachziehen: die Einstellungsseite baut die
+  // Auswahlbox daraus auf. Ohne das sprang sie nach jedem Wechsel zurueck
+  // auf „Automatisch", obwohl gespeichert war, was du gewaehlt hast.
+  if(STATE && STATE.settings) STATE.settings.language = code;
   applyStaticT();
   renderAll();
 }
@@ -5518,8 +5522,10 @@ function renderShortcutBar(v){
   const bar = document.getElementById('shortcutbar');
   if(!bar) return;
   const list = SHORTCUTS[v] || [];
+  // Beide Haelften uebersetzen: „Doppelklick" ist genauso ein Wort wie das,
+  // was danach steht - nur „resume" zu uebersetzen sah halb fertig aus.
   bar.innerHTML = list.map(([k, was])=>
-    `<span><kbd>${esc(k)}</kbd>${esc(t(was))}</span>`).join('');
+    `<span><kbd>${esc(t(k))}</kbd>${esc(t(was))}</span>`).join('');
 }
 async function refreshBuddyStatus(){
   try{
@@ -6032,7 +6038,7 @@ function renderSettings(){
     <div class="secthead" id="sect-app">App</div>
     <div class="card">
       <h2>${ic('update')}Updates</h2>
-      <div class="sub">Aktuelle Version: v${esc(STATE.version||'?')} — beim Start wird automatisch nach Updates gesucht (ohne Internet wird das übersprungen).</div>
+      <div class="sub">${t('Aktuelle Version: v{v} — beim Start wird automatisch nach Updates gesucht (ohne Internet wird das übersprungen).', {v: esc(STATE.version||'?')})}</div>
       <div class="field">
         <button class="btn" onclick="manualCheck(this)">Nach Updates suchen</button>
         <span id="upd-status" class="badge"></span>
