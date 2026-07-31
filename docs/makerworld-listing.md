@@ -71,8 +71,12 @@ on the display.
 
 ## What it holds
 
-- **Waveshare ESP32-C6-Touch-AMOLED-2.16** [passt auch auf das S3-Modell? -> ergaenzen]
+- **Waveshare ESP32-C6-Touch-AMOLED-2.16** - the board this case was measured against
 - A battery if you want it cordless [Typ/Groesse]
+
+The S3 sibling (ESP32-S3-Touch-AMOLED-2.16) carries the same panel, so it may
+well fit - but I haven't had one in hand to check. If you try it, let me know
+and I'll say so here.
 
 ## Printing
 
@@ -171,9 +175,18 @@ einsortieren - nur nicht als Cover.
 
 ## Offen
 
-1. Passt das Gehaeuse **nur auf das C6-Modell** oder auch auf das
-   S3-Geschwister (ESP32-S3-Touch-AMOLED-2.16)? Beide haben laut Firmware
-   dasselbe Panel. Wenn beide passen, gehoert das in Titel und Beschreibung.
+1. **C6 und S3 gleich gross?** Ungeklaert. Waveshare veroeffentlicht die Masse
+   nur als Zeichnung in einem ZIP („Structure and Dimensions" im Abschnitt
+   Resources), nicht als Text - ich komme nicht heran.
+
+   Sicher pruefen kannst du es in zwei Minuten: auf beiden Produktseiten das
+   ZIP laden und die Umrisse uebereinanderlegen. Fuer ein Gehaeuse zaehlt
+   aber mehr als der Umriss - USB-Buchse, Knoepfe und Akkustecker muessen an
+   derselben Stelle sitzen, sonst passt es trotz gleicher Aussenmasse nicht.
+
+   Bis das geprueft ist: nur das C6 versprechen. Ein Modell, das angeblich
+   passt und dann doch nicht, kostet mehr Ruf als die paar zusaetzlichen
+   Downloads wert sind.
 2. Deckel geklemmt oder geschraubt? Wenn geschraubt: welche Schrauben?
 3. Druckzeit und Einstellungen aus deinem Slicer.
 4. Welcher Akku passt hinein?
