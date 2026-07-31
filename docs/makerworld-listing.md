@@ -7,14 +7,19 @@ Zum Kopieren in das Formular. Eckige Klammern = von dir zu ergaenzen.
 ## Modellname (max. 50 Zeichen)
 
 ```
-Clawdmeter Case - Claude usage desk buddy
+Clawdmeter Case - desk buddy for Claude Code
 ```
 
-41 Zeichen. Falls dir das zu sperrig ist:
+44 Zeichen. „Desk buddy" deckt beides ab: den Verbrauch, den das Geraet ab
+Werk zeigt, und das, was mit der App dazukommt - naemlich was Claude gerade
+tut. „Usage" allein waere zu klein gedacht.
+
+Alternativen:
 
 ```
-Clawdmeter Case (Waveshare AMOLED 2.16)
-Clawdmeter - AI usage monitor case
+Clawdmeter Case - see what Claude is doing      (42)
+Clawdmeter Case - AI companion for your desk    (44)
+Clawdmeter Case (Waveshare AMOLED 2.16)         (39, sachlich)
 ```
 
 ## Kategorie
@@ -52,11 +57,16 @@ functional print
 ## Beschreibung
 
 ```markdown
-A little robot body for the **Clawdmeter** - the desk gadget that shows how
-much of your Claude quota is left.
+A little robot body for the **Clawdmeter** - the desk gadget that keeps an eye
+on Claude for you.
+
+On its own it shows how much of your quota is left. Paired with the Claude
+Session Browser on Windows, it does rather more: it acts out what Claude is
+doing right now - thinking, writing code, waiting for your permission, or out
+of quota - as a pixel character on the screen.
 
 Two parts, body and cap, printed without supports. The screen sits flush in
-the front; arms and feet give it the shape of the pixel character that lives
+the front; arms and feet give the case the shape of the character that lives
 on the display.
 
 ## What it holds
