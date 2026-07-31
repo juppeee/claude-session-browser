@@ -23,9 +23,13 @@ back into one means digging out a session ID and typing `claude --resume`. This
 app lists them all — title, folder, message count, when you last touched it —
 and puts you back into one with a double-click.
 
-## Screenshots
+<div align="center">
 
-> On the way.
+<img src="docs/screenshot-sessions.png" width="880" alt="The session list with the detail panel open">
+
+<sub>Pick a session and everything about it is on the right — folder, message counts, and how it started</sub>
+
+</div>
 
 ## What you get
 
