@@ -32,6 +32,9 @@ import urllib.request
 
 import webview
 
+import i18n
+from i18n import t
+
 # Nur damit PyInstaller die Tcl/Tk-Daten mit-buendelt (der eigentliche Import
 # passiert lazy im BuddyController-Thread).
 try:
@@ -87,6 +90,7 @@ DEFAULT_SETTINGS = {
     "projects_dir": "",          # leer = automatisch suchen
     "accent": "#ec7456",         # Akzentfarbe der Oberflaeche (Koralle, passend zum Logo)
     "bg_base": "#4a3a30",        # Grundton -> daraus wird die Hintergrund-Palette abgeleitet (warm)
+    "language": "auto",          # auto (= Windows-Sprache) | de | en
     "terminal": "auto",          # auto | wt | cmd
     "claude_cmd": "claude",      # Befehl/Pfad zur Claude-CLI
     "columns": [                 # sichtbare Spalten + Reihenfolge
@@ -691,6 +695,9 @@ def load_settings():
             data["onboarded"] = True
     else:
         data["onboarded"] = False   # echte Erstinstallation
+    # Sprache gleich hier setzen: ab jetzt uebersetzt t() richtig, auch fuer
+    # alles was noch vor dem Fenster laeuft (Tray, Benachrichtigungen).
+    i18n.set_lang(data.get("language", "auto"))
     return data
 
 
@@ -819,12 +826,15 @@ def fmt_time(mtime):
     today = dt.date.today()
     diff = (today - d.date()).days
     if diff == 0:
-        return "heute " + d.strftime("%H:%M")
+        return t("heute {zeit}", zeit=d.strftime("%H:%M"))
     if diff == 1:
-        return "gestern " + d.strftime("%H:%M")
+        return t("gestern {zeit}", zeit=d.strftime("%H:%M"))
     if diff < 7:
-        return f"vor {diff} Tagen"
-    return d.strftime("%d.%m.%Y")
+        # diff ist hier immer 2..6 - der Einzahlfall faellt schon auf "gestern".
+        return t("vor {tage} Tagen", tage=diff)
+    # Auch das Datumsformat ist uebersetzbar: im Englischen steht der Monat
+    # vorn, 07.31.2026 waere dort schlicht falsch herum.
+    return d.strftime(t("%d.%m.%Y"))
 
 
 # --------------------------------------------------------------------------- #
@@ -854,13 +864,13 @@ def resume_session(session_id, cwd, settings, project=""):
     # Ein bloedes Zeichen (& | " `) waere sonst Command-Injection.
     sid = str(session_id or "")
     if not _SESSION_ID_RE.match(sid):
-        return {"ok": False, "error": "Ungültige Session-ID."}
+        return {"ok": False, "error": t("Ungültige Session-ID.")}
     workdir = _safe_workdir(cwd, project)
     claude = settings.get("claude_cmd") or "claude"
     # `claude_cmd` kommt aus User-Settings – wir erlauben nur einen einfachen
     # Programmnamen oder absoluten Pfad, keine Shell-Metazeichen.
     if any(c in claude for c in '&|;<>"`$'):
-        return {"ok": False, "error": "Unsicherer claude_cmd-Wert."}
+        return {"ok": False, "error": t("Unsicherer claude_cmd-Wert.")}
     term = settings.get("terminal", "auto")
     # Wichtig: CLAUDE_CODE_FORCE_SESSION_PERSIST=1 setzen damit die resumed
     # Session weiterhin in die JSONL schreibt (sonst wird sie als Child erkannt
@@ -876,7 +886,7 @@ def resume_session(session_id, cwd, settings, project=""):
                 return {"ok": True}
             except FileNotFoundError:
                 if term == "wt":
-                    return {"ok": False, "error": "Windows Terminal (wt) nicht gefunden."}
+                    return {"ok": False, "error": t("Windows Terminal (wt) nicht gefunden.")}
         # Fallback: cmd.exe direkt starten – ohne shell=True, argv als Liste.
         # `start` ist ein cmd-Builtin, deshalb rufen wir cmd /c start …
         subprocess.Popen(
@@ -937,7 +947,7 @@ def _win_enum_monitors():
     for i, m in enumerate(result):
         w = m["right"] - m["left"]
         h = m["bottom"] - m["top"]
-        tag = "Primär" if m["primary"] else f"Monitor {i+1}"
+        tag = t("Primär") if m["primary"] else t("Monitor {nr}", nr=i + 1)
         m["idx"] = i
         m["label"] = f"{tag} · {w}×{h}"
     return result
@@ -1692,7 +1702,7 @@ class BuddyController:
         if tray and tray.icon:
             try:
                 tray.icon.notify(
-                    "Dein Claude-Limit ist zurueck – weitermachen!",
+                    t("Dein Claude-Limit ist zurück – weitermachen!"),
                     "Clawd")
             except Exception:
                 pass
@@ -2596,8 +2606,11 @@ class LimitResetToast:
         self._alive = False
         self._t = None
 
-    def show(self, title="Dein Claude-Limit ist zurückgesetzt",
-             subtitle="Du kannst weitermachen"):
+    def show(self, title=None, subtitle=None):
+        # Erst hier uebersetzen, nicht als Standardwert im Kopf: Standardwerte
+        # werden beim Import ausgewertet, da steht die Sprache noch nicht fest.
+        title = title or t("Dein Claude-Limit ist zurückgesetzt")
+        subtitle = subtitle or t("Du kannst weitermachen")
         if self._alive:
             return
         self._alive = True
@@ -2825,9 +2838,12 @@ class TrayManager:
             except Exception:
                 pass
 
+        # Beschriftung als Funktion, nicht als fester Text: pystray fragt sie
+        # beim Aufklappen ab, damit stimmt das Menue sofort nach einem
+        # Sprachwechsel - ohne das Icon neu aufbauen zu muessen.
         menu = pystray.Menu(
-            pystray.MenuItem("Öffnen", _open, default=True),
-            pystray.MenuItem("Beenden", _quit),
+            pystray.MenuItem(lambda item: t("Öffnen"), _open, default=True),
+            pystray.MenuItem(lambda item: t("Beenden"), _quit),
         )
         self.icon = pystray.Icon(
             "ClaudeSessionBrowser",
@@ -3124,6 +3140,16 @@ class Api:
         save_json(SETTINGS_FILE, self.settings)
         return self._state(force=force)
 
+    def set_language(self, code):
+        """Sprache umstellen. Gibt Sprache + Tabelle zurueck, damit die
+        Oberflaeche sich sofort neu aufbauen kann - ohne Neustart."""
+        if code not in ("auto", "de", "en"):
+            code = "auto"
+        self.settings["language"] = code
+        lang = i18n.set_lang(code)
+        save_json(SETTINGS_FILE, self.settings)
+        return {"lang": lang, "table": i18n.table()}
+
     def add_hidden_folder(self, path):
         if path:
             folders = self.settings.setdefault("hidden_folders", [])
@@ -3260,7 +3286,8 @@ class Api:
             if tray and tray.icon:
                 try:
                     tray.icon.notify(
-                        f"Clawdmeter hat nur noch {pct}% Akku", "Clawd")
+                        t("Clawdmeter hat nur noch {pct}% Akku", pct=pct),
+                        "Clawd")
                 except Exception:
                     pass
         elif warned and pct >= warn_at + 10:
@@ -3342,8 +3369,9 @@ class Api:
         if tray and tray.icon:
             try:
                 tray.icon.notify(
-                    f"{pct}% deines 5-Stunden-Limits verbraucht. "
-                    f"Frei um {when} – in {mins} Minuten.", "Clawd")
+                    t("{pct}% deines 5-Stunden-Limits verbraucht. "
+                      "Zurückgesetzt um {when} – in {mins} Minuten.",
+                      pct=pct, when=when, mins=mins), "Clawd")
             except Exception:
                 pass
 
@@ -3666,7 +3694,7 @@ class Api:
         Install-Pfad. Alter Runner-Pfad wird nicht angefasst -- er bleibt
         als Orphan liegen (harmlos), User kann ihn manuell loeschen."""
         if getattr(self, "_installing", False):
-            return {"ok": False, "error": "Update läuft bereits."}
+            return {"ok": False, "error": t("Update läuft bereits.")}
         self._installing = True
         part = os.path.join(tempfile.gettempdir(),
                             "ClaudeSessionBrowser_setup.exe.part")
@@ -3707,12 +3735,12 @@ class Api:
                 try: os.remove(part)
                 except OSError: pass
                 return {"ok": False,
-                        "error": "Installer-Download unvollständig."}
+                        "error": t("Installer-Download unvollständig.")}
             with open(part, "rb") as f:
                 if f.read(2) != b"MZ":
                     os.remove(part)
                     return {"ok": False,
-                            "error": "Heruntergeladener Installer ist keine gültige .exe."}
+                            "error": t("Heruntergeladener Installer ist keine gültige .exe.")}
             # SHA-256 Pruefung (installer_sha256 bevorzugt, Fallback sha256)
             import hashlib
             expected = str(data.get("installer_sha256")
@@ -3722,7 +3750,7 @@ class Api:
                     try: os.remove(part)
                     except OSError: pass
                     return {"ok": False,
-                            "error": "Ungültiger SHA-256 im Server-Manifest."}
+                            "error": t("Ungültiger SHA-256 im Server-Manifest.")}
                 h = hashlib.sha256()
                 with open(part, "rb") as f:
                     for chunk in iter(lambda: f.read(65536), b""):
@@ -3731,8 +3759,8 @@ class Api:
                     try: os.remove(part)
                     except OSError: pass
                     return {"ok": False,
-                            "error": "Integritäts-Prüfung fehlgeschlagen "
-                                     "(SHA-256). Update abgebrochen."}
+                            "error": t("Integritäts-Prüfung fehlgeschlagen "
+                                       "(SHA-256). Update abgebrochen.")}
             if os.path.exists(setup):
                 try: os.remove(setup)
                 except OSError: pass
@@ -3799,7 +3827,7 @@ class Api:
         try:
             data = getattr(self, "_update_info", None) or self._remote_info()
         except Exception:
-            return {"ok": False, "error": "Kein Internet / Repo nicht erreichbar."}
+            return {"ok": False, "error": t("Kein Internet / Repo nicht erreichbar.")}
         page = data.get("url") or \
             "https://github.com/juppeee/claude-session-browser/releases/latest"
         installer_url = data.get("installer_url") or ""
@@ -3820,7 +3848,7 @@ class Api:
             return {"ok": False, "reason": "no_exe_url", "opened": True}
 
         if getattr(self, "_installing", False):
-            return {"ok": False, "error": "Update läuft bereits."}
+            return {"ok": False, "error": t("Update läuft bereits.")}
         self._installing = True
 
         win = self._win()
@@ -3869,12 +3897,12 @@ class Api:
                 except OSError:
                     pass
                 return {"ok": False,
-                        "error": "Download unvollständig – bitte erneut versuchen."}
+                        "error": t("Download unvollständig – bitte erneut versuchen.")}
             # MZ-Header pruefen (gueltige .exe?)
             with open(part, "rb") as f:
                 if f.read(2) != b"MZ":
                     os.remove(part)
-                    return {"ok": False, "error": "Heruntergeladene Datei ist keine gültige .exe."}
+                    return {"ok": False, "error": t("Heruntergeladene Datei ist keine gültige .exe.")}
 
             # Integritaets-Pruefung ueber SHA-256, wenn im version.json angegeben.
             # Feld ist optional (aeltere version.json ohne sha256 laufen ohne Check
@@ -3886,7 +3914,7 @@ class Api:
                     try: os.remove(part)
                     except OSError: pass
                     return {"ok": False,
-                            "error": "Ungültiger SHA-256 im Server-Manifest."}
+                            "error": t("Ungültiger SHA-256 im Server-Manifest.")}
                 h = hashlib.sha256()
                 with open(part, "rb") as f:
                     for chunk in iter(lambda: f.read(65536), b""):
@@ -3896,8 +3924,8 @@ class Api:
                     try: os.remove(part)
                     except OSError: pass
                     return {"ok": False,
-                            "error": ("Integritäts-Prüfung fehlgeschlagen "
-                                      "(SHA-256 stimmt nicht). Update abgebrochen.")}
+                            "error": t("Integritäts-Prüfung fehlgeschlagen "
+                                       "(SHA-256 stimmt nicht). Update abgebrochen.")}
 
             if os.path.exists(new):
                 os.remove(new)
@@ -4002,7 +4030,9 @@ def logo_data_uri():
 
 
 def build_html():
-    return HTML_TEMPLATE.replace("__LOGO__", logo_data_uri())
+    return (HTML_TEMPLATE
+            .replace("__LOGO__", logo_data_uri())
+            .replace("__I18N__", i18n.js_payload()))
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -4878,6 +4908,40 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <script>
+/* ---- Sprache -------------------------------------------------------------
+   Der deutsche Satz ist der Schluessel. Fehlt eine Uebersetzung, steht dort
+   Deutsch - die Oberflaeche bleibt bedienbar, auch waehrend die Tabelle noch
+   waechst. Dieselbe Tabelle benutzt der Python-Teil.                        */
+let I18N = __I18N__;
+function t(text, vars){
+  let out = (I18N.table && I18N.table[text]) || text;
+  if(vars) out = out.replace(/\{(\w+)\}/g, (m,k)=> (k in vars ? vars[k] : m));
+  return out;
+}
+// Festes Markup: uebersetzt wird ueber Markierungen, damit das HTML seinen
+// deutschen Text behaelt und beim Sprachwechsel nur ein Durchgang noetig ist.
+function applyStaticT(root){
+  const r = root || document;
+  r.querySelectorAll('[data-t]').forEach(el=>{
+    const key = el.getAttribute('data-t');
+    if(key) el.textContent = t(key);
+  });
+  r.querySelectorAll('[data-t-ph]').forEach(el=>{
+    const key = el.getAttribute('data-t-ph');
+    if(key) el.setAttribute('placeholder', t(key));
+  });
+  r.querySelectorAll('[data-t-title]').forEach(el=>{
+    const key = el.getAttribute('data-t-title');
+    if(key) el.setAttribute('title', t(key));
+  });
+  document.documentElement.setAttribute('lang', I18N.lang || 'de');
+}
+async function setLanguage(code){
+  try{ I18N = await api.set_language(code); }catch(e){ return; }
+  applyStaticT();
+  renderAll();
+}
+
 const COLORS = ["#4aa3ff","#3ecf8e","#ffb454","#ff6b6b","#c08cff","#ffe066","#34d6c8","#ff8fcf"];
 const ALL_COLS = {
   title:   {label:"Titel",         grow:"2.6fr"},
@@ -4929,6 +4993,7 @@ const ICONS={
   power:'<path d="M12 3v9"/><path d="M6.5 6.5a8 8 0 1 0 11 0"/>',
   bell:'<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   gauge:'<path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4-4.5"/>',
+  globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18"/>',
   // Tropfen statt Palette, halbgefuellter Kreis statt Kontrastraster: die
   // detailreicheren Varianten waren bei 16 px nicht mehr zu erkennen.
   palette:'<path d="M12 3.5s6 6.6 6 10.1a6 6 0 0 1-12 0c0-3.5 6-10.1 6-10.1z"/>',
@@ -4989,6 +5054,7 @@ async function boot(){
     applyAccent(STATE.settings.accent || "#ec7456");
     applyBg(STATE.settings.bg_base || "#4a3a30");
     ingest(STATE);
+    applyStaticT();          // festes Markup uebersetzen, bevor es sichtbar wird
     buildSwatches();
     renderHead();
     render();
@@ -5015,9 +5081,9 @@ function ingest(st){STATE=st; sessions=st.sessions||[];}
 
 let _toastT=null;
 function toast(msg){
-  const t=document.getElementById('toast');
-  t.textContent=msg; t.classList.add('show');
-  clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'), 2600);
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(_toastT); _toastT=setTimeout(()=>el.classList.remove('show'), 2600);
 }
 
 function visible(){
@@ -5123,7 +5189,7 @@ function sortBy(c){
 
 let BUDDY_STATUS_TIMER = null;
 function switchView(v){
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.view===v));
+  document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active',el.dataset.view===v));
   document.getElementById('view-sessions').classList.toggle('active',v==='sessions');
   document.getElementById('view-settings').classList.toggle('active',v==='settings');
   document.getElementById('view-buddy').classList.toggle('active',v==='buddy');
@@ -5135,6 +5201,18 @@ function switchView(v){
   }
   renderShortcutBar(v);
   try{ api.buddy_notify_view(v); }catch(_){}
+}
+
+// Alles neu zeichnen - gebraucht beim Sprachwechsel. Die Ansichten bauen
+// sich ohnehin bei jedem Wechsel neu auf, ein Neustart ist unnoetig.
+function renderAll(){
+  const tab = document.querySelector('.tab.active');
+  const v = tab ? tab.dataset.view : 'sessions';
+  renderHead();
+  render();
+  renderSettings();
+  if(v === 'buddy') renderBuddy();
+  renderShortcutBar(v);
 }
 
 // Tastaturkuerzel je Ansicht. Bewusst nur das, was der keydown-Handler und
@@ -5459,7 +5537,9 @@ async function buddyPickWindow(){
   const list = await api.buddy_windows();
   if(!list || !list.length){ toast('Keine Fenster gefunden.'); return; }
   // Simples Overlay-Menue
-  const html = list.map(t=>`<div class="ba-wlist-row" onclick="buddyChoseWindow(this.dataset.t)" data-t="${esc(t)}">${esc(t)}</div>`).join('');
+  // data-win, nicht data-t: data-t ist fuer Uebersetzungen reserviert, sonst
+  // wuerde der Uebersetzungsdurchgang die Fenstertitel ueberschreiben.
+  const html = list.map(w=>`<div class="ba-wlist-row" onclick="buddyChoseWindow(this.dataset.win)" data-win="${esc(w)}">${esc(w)}</div>`).join('');
   const box = document.getElementById('overlay-buddy-win');
   box.querySelector('.ba-wlist').innerHTML = html;
   box.classList.add('show');
@@ -5480,7 +5560,7 @@ function renderSettings(){
     : '<li class="none">Keine</li>';
   const ACCENTS = ['#ec7456','#6c6cff','#3ecf8e','#4aa3ff','#ffb454','#ff6b6b','#c08cff','#34d6c8'];
   const swl = ACCENTS.map(c=>`<div class="sw ${st.accent===c?'active':''}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('');
-  const bgl = BG_TONES.map(t=>`<div class="sw ${st.bg_base===t.base?'active':''}" style="background:${shade(t.base,0.42)}" title="${t.name}" onclick="setBg('${t.base}')"></div>`).join('');
+  const bgl = BG_TONES.map(tone=>`<div class="sw ${st.bg_base===tone.base?'active':''}" style="background:${shade(tone.base,0.42)}" title="${t(tone.name)}" onclick="setBg('${tone.base}')"></div>`).join('');
   document.getElementById('settings').innerHTML=`
     <div class="secthead" id="sect-auslastung">Auslastung</div>
     <div class="card">
@@ -5531,7 +5611,20 @@ function renderSettings(){
         </div>`).join('')}
     </div>
 
-    <div class="secthead" id="sect-darstellung">Darstellung</div>
+    <div class="secthead" id="sect-darstellung">${t('Darstellung')}</div>
+    <div class="card">
+      <h2>${ic('globe')}${t('Sprache')}</h2>
+      <div class="row2">
+        <div><div class="lbl">${t('Sprache der Oberfläche')}</div>
+          <div class="desc">${t('„Automatisch" richtet sich nach Windows: deutsche Oberfläche auf deutschen Systemen, sonst Englisch.')}</div></div>
+        <select class="sel-input" onchange="setLanguage(this.value)">
+          <option value="auto" ${(st.language||'auto')==='auto'?'selected':''}>${t('Automatisch')}</option>
+          <option value="de" ${st.language==='de'?'selected':''}>Deutsch</option>
+          <option value="en" ${st.language==='en'?'selected':''}>English</option>
+        </select>
+      </div>
+    </div>
+
     <div class="card">
       <h2>${ic('palette')}Akzentfarbe</h2>
       <div class="sub">Farbe für Buttons, Auswahl und Hervorhebungen.</div>
@@ -5679,10 +5772,10 @@ function renderSettings(){
 let LIMIT = null;
 function fmtDauer(sek){
   sek = Math.max(0, Math.round(sek));
-  const t = Math.floor(sek/86400), h = Math.floor(sek/3600), m = Math.floor((sek%3600)/60);
+  const tage = Math.floor(sek/86400), h = Math.floor(sek/3600), m = Math.floor((sek%3600)/60);
   // Ab einem Tag in Tagen rechnen - "101 h 58 min" muss man erst umrechnen,
   // bevor man weiss, ob das viel ist.
-  if(t > 0) return t + ' d ' + (h - t*24) + ' h';
+  if(tage > 0) return tage + ' d ' + (h - tage*24) + ' h';
   if(h > 0) return h + ' h ' + String(m).padStart(2,'0') + ' min';
   if(m > 0) return m + ' min ' + String(sek%60).padStart(2,'0') + ' s';
   return sek + ' s';
@@ -5930,11 +6023,11 @@ async function setAccent(c){applyAccent(c); ingest(await api.update_setting('acc
 async function setBg(base){applyBg(base); ingest(await api.update_setting('bg_base',base)); renderSettings();}
 
 async function persistCols(arr){ ingest(await api.update_setting('columns',arr)); renderHead(); render(); renderSettings(); }
-function toggleCol(key){ const cols=normCols(); const t=cols.find(c=>c.key===key);
-  if(t.on && cols.filter(c=>c.on).length<=1) return;  // mind. eine Spalte sichtbar lassen
-  t.on=!t.on; persistCols(cols); }
+function toggleCol(key){ const cols=normCols(); const col=cols.find(c=>c.key===key);
+  if(col.on && cols.filter(c=>c.on).length<=1) return;  // mind. eine Spalte sichtbar lassen
+  col.on=!col.on; persistCols(cols); }
 function moveCol(i,dir){ const cols=normCols(); const j=i+dir; if(j<0||j>=cols.length) return;
-  const t=cols[i]; cols[i]=cols[j]; cols[j]=t; persistCols(cols); }
+  const tmp=cols[i]; cols[i]=cols[j]; cols[j]=tmp; persistCols(cols); }
 
 /* ---- Update ---- */
 let UPD=null;

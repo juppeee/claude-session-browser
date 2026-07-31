@@ -66,13 +66,15 @@ RestartApplications=no
 ; Der Installer wartete dann ewig darauf, dass sich der Updater beendet.
 CloseApplicationsFilter=ClaudeSessionBrowser.exe
 
+; Nur Englisch - absichtlich. Zwei Sprachen bedeuten einen zusaetzlichen
+; Auswahldialog vor der Installation; das Projekt richtet sich nach aussen
+; englisch. Die App selbst folgt weiter der Windows-Sprache.
 [Languages]
-Name: "german"; MessagesFile: "compiler:Languages\German.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "startupicon"; Description: "Beim Windows-Start automatisch mitstarten"; GroupDescription: "Systemintegration"; Flags: unchecked
+Name: "startupicon"; Description: "Start automatically when Windows starts"; GroupDescription: "System integration"; Flags: unchecked
 
 [Files]
 ; Kompletter onedir-Output. Der Runner selbst + alle DLLs + _internal-Ordner.
