@@ -110,7 +110,46 @@ def js_keys(quelltext):
     # ohne ihn hier hielte die Pruefung jeden zweiten Eintrag fuer eine
     # Karteileiche.
     out |= js_rohtexte(block)
+    out |= js_attribute(block)
     return out, None
+
+
+# Einfache Zeichenketten im JavaScript. NICHT als „muss uebersetzt werden"
+# zu verstehen - darunter ist jeder CSS-Klassenname. Nur dazu da, eine
+# Karteileiche von einem Text zu unterscheiden, der ueber t(variable) laeuft:
+# steht er irgendwo im Quelltext, ist er in Gebrauch.
+JS_LITERAL = re.compile(r"""(['"])((?:\\.|(?!\1).)*)\1""")
+
+
+def js_literale(block):
+    beginn = block.find("<script>")
+    ende = block.rfind("</script>")
+    if beginn < 0 or ende < 0:
+        return set()
+    out = set()
+    for _, text in JS_LITERAL.findall(block[beginn:ende]):
+        if text:
+            out.add(text.replace("\\'", "'").replace('\\"', '"'))
+    return out
+
+
+# title= und placeholder= innerhalb der Vorlagen. Die landen im fertigen
+# Baum und werden dort uebersetzt - gebraucht wird also ein Eintrag dafuer.
+JS_ATTR = re.compile(r'(?:title|placeholder)="([^"${}]+)"')
+
+
+def js_attribute(block):
+    beginn = block.find("<script>")
+    ende = block.rfind("</script>")
+    if beginn < 0 or ende < 0:
+        return set()
+    out = set()
+    for lit in template_literale(block[beginn:ende]):
+        for wert in JS_ATTR.findall(lit):
+            kern = wert.strip()
+            if kern and HAT_BUCHSTABE.search(kern):
+                out.add(kern)
+    return out
 
 
 def template_literale(block):
@@ -174,7 +213,11 @@ def main():
     tabelle = i18n.TRANSLATIONS.get("en") or {}
 
     fehlend = sorted(k for k in im_code if k not in tabelle)
-    verwaist = sorted(k for k in tabelle if k not in im_code)
+    # Fuer die Karteileichen zaehlt jedes Vorkommen im Quelltext, auch als
+    # blosser Listenwert - sonst gaelte alles als Altlast, was ueber
+    # t(variable) laeuft.
+    in_gebrauch = im_code | js_literale(quelltext)
+    verwaist = sorted(k for k in tabelle if k not in in_gebrauch)
 
     schief = []
     for schluessel, wert in sorted(tabelle.items()):

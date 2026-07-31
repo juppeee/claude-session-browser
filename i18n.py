@@ -578,6 +578,80 @@ TRANSLATIONS = {
         "{name} · {n} Frames · Klick zum Vorspielen":
             "{name} · {n} frames · click to play it",
 
+        # ---- Ueber Umwege uebersetzt -------------------------------------
+        # Diese Saetze stehen nicht im Markup, sondern als Wert in einer
+        # Liste und laufen ueber t(variable). Weder die Suche im Markup noch
+        # die nach t("…") findet sie - deshalb hier von Hand.
+        #
+        # Farbtoene der Oberflaeche
+        "Warm": "Warm",
+        "Neutral": "Neutral",
+        "Kühl": "Cool",
+        "Ozean": "Ocean",
+        "Violett": "Violet",
+        "Wald": "Forest",
+        "Schwarz": "Black",
+        # Tastenkuerzel-Fusszeile
+        "einsteigen": "resume",
+        "umbenennen": "rename",
+        "Menü": "menu",
+        "Vollbild": "full screen",
+        "Buddy kurz wegschicken": "send the buddy away",
+        "dasselbe": "same thing",
+        "verschieben": "move him",
+        "Dialog schließen": "close the dialog",
+
+        # ---- Zuvor uebersehen: Text als Funktionsargument ----------------
+        "Woche": "Week",
+        "Buddy läuft": "Buddy is running",
+        "Buddy läuft · {grund}": "Buddy is running · {grund}",
+        "Ecke/Kante auf dem Monitor unter dem Buddy":
+            "Corner or edge on whichever display the buddy is on",
+        "(nicht gesetzt)": "(not set)",
+        "Suche…": "Searching…",
+        "Keine gekoppelten Bluetooth-Geräte":
+            "No paired Bluetooth devices",
+        "Update auf v{neu} (aktuell v{alt})":
+            "Update to v{neu} (you have v{alt})",
+        "Verbesserungen und Fehlerbehebungen.":
+            "Improvements and bug fixes.",
+        "Sessions-Ordner gefunden:": "Sessions folder found:",
+        "Kein Sessions-Ordner gefunden – du kannst ihn später in den "
+        "Einstellungen festlegen.":
+            "No sessions folder found – you can set it later in the settings.",
+
+        # ---- In Bedingungen versteckt ------------------------------------
+        # Diese stehen als 'a' : 'b' mitten in einer Abfrage. Im fertigen
+        # Baum sind sie normaler Text und werden dort ersetzt, aber keine
+        # Suche im Quelltext kann sie als uebersetzungspflichtig erkennen.
+        "An": "On",
+        "Aus": "Off",
+        "Gefunden": "Found",
+        "Nicht gefunden": "Not found",
+        "Startet…": "Starting…",
+        "Fast fertig…": "Nearly there…",
+        "Bereit! Programm startet neu…": "Ready – restarting…",
+        "Zur Download-Seite": "Open the download page",
+        "Automatisch (nichts gefunden)": "Automatic (nothing found)",
+        "Sprite-Daten fehlen – bitte neu installieren.":
+            "Sprite data is missing – please reinstall.",
+        "Los geht's! 🎉": "Let's go! 🎉",
+        "Cam": "Cam",
+        "Ziehen": "Drag",
+        "z.B. „claude": "e.g. \"claude",
+        "Akku des Clawdmeter: {pct} %": "Clawdmeter battery: {pct}%",
+
+        # Schnellwahl der Ecken und Kanten
+        "Oben links": "Top left",
+        "Oben Mitte": "Top centre",
+        "Oben rechts": "Top right",
+        "Mitte links": "Middle left",
+        "Mitte": "Centre",
+        "Mitte rechts": "Middle right",
+        "Unten links": "Bottom left",
+        "Unten Mitte": "Bottom centre",
+        "Unten rechts": "Bottom right",
+
         # ---- Rueckfrage-Erkennung ueber Hooks ----------------------------
         "Rückfragen zuverlässig erkennen": "Spot permission prompts reliably",
         # Der Satz ist im Markup von einem <code> unterbrochen, deshalb zwei

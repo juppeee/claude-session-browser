@@ -5530,8 +5530,8 @@ async function refreshBuddyStatus(){
     if (!d.have_sprites) s = 'Sprite-Daten fehlen – bitte neu installieren.';
     else if (!b.enabled) s = 'Buddy aus';
     else if (!d.running) s = 'Startet…';
-    else if (d.reason) s = 'Buddy läuft · ' + d.reason;
-    else s = 'Buddy läuft';
+    else if (d.reason) s = t('Buddy läuft · {grund}', {grund: d.reason});
+    else s = t('Buddy läuft');
     const el = document.getElementById('buddy-status');
     if(el) el.textContent = s;
   }catch(_){}
@@ -5618,8 +5618,8 @@ async function renderBuddy(){
   if (!data.have_sprites) statusTxt = 'Sprite-Daten fehlen – bitte neu installieren.';
   else if (!b.enabled) statusTxt = 'Buddy aus';
   else if (!data.running) statusTxt = 'Startet…';
-  else if (data.reason) statusTxt = 'Buddy läuft · ' + data.reason;
-  else statusTxt = 'Buddy läuft';
+  else if (data.reason) statusTxt = t('Buddy läuft · {grund}', {grund: data.reason});
+  else statusTxt = t('Buddy läuft');
   document.getElementById('buddy-status').textContent = statusTxt;
 
   const size = Math.max(2, Math.min(10, +b.size||4));
@@ -5767,7 +5767,7 @@ function renderMonitorTabs(mons){
     return `<button class="ba-monitor-tab ${active}" onclick="buddyPickMonitor(${m.idx})">${esc(m.label)}</button>`;
   }).join('');
   const auto = (BUDDY_MON_IDX===null)?'active':'';
-  box.innerHTML = `<button class="ba-monitor-tab ${auto}" onclick="buddyPickMonitor(null)" title="Ecke/Kante auf dem Monitor unter dem Buddy">aktuell</button>` + tabs;
+  box.innerHTML = `<button class="ba-monitor-tab ${auto}" onclick="buddyPickMonitor(null)" title="${t('Ecke/Kante auf dem Monitor unter dem Buddy')}">aktuell</button>` + tabs;
   translateDom(box);
 }
 
@@ -5844,7 +5844,7 @@ async function buddyChoseWindow(title){
 
 /* ---- Einstellungen ---- */
 function renderSettings(){
-  const st=STATE.settings, found=STATE.found, pdir=STATE.projects_dir||'(nicht gesetzt)';
+  const st=STATE.settings, found=STATE.found, pdir=STATE.projects_dir||t('(nicht gesetzt)');
   const hidden=st.hidden_folders||[];
   const hl = hidden.length ? hidden.map((f,i)=>`<li>${esc(f)}<span class="x" onclick="unhideIdx(${i})">✕</span></li>`).join('')
     : '<li class="none">Keine</li>';
@@ -6108,7 +6108,7 @@ function paintLimit(){
   let html = limitCard(d.hit ? 100 : d.pct, d.reset_at, t('5 Stunden'), d.hit);
   // Wochenwert nur wenn er wirklich vorliegt - ohne Clawdmeter-Abfrage
   // steht er auf 0 und eine leere Kachel waere irrefuehrend.
-  if(d.wpct > 0 || d.wreset_at) html += limitCard(d.wpct, d.wreset_at, 'Woche', false);
+  if(d.wpct > 0 || d.wreset_at) html += limitCard(d.wpct, d.wreset_at, t('Woche'), false);
   box.innerHTML = html;
 }
 async function refreshLimit(){
@@ -6175,7 +6175,7 @@ function jumpSettings(id){
 async function loadClawdDevices(rescan){
   const sel = document.getElementById('clawd-dev');
   if(!sel) return;
-  if(rescan) sel.innerHTML = '<option value="">Suche…</option>';
+  if(rescan) sel.innerHTML = '<option value="">' + t('Suche…') + '</option>';
   let r;
   try{ r = await api.clawdmeter_devices(!!rescan); }catch(e){ return; }
   const cur = (STATE.settings.clawdmeter_addr||'');
@@ -6184,7 +6184,7 @@ async function loadClawdDevices(rescan){
   const autoLbl = r&&r.auto ? `Automatisch (${esc(autoName||r.auto)})` : 'Automatisch (nichts gefunden)';
   let html = `<option value="" ${cur?'':'selected'}>${autoLbl}</option>`;
   if(!devs.length){
-    html += '<option value="" disabled>Keine gekoppelten Bluetooth-Geräte</option>';
+    html += '<option value="" disabled>' + t('Keine gekoppelten Bluetooth-Geräte') + '</option>';
   } else {
     html += devs.map(d=>`<option value="${esc(d.address)}" ${cur===d.address?'selected':''}>${esc(d.name)} — ${esc(d.address)}</option>`).join('');
   }
@@ -6226,7 +6226,7 @@ function battHtml(pct){
   const stufe = pct <= 15 ? 'low' : (pct <= 40 ? 'mid' : 'ok');
   // Fuellung nie ganz auf 0, sonst sieht die Batterie kaputt statt leer aus.
   const breite = Math.max(2, Math.round(pct * 0.18));   // 18px Innenraum
-  return `<span class="batt ${stufe}" title="Akku des Clawdmeter: ${pct} %">`
+  return `<span class="batt ${stufe}" title="${esc(t('Akku des Clawdmeter: {pct} %', {pct: pct}))}">`
        +   `<span class="cell"><span class="fill" style="width:${breite}px"></span></span>`
        +   `<span class="pct">${pct} %</span></span>`;
 }
@@ -6376,8 +6376,8 @@ async function checkUpdate(){
 }
 function openUpdateDialog(){
   if(!UPD) return;
-  document.getElementById('upd-title').textContent='Update auf v'+UPD.latest+' (aktuell v'+UPD.current+')';
-  document.getElementById('upd-notes').textContent=UPD.notes||'Verbesserungen und Fehlerbehebungen.';
+  document.getElementById('upd-title').textContent=t('Update auf v{neu} (aktuell v{alt})', {neu: UPD.latest, alt: UPD.current});
+  document.getElementById('upd-notes').textContent=UPD.notes||t('Verbesserungen und Fehlerbehebungen.');
   const b=document.getElementById('upd-install');
   b.disabled=false; b.textContent= UPD.frozen ? 'Jetzt installieren' : 'Zur Download-Seite';
   document.getElementById('overlay-update').classList.add('show');
@@ -6459,8 +6459,8 @@ function obShow(){
   document.getElementById('ob-home').classList.toggle('on', STATE.settings.hide_home!==false);
   const f=document.getElementById('ob-folder');
   f.innerHTML = STATE.found
-    ? ('📁 Sessions-Ordner gefunden:<br>'+esc(STATE.projects_dir))
-    : '⚠️ Kein Sessions-Ordner gefunden – du kannst ihn später in den Einstellungen festlegen.';
+    ? ('📁 ' + t('Sessions-Ordner gefunden:') + '<br>' + esc(STATE.projects_dir))
+    : '⚠️ ' + t('Kein Sessions-Ordner gefunden – du kannst ihn später in den Einstellungen festlegen.');
   obStep=0; obRender();
   document.getElementById('onboard').classList.add('show');
 }
