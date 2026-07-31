@@ -1,31 +1,50 @@
 # MakerWorld-Beitrag: Clawdmeter Case
 
-Entwurf zum Kopieren. Was in eckigen Klammern steht, musst du noch
-bestaetigen oder ersetzen.
+Zum Kopieren in das Formular. Eckige Klammern = von dir zu ergaenzen.
 
 ---
 
-## Titel
+## Modellname (max. 50 Zeichen)
 
 ```
-Clawdmeter Case — desk buddy for your Claude usage
+Clawdmeter Case - Claude usage desk buddy
 ```
 
-Alternativen, falls dir das zu lang ist:
+41 Zeichen. Falls dir das zu sperrig ist:
 
 ```
 Clawdmeter Case (Waveshare AMOLED 2.16)
-Clawdmeter — Claude usage monitor case
+Clawdmeter - AI usage monitor case
 ```
 
----
+## Kategorie
 
-## Kurzbeschreibung
+**Gadgets** — dort liegen Gehaeuse fuer Elektronik. Zweite Wahl waere
+*Hobby & DIY*.
+
+## Tags
 
 ```
-A little robot body for the Clawdmeter, the desk gadget that shows how much
-of your Claude quota is left. Two parts, no supports, prints in about
-[X] hours.
+clawdmeter
+claude
+claude code
+ai
+esp32
+esp32c6
+waveshare
+amoled
+case
+enclosure
+desk toy
+desk gadget
+developer
+programming
+robot
+pixel art
+usage monitor
+bluetooth
+open source
+functional print
 ```
 
 ---
@@ -33,20 +52,17 @@ of your Claude quota is left. Two parts, no supports, prints in about
 ## Beschreibung
 
 ```markdown
-The **Clawdmeter** is a small desk gadget that shows how much of your Claude
-usage you have left — and, if you pair it with the Claude Session Browser on
-Windows, what Claude is doing right now: thinking, writing code, waiting for
-your permission, or out of quota.
+A little robot body for the **Clawdmeter** - the desk gadget that shows how
+much of your Claude quota is left.
 
-This is a case for it. Two parts, a body and a cap, printed without supports.
-The screen sits flush in the front, the arms and feet give it the look of the
-little pixel character that lives on the display.
+Two parts, body and cap, printed without supports. The screen sits flush in
+the front; arms and feet give it the shape of the pixel character that lives
+on the display.
 
-## What you need
+## What it holds
 
-- **Waveshare ESP32-C6-Touch-AMOLED-2.16** — the board the case is built around
-- A battery, if you want it cordless [Typ/Groesse ergaenzen]
-- The Clawdmeter firmware by [Hermann Björgvin](https://github.com/HermannBjorgvin/Clawdmeter)
+- **Waveshare ESP32-C6-Touch-AMOLED-2.16** [passt auch auf das S3-Modell? -> ergaenzen]
+- A battery if you want it cordless [Typ/Groesse]
 
 ## Printing
 
@@ -57,66 +73,97 @@ little pixel character that lives on the display.
 | Infill | [15 %] |
 | Supports | none |
 | Material | [PLA] |
+| Print time | [X h] |
 
-Print the body with the open side down — no supports needed that way. The cap
-[clips in / is held by two M2 screws].
+Body goes on the plate with the open side down - no supports needed that way.
 
 ## Assembly
 
-1. [Board von vorn in den Rahmen legen, Display zeigt nach aussen]
-2. [Akku in das Fach hinter dem Board]
-3. [Deckel aufsetzen bis er einrastet]
+1. [Board von vorn einlegen, Display nach aussen]
+2. [Akku in das Fach dahinter]
+3. [Deckel aufsetzen bis er einrastet / mit 2x M2 verschrauben]
 
-## Software
+## The software behind it
 
-The device and its firmware come from
-[Hermann Björgvin](https://github.com/HermannBjorgvin/Clawdmeter) — flashing
-instructions are in his repository.
+The device and its firmware are the work of
+[Hermann Björgvin](https://github.com/HermannBjorgvin/Clawdmeter) - flashing
+instructions are in his repository. It shows your Claude usage and picks an
+animation from how fast your quota is burning.
 
-If you're on Windows, the
+On Windows, the
 [Claude Session Browser](https://github.com/juppeee/claude-session-browser)
-connects to it over Bluetooth and mirrors its desktop buddy onto the device,
-so it acts out what Claude is actually doing instead of just showing a usage
-bar.
+connects over Bluetooth and mirrors its desktop buddy onto the device, so it
+acts out what Claude is actually doing - thinking, writing code, waiting for
+permission, out of quota - instead of only reacting to the burn rate.
 
 Both are free and open source.
 ```
 
 ---
 
-## Deutsche Fassung
+## Lizenz - zwei Dinge passen gerade nicht zusammen
 
-Falls du sie zusaetzlich willst — MakerWorld erlaubt nur einen Text, deshalb
-entweder oder. Englisch erreicht mehr Leute.
+Bei den Dateien steht **Open Source** angehakt, in den Lizenzfragen aber
+dreimal **Nein**: keine Anpassungen, keine kommerzielle Nutzung, keine
+Weitergabe. Das ist die restriktivste Einstellung, die es gibt.
 
-```markdown
-Der **Clawdmeter** ist ein kleines Geraet für den Schreibtisch, das zeigt,
-wie viel von deinem Claude-Kontingent noch übrig ist. Zusammen mit dem
-Claude Session Browser unter Windows zeigt er auch, was Claude gerade macht:
-nachdenken, Code schreiben, auf deine Erlaubnis warten oder Limit erreicht.
+Zum Projekt wuerde eher passen:
 
-Das hier ist das Gehäuse dazu. Zwei Teile, Korpus und Deckel, ohne Stützen
-zu drucken. Das Display sitzt bündig vorn, Arme und Füße geben ihm die Form
-der kleinen Pixelfigur, die auf dem Bildschirm wohnt.
-```
+| Frage | Vorschlag |
+|---|---|
+| Weitergabe von Anpassungen? | **Ja** (oder „Ja, solange andere gleich teilen") |
+| Kommerzielle Nutzung? | Deine Entscheidung - „Nein" ist ueblich |
+| Weitergabe/Weiterverbreitung? | **Ja** |
 
----
-
-## Tags
-
-```
-claude, ai, esp32, waveshare, amoled, desk, gadget, case, enclosure,
-productivity, developer, monitor, robot
-```
+Firmware und App sind beide quelloffen; ein Gehaeuse, das niemand anpassen
+darf, wirkt daneben seltsam. Wer ein anderes Board hat, kann es sonst nicht
+anpassen und laedt es auch nicht herunter.
 
 ---
 
-## Was ich noch von dir brauche
+## Bilder - hier ist Vorsicht geboten
 
-1. **Passt das Gehäuse nur auf das C6-Modell** oder auch auf das
+MakerWorld schreibt ueber dem Cover-Feld ausdruecklich:
+**„Bitte verwenden Sie echte Druckfotos."** Und unter Modellbilder:
+**„Fotos des gedruckten Modells."**
+
+Die drei erzeugten Bilder aus dem Downloads-Ordner sind **keine** Druckfotos.
+Als Cover koennen sie den Beitrag kosten - MakerWorld entfernt Modelle, deren
+Bilder das Gedruckte nicht zeigen.
+
+Was du brauchst:
+
+- **4:3** fuers Web-Cover und **3:4** fuers App-Cover (beide Pflicht bzw.
+  empfohlen) - dasselbe Motiv, zweimal zugeschnitten
+- ein paar Modellbilder: von vorn mit eingeschaltetem Display, von der Seite,
+  die beiden Teile nebeneinander vor dem Zusammenbau
+
+Tipps fuers Foto: Tageslicht am Fenster, schlichter Untergrund (Schreibtisch
+reicht), Display an und den Buddy zeigend, Kamera auf Hoehe des Geraets.
+Das Orange kommt vor dunklem Holz gut heraus.
+
+Die Renderings kannst du als *zusaetzliches* Modellbild weiter hinten
+einsortieren - nur nicht als Cover.
+
+---
+
+## Der Rest des Formulars
+
+| Feld | Empfehlung |
+|---|---|
+| Sichtbarkeit | Oeffentlich |
+| Community-Beitrag | aus |
+| Exklusives Modellprogramm | nicht moeglich („Nicht berechtigt") |
+| Stueckliste | aus - es gibt keine Kaufteile ausser Board und Akku |
+| Dokumentation | optional; die Montageschritte stehen schon in der Beschreibung |
+
+---
+
+## Offen
+
+1. Passt das Gehaeuse **nur auf das C6-Modell** oder auch auf das
    S3-Geschwister (ESP32-S3-Touch-AMOLED-2.16)? Beide haben laut Firmware
-   dasselbe Panel. Wenn beide passen, gehoert das in die Beschreibung — das
-   verdoppelt die Zielgruppe.
-2. **Deckel: geklemmt oder geschraubt?** Und wenn geschraubt, welche Schrauben?
-3. **Druckzeit und Einstellungen** aus deinem Slicer.
-4. **Akku**: welcher passt rein?
+   dasselbe Panel. Wenn beide passen, gehoert das in Titel und Beschreibung.
+2. Deckel geklemmt oder geschraubt? Wenn geschraubt: welche Schrauben?
+3. Druckzeit und Einstellungen aus deinem Slicer.
+4. Welcher Akku passt hinein?
