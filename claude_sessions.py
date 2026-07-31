@@ -68,6 +68,12 @@ def _vtuple(v):
 HOME = os.path.expanduser("~")
 TITLES_FILE = os.path.join(HOME, ".claude", "session_titles.json")
 SETTINGS_FILE = os.path.join(HOME, ".claude", "session_browser_settings.json")
+CLAUDE_SETTINGS_FILE = os.path.join(HOME, ".claude", "settings.json")
+
+# Hier legt der Hook ab, was Claude Code gerade meldet - eine Datei je
+# Session. Siehe _hook_entry().
+HOOK_DIR = os.path.join(HOME, ".claude", "csb_hooks")
+HOOK_FRESH_S = 300.0        # aeltere Meldungen gelten als abgestanden
 
 
 def _resource(name):
@@ -79,6 +85,169 @@ def _resource(name):
 
 def norm(p):
     return os.path.normcase(os.path.normpath(p)) if p else ""
+
+
+# --------------------------------------------------------------------------- #
+#  Hook: Claude Code meldet selbst, wenn es auf eine Antwort wartet
+# --------------------------------------------------------------------------- #
+# Ohne Hook muss die App raten, ob ein Werkzeug noch laeuft oder ob die
+# Rueckfrage im Terminal steht - Claude Code schreibt sie nur dorthin, nicht
+# ins Protokoll. Geraten wird ueber die Laufanzeige im Fenstertitel, und das
+# geht schief, sobald mehrere Terminals offen sind: eines arbeitet, das
+# andere fragt, und der Titel gehoert dem Fenster, nicht dem Reiter.
+#
+# Der Hook beseitigt das Raten. Eingehaengt wird bewusst nur "Notification" -
+# das ist genau der Moment, in dem Claude Code auf dich wartet. Haeufige
+# Ereignisse wie PreToolUse waeren jedes Mal ein Prozessstart und wuerden
+# Claude bei jedem Werkzeugaufruf ausbremsen.
+def _hook_entry():
+    """Laeuft als eigener, kurzlebiger Prozess: Claude Code ruft die App mit
+    --csb-hook auf und schickt die Meldung als JSON auf die Standardeingabe."""
+    try:
+        roh = sys.stdin.read()
+    except Exception:
+        return
+    try:
+        d = json.loads(roh) if roh.strip() else {}
+    except (ValueError, TypeError):
+        d = {}
+    sid = str(d.get("session_id") or "unbekannt")
+    # Dateinamen absichern - die Kennung kommt von aussen und landet in einem
+    # Pfad. Alles ausser dem, was eine Session-ID sein darf, fliegt raus.
+    sid = re.sub(r"[^A-Za-z0-9_-]", "", sid)[:64] or "unbekannt"
+    try:
+        os.makedirs(HOOK_DIR, exist_ok=True)
+        with open(os.path.join(HOOK_DIR, sid + ".json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"ereignis": d.get("hook_event_name") or "Notification",
+                       "meldung": str(d.get("message") or "")[:300],
+                       "zeit": time.time()}, fh)
+    except OSError:
+        return
+    # Alte Dateien wegraeumen: jede Session hinterlaesst eine, sonst waechst
+    # der Ordner unbegrenzt.
+    try:
+        grenze = time.time() - 7 * 24 * 3600
+        for name in os.listdir(HOOK_DIR):
+            p = os.path.join(HOOK_DIR, name)
+            try:
+                if os.path.getmtime(p) < grenze:
+                    os.remove(p)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _hook_wartet(session_id, seit):
+    """Wartet Claude Code in dieser Session auf eine Antwort?
+
+    None = keine Auskunft (kein Hook eingerichtet oder nichts gemeldet), dann
+    bleibt es beim Raten. True/False = der Hook weiss es.
+
+    Eine Meldung gilt nur, solange danach nichts mehr ins Protokoll
+    geschrieben wurde: kam eine neue Zeile, ist die Frage beantwortet.
+    """
+    if not session_id:
+        return None
+    try:
+        with open(os.path.join(HOOK_DIR, session_id + ".json"),
+                  encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return None
+    zeit = float(d.get("zeit") or 0)
+    if not zeit or time.time() - zeit > HOOK_FRESH_S:
+        return None
+    return zeit > (seit or 0)
+
+
+# Woran wir unsere eigenen Eintraege in fremden Einstellungen wiedererkennen.
+_HOOK_MARKE = "--csb-hook"
+
+
+def _hook_command():
+    """Der Befehl, den Claude Code aufrufen soll."""
+    if getattr(sys, "frozen", False):
+        return '"%s" %s' % (sys.executable, _HOOK_MARKE)
+    return '"%s" "%s" %s' % (sys.executable,
+                             os.path.abspath(__file__), _HOOK_MARKE)
+
+
+def _claude_settings_lesen():
+    try:
+        with open(CLAUDE_SETTINGS_FILE, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def hooks_eingerichtet():
+    """Steht unser Hook in den Claude-Code-Einstellungen?"""
+    gruppen = (_claude_settings_lesen().get("hooks") or {}).get("Notification")
+    if not isinstance(gruppen, list):
+        return False
+    for g in gruppen:
+        for h in (g.get("hooks") or []) if isinstance(g, dict) else []:
+            if isinstance(h, dict) and _HOOK_MARKE in str(h.get("command", "")):
+                return True
+    return False
+
+
+def hooks_einrichten(an):
+    """Traegt unseren Hook in ~/.claude/settings.json ein oder entfernt ihn.
+
+    Fremde Hooks bleiben unangetastet - erkannt wird ausschliesslich der
+    eigene Eintrag am Aufrufparameter. Die uebrige Datei wird eingelesen und
+    unveraendert zurueckgeschrieben.
+    """
+    d = _claude_settings_lesen()
+    hooks = d.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+    gruppen = hooks.get("Notification")
+    if not isinstance(gruppen, list):
+        gruppen = []
+
+    # Eigene Eintraege in jedem Fall erst raus - beim Einschalten kommt der
+    # frische Pfad hinterher, beim Ausschalten bleibt es dabei. Das raeumt
+    # nebenbei einen veralteten Pfad nach einem Update weg.
+    sauber = []
+    for g in gruppen:
+        if not isinstance(g, dict):
+            sauber.append(g)
+            continue
+        rest = [h for h in (g.get("hooks") or [])
+                if not (isinstance(h, dict)
+                        and _HOOK_MARKE in str(h.get("command", "")))]
+        if rest:
+            g = dict(g)
+            g["hooks"] = rest
+            sauber.append(g)
+        elif not g.get("hooks"):
+            sauber.append(g)
+
+    if an:
+        sauber.append({"matcher": "",
+                       "hooks": [{"type": "command",
+                                  "command": _hook_command()}]})
+
+    if sauber:
+        hooks["Notification"] = sauber
+    else:
+        hooks.pop("Notification", None)
+    if hooks:
+        d["hooks"] = hooks
+    else:
+        d.pop("hooks", None)
+
+    try:
+        os.makedirs(os.path.dirname(CLAUDE_SETTINGS_FILE), exist_ok=True)
+        save_json(CLAUDE_SETTINGS_FILE, d)
+    except OSError:
+        return False
+    return True
 
 
 DEFAULT_SETTINGS = {
@@ -616,8 +785,16 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
                     # gerade - dann ist es keine Rueckfrage, egal wie lange es
                     # schon dauert. Ein Build ueber zwei Minuten galt vorher
                     # nach 30 Sekunden als Nachfrage.
-                    wartet = (not _claude_is_busy()
-                              and _line_age(real_last) >= APPROVAL_AFTER_S)
+                    #
+                    # Sagt der Hook etwas dazu, gilt seine Auskunft - er weiss
+                    # es, statt es abzuleiten. Sonst bleibt es beim Raten.
+                    sid = os.path.splitext(os.path.basename(newest_path))[0]
+                    laut_hook = _hook_wartet(sid, newest_mtime)
+                    if laut_hook is None:
+                        wartet = (not _claude_is_busy()
+                                  and _line_age(real_last) >= APPROVAL_AFTER_S)
+                    else:
+                        wartet = laut_hook
                     result["awaiting_approval"] = wartet
                     result["internal_state"] = ("tool_pending_approval" if wartet
                                                 else "tool_running")
@@ -3175,6 +3352,13 @@ class Api:
         self.settings[key] = value
         save_json(SETTINGS_FILE, self.settings)
         return self._state(force=force)
+
+    def hooks_state(self):
+        return {"on": hooks_eingerichtet(), "cmd": _hook_command()}
+
+    def hooks_toggle(self, on):
+        ok = hooks_einrichten(bool(on))
+        return {"ok": ok, "on": hooks_eingerichtet()}
 
     def set_language(self, code):
         """Sprache umstellen. Gibt Sprache + Tabelle zurueck, damit die
@@ -5802,6 +5986,12 @@ function renderSettings(){
         <input type="text" style="max-width:260px" value="${esc(st.claude_cmd||'claude')}"
           onchange="api.update_setting('claude_cmd',this.value)">
       </div>
+      <div class="row2">
+        <div><div class="lbl">Rückfragen zuverlässig erkennen</div>
+          <div class="desc">Claude Code meldet dem Buddy selbst, wenn es auf deine Antwort wartet. Ohne das muss die App raten – und rät falsch, sobald mehrere Terminals offen sind: eines arbeitet, das andere fragt. Trägt einen Hook in <code>~/.claude/settings.json</code> ein; deine übrigen Hooks bleiben unangetastet.</div>
+          <div class="desc" id="hook-hint"></div></div>
+        <div class="toggle" id="hook-toggle" onclick="toggleHooks(this)"></div>
+      </div>
     </div>
 
     <div class="card">
@@ -5868,6 +6058,7 @@ function renderSettings(){
   // Ueberschriften aus dem fertigen Baum.
   translateDom(document.getElementById('settings'));
   buildSettingsJump();
+  refreshHooks();
   refreshLimit();
   refreshClawd();
   loadClawdDevices(false);
@@ -6130,6 +6321,30 @@ async function unhideIdx(i){const f=(STATE.settings.hidden_folders||[])[i]; if(f
 async function hideCurrent(){const s=getSel();
   if(!s||!s.cwd){toast(t('Erst im Tab „Sessions" eine Session auswählen.'));return;}
   ingest(await api.add_hidden_folder(s.cwd)); render(); renderSettings(); }
+// ---- Hook fuer die Rueckfrage-Erkennung ----
+async function refreshHooks(){
+  const el = document.getElementById('hook-toggle');
+  if(!el) return;
+  let r = null;
+  try{ r = await api.hooks_state(); }catch(e){ return; }
+  el.classList.toggle('on', !!(r && r.on));
+  const hint = document.getElementById('hook-hint');
+  if(hint) hint.textContent = (r && r.on)
+    ? t('Eingerichtet. Neu gestartete Claude-Code-Sitzungen melden sich von selbst.')
+    : '';
+}
+async function toggleHooks(el){
+  const an = !el.classList.contains('on');
+  el.classList.toggle('on', an);
+  let r = null;
+  try{ r = await api.hooks_toggle(an); }catch(e){}
+  if(!r || !r.ok){ el.classList.toggle('on', !an); toast(t('Hook konnte nicht gesetzt werden')); return; }
+  el.classList.toggle('on', !!r.on);
+  toast(an ? t('Hook eingerichtet ✓ – gilt ab der nächsten Claude-Code-Sitzung')
+           : t('Hook entfernt'));
+  refreshHooks();
+}
+
 async function setAccent(c){applyAccent(c); ingest(await api.update_setting('accent',c)); renderSettings();}
 async function setBg(base){applyBg(base); ingest(await api.update_setting('bg_base',base)); renderSettings();}
 
@@ -6709,6 +6924,15 @@ def _restore_existing_window():
 
 
 def main():
+    # Hook-Aufruf: nur die Meldung wegschreiben und sofort wieder raus. Kein
+    # Fenster, kein Einzelinstanz-Schloss - sonst wuerde jeder Hook-Aufruf
+    # mit der laufenden App kollidieren.
+    if "--csb-hook" in sys.argv:
+        try:
+            _hook_entry()
+        except Exception:
+            pass
+        return
     if self_install():
         return  # heruntergeladene Instanz beendet sich; installierte Kopie laeuft
     try:

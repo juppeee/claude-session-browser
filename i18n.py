@@ -578,6 +578,30 @@ TRANSLATIONS = {
         "{name} · {n} Frames · Klick zum Vorspielen":
             "{name} · {n} frames · click to play it",
 
+        # ---- Rueckfrage-Erkennung ueber Hooks ----------------------------
+        "Rückfragen zuverlässig erkennen": "Spot permission prompts reliably",
+        # Der Satz ist im Markup von einem <code> unterbrochen, deshalb zwei
+        # Bruchstuecke - die Reihenfolge bleibt im Englischen dieselbe.
+        "Claude Code meldet dem Buddy selbst, wenn es auf deine Antwort "
+        "wartet. Ohne das muss die App raten – und rät falsch, sobald "
+        "mehrere Terminals offen sind: eines arbeitet, das andere fragt. "
+        "Trägt einen Hook in":
+            "Claude Code tells the buddy itself when it's waiting on you. "
+            "Without it the app has to guess – and guesses wrong as soon as "
+            "you have several terminals open: one is working, the other is "
+            "asking. Adds a hook to",
+        "ein; deine übrigen Hooks bleiben unangetastet.":
+            "; your other hooks stay untouched.",
+        "~/.claude/settings.json": "~/.claude/settings.json",
+        "Eingerichtet. Neu gestartete Claude-Code-Sitzungen melden sich von "
+        "selbst.":
+            "Set up. Claude Code sessions started from now on report in by "
+            "themselves.",
+        "Hook eingerichtet ✓ – gilt ab der nächsten Claude-Code-Sitzung":
+            "Hook added ✓ – takes effect in your next Claude Code session",
+        "Hook entfernt": "Hook removed",
+        "Hook konnte nicht gesetzt werden": "Couldn't set the hook",
+
         # ---- Rundgang nach einem Update ----------------------------------
         "Neu in dieser Version ✨": "New in this version ✨",
         "Neu:": "New:",
