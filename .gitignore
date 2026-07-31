@@ -14,3 +14,6 @@ session_browser_settings.json
 session_titles.json
 *_backup.py
 clawd_sprites.py.bak
+
+# Entwurf fuer den MakerWorld-Beitrag - lokal, gehoert nicht ins Repo
+docs/makerworld-listing.md

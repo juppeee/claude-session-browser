@@ -129,11 +129,14 @@ sessions you start afterwards.
 
 ## Clawdmeter
 
+*Optional, and someone else's project — skip this if you don't own the device.*
+
 The [Clawdmeter](https://github.com/HermannBjorgvin/Clawdmeter) is a small ESP32
-device that displays your Claude usage. This app speaks to it over Bluetooth on
-Windows and can mirror Clawd onto it, so the device acts out the same state your
-desktop buddy does. It reports its battery level back, and warns you before it
-runs flat.
+device by [Hermann Björgvin](https://github.com/HermannBjorgvin) that displays
+your Claude usage. This app speaks to it over Bluetooth on Windows and can
+mirror Clawd onto it, so the device acts out the same state your desktop buddy
+does, rather than only reacting to how fast your quota is burning. It reports
+its battery level back, and warns you before it runs flat.
 
 <div align="center">
 
@@ -233,9 +236,11 @@ those gone too.
 
 ## Credits
 
-The Clawdmeter device and its firmware are the work of [Hermann Björgvin](https://github.com/HermannBjorgvin/Clawdmeter) — the hardware abstraction, five board ports, the LVGL interface, the BLE service and the animation engine are all his.
+**The Clawdmeter is not this project's work.** The device and its firmware are the work of [Hermann Björgvin](https://github.com/HermannBjorgvin/Clawdmeter) — the hardware abstraction, five board ports, the LVGL interface, the BLE service and the animation engine are all his.
 
-This project adds two things on top: the Bluetooth connection for Windows (his daemon is a Linux shell script built on bluez), and **activity-driven animations**. Upstream picks an animation from how fast your quota is burning — a rate measured over a six-sample ring buffer and grouped into calm / normal / active / heavy. It cannot know *what* Claude is doing. The Session Browser reads the session transcripts, works out the actual state — thinking, writing code, waiting for permission, out of quota — and tells the device which animation to show. Turn that off and the device falls back to Hermann's usage groups.
+Talking to it is one feature of this app among many. The Session Browser is first and foremost a browser for your Claude Code sessions: it searches them, colour-codes them and puts you back into one with a double-click, and it does all of that without a Clawdmeter anywhere in sight.
+
+What this project adds on top of Hermann's work is two things: the Bluetooth connection for Windows (his daemon is a Linux shell script built on bluez), and **activity-driven animations**. Upstream picks an animation from how fast your quota is burning — a rate measured over a six-sample ring buffer and grouped into calm / normal / active / heavy. It cannot know *what* Claude is doing. The Session Browser reads the session transcripts, works out the actual state — thinking, writing code, waiting for permission, out of quota — and tells the device which animation to show. Turn that off and the device falls back to Hermann's usage groups.
 
 ## License
 
