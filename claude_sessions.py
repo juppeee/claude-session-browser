@@ -4323,7 +4323,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* Zwei Kacheln nach dem Vorbild des Clawdmeter: grosse Zahl, Balken,
      Restzeit. Eine Zeile ueber die volle Breite war fast nur Leerraum. */
   .limitbox{display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));
-    gap:10px; margin:0 0 14px}
+    gap:10px; margin:0}
   .lcard{background:var(--bg); border:1px solid var(--border); border-radius:9px;
     padding:8px 11px 9px}
   .lcard .top{display:flex; align-items:baseline; gap:8px}
@@ -4928,6 +4928,7 @@ const ICONS={
   window:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>',
   power:'<path d="M12 3v9"/><path d="M6.5 6.5a8 8 0 1 0 11 0"/>',
   bell:'<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+  gauge:'<path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4-4.5"/>',
   // Tropfen statt Palette, halbgefuellter Kreis statt Kontrastraster: die
   // detailreicheren Varianten waren bei 16 px nicht mehr zu erkennen.
   palette:'<path d="M12 3.5s6 6.6 6 10.1a6 6 0 0 1-12 0c0-3.5 6-10.1 6-10.1z"/>',
@@ -5481,6 +5482,13 @@ function renderSettings(){
   const swl = ACCENTS.map(c=>`<div class="sw ${st.accent===c?'active':''}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('');
   const bgl = BG_TONES.map(t=>`<div class="sw ${st.bg_base===t.base?'active':''}" style="background:${shade(t.base,0.42)}" title="${t.name}" onclick="setBg('${t.base}')"></div>`).join('');
   document.getElementById('settings').innerHTML=`
+    <div class="secthead" id="sect-auslastung">Auslastung</div>
+    <div class="card">
+      <h2>${ic('gauge')}Dein Limit</h2>
+      <div class="sub">Wie viel vom 5-Stunden-Fenster und von der Woche verbraucht ist. Aktualisiert sich von selbst.</div>
+      <div class="limitbox" id="limitbox"><span class="dot off"></span><span class="ltext">…</span></div>
+    </div>
+
     <div class="secthead" id="sect-sessions">Sessions</div>
     <div class="card">
       <h2>${ic('folder')}Sessions-Ordner</h2>
@@ -5559,7 +5567,6 @@ function renderSettings(){
 
     <div class="card">
       <h2>${ic('bell')}Benachrichtigungen</h2>
-      <div class="limitbox" id="limitbox"><span class="dot off"></span><span class="ltext">…</span></div>
       <div class="row2">
         <div><div class="lbl">Bei Limit-Reset benachrichtigen</div>
           <div class="desc">Windows-Systembenachrichtigung wenn dein Claude-Limit sich zurückgesetzt hat und du wieder loslegen kannst. Braucht den System-Tray aktiv.</div></div>
