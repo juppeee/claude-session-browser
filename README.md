@@ -131,8 +131,20 @@ Windows and can mirror Clawd onto it, so the device acts out the same state your
 desktop buddy does. It reports its battery level back, and warns you before it
 runs flat.
 
+<div align="center">
+
+<img src="docs/clawdmeter-case.png" width="330" alt="Clawdmeter in a printed case, showing usage and the buddy"> <img src="docs/clawdmeter-desk.png" width="330" alt="Clawdmeter on a desk next to a keyboard">
+
+<sub>Renders of the printable case — usage on one screen, Clawd on the other</sub>
+
+</div>
+
 Pair the device once in the Windows Bluetooth settings, then enable it under
 **Settings → Connections**.
+
+**Want a case for it?** The STL files are on
+[MakerWorld](https://makerworld.com/de/@Juppi187) — print one and your
+Clawdmeter gets a body to match the buddy.
 
 See [Credits](#credits) for who built what.
 
