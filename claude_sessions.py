@@ -5223,6 +5223,10 @@ async function setLanguage(code){
   // Auswahlbox daraus auf. Ohne das sprang sie nach jedem Wechsel zurueck
   // auf „Automatisch", obwohl gespeichert war, was du gewaehlt hast.
   if(STATE && STATE.settings) STATE.settings.language = code;
+  // Die Spalte „Zuletzt aktiv" entsteht im Python-Teil und liegt schon
+  // fertig im Abbild - „gestern 13:14" bliebe sonst stehen, waehrend
+  // ringsum alles englisch ist. Einmal neu holen rechnet sie um.
+  try{ ingest(await api.get_state()); }catch(e){}
   applyStaticT();
   renderAll();
 }
