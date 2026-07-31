@@ -1537,6 +1537,28 @@ def _draw_frame_panel(canvas, w, h, pad, color, label):
     return ids
 
 
+def _hintergrund_index(frame):
+    """Welcher Paletten-Index ist die Hintergrundflaeche des Sprites?
+
+    Nicht ueber die Farbe entscheiden: in „idle breathe" ist der Hintergrund
+    #000000 und die Augen sind #080C08 - beides praktisch schwarz. Wer nach
+    Farbe geht, radiert die Augen mit aus. Auch ein fester Index taugt nicht,
+    er ist je Animation ein anderer (1 bei den meisten, 9 bei „work coding").
+
+    Deshalb die Mehrheit am Bildrand: das Motiv sitzt in der Mitte, der Rand
+    gehoert dem Hintergrund. Das Eckpixel allein reicht nicht - in zwei
+    Bildern von „limit" schlaegt der rote Blitz bis in eine Ecke.
+    """
+    zaehler = {}
+    rand = ([frame[c] for c in range(20)]
+            + [frame[19 * 20 + c] for c in range(20)]
+            + [frame[r * 20] for r in range(1, 19)]
+            + [frame[r * 20 + 19] for r in range(1, 19)])
+    for v in rand:
+        zaehler[v] = zaehler.get(v, 0) + 1
+    return max(zaehler.items(), key=lambda kv: kv[1])[0]
+
+
 def _resolved_frame_style(bud):
     """Frame-Style aus Config lesen. Migration: webcam/neon/panel -> classic."""
     st = bud.get("frame_style")
@@ -2389,7 +2411,18 @@ class BuddyController:
                 return
             frame_idx = state["frame"] % len(frames)
             sc = state["scale"]
-            bg_fill = "#14100e"
+            # Ohne Rahmen wird die Hintergrundflaeche durchsichtig - Windows
+            # blendet den Chroma-Key aus, uebrig bleibt das Motiv. Mit Rahmen
+            # bleibt die dunkle Flaeche stehen; ein Rahmen um nichts herum
+            # saehe seltsam aus.
+            #
+            # Beim Platzieren wieder deckend: Windows laesst Klicks durch die
+            # durchsichtigen Stellen hindurch. Ohne diese Ausnahme liesse sich
+            # der Buddy nur noch am Koerper anfassen, und genau dort will man
+            # ihn beim Verschieben am wenigsten treffen muessen.
+            bg_fill = (self._TRANSPARENT
+                       if (state["frame_style"] == "off" and not state["placing"])
+                       else "#14100e")
             key = (name, frame_idx, sc, bg_fill)
 
             if key == last_drawn["key"]:
@@ -2400,13 +2433,16 @@ class BuddyController:
             if rows_data is None:
                 palette = anim["palette"]
                 f = frames[frame_idx]
+                # 0 ist „nicht gesetzt", der zweite Wert ist die eigene
+                # Hintergrundflaeche des Sprites - beides zaehlt als leer.
+                hg_idx = _hintergrund_index(f)
                 rows_data = []
                 for row in range(20):
                     cells = []
                     ridx = row * 20
                     for col in range(20):
                         idx = f[ridx + col]
-                        if idx <= 0:
+                        if idx <= 0 or idx == hg_idx:
                             cells.append(bg_fill)
                         elif idx < len(palette):
                             cells.append(palette[idx])
