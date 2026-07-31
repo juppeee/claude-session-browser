@@ -92,6 +92,23 @@ Claude Code is up to — thinking, writing code, waiting for permission, out of
 quota. Fifteen animations, chosen from what is actually happening in your
 sessions rather than from a timer.
 
+<div align="center">
+
+<img src="docs/clawd-idle.png" height="120" alt="Clawd idle"> <img src="docs/clawd-thinking.png" height="120" alt="Clawd thinking"> <img src="docs/clawd-coding.png" height="120" alt="Clawd writing code"> <img src="docs/clawd-limit.png" height="120" alt="Clawd out of quota">
+
+<sub>Waiting · thinking · writing code · out of quota</sub>
+
+</div>
+
+He comes with a frame or without. Turn the frame off and the backdrop goes with
+it — what's left is just Clawd, floating on your desktop:
+
+<div align="center">
+
+<img src="docs/clawd-sleeping.png" height="100" alt="Clawd asleep, no frame"> <img src="docs/clawd-desk.png" height="100" alt="Clawd at his desk, no frame">
+
+</div>
+
 Switch him on in the **Buddy** tab. He can be there all the time or only while
 Claude Code is running. Drag him wherever you like; right-click sends him away
 for a while, and he returns with your next Claude Code terminal.
