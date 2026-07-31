@@ -1,7 +1,9 @@
 {
-  "version": "1.3.8",
-  "notes": "Clawd zeigt endlich das Richtige: das Limit wird erkannt, und ein laufendes Werkzeug gilt nicht mehr als Rückfrage. Das Clawdmeter spiegelt Clawd vom Desktop und meldet seinen Akkustand. Neu: Limit-Anzeige mit Countdown und Wochenwert, Sprungleiste in den Einstellungen, aufgeräumtes Detail-Panel, Knopf zum sofortigen Verbinden.",
+  "version": "1.3.9",
+  "notes": "The interface now speaks English as well as German and follows your Windows language. Turn Clawd's frame off and his dark backdrop goes with it. Permission prompts are spotted properly via a Claude Code hook instead of being guessed from the window title. Usage has its own section at the top of the settings, and long waits read \"4 d 5 h\" instead of \"101 h\".",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
-  "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"
+  "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
+  "installer_sha256": "30d918e6065c7807b85a5bc1972769495bdb33d7051811e500bdfe5ad096507a",
+  "sha256": "b73bae3fd230dbc3b12884ef5a3751b44b9690ec1584a58d02334db0a144da46"
 }
