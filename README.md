@@ -12,6 +12,10 @@
 
 **Every Claude Code session you ever started, in one window — search them, and double-click one to jump straight back in.**
 
+<a href="https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"><img src="https://img.shields.io/badge/Download-Installer%20for%20Windows-ec7456?style=for-the-badge&logo=windows&logoColor=white" alt="Download the installer for Windows"></a>
+
+<sub>Runs it per user — no admin rights, no UAC prompt, and it never touches `~/.claude`</sub>
+
 [Quick start](#quick-start) · [What you get](#what-you-get) · [Clawd](#clawd-your-desktop-buddy) · [Clawdmeter](#clawdmeter) · [Settings](#settings) · [Uninstall](#updating-and-uninstalling) · [Credits](#credits)
 
 </div>
@@ -46,7 +50,7 @@ and puts you back into one with a double-click.
 
 ## Quick start
 
-Download the installer from the [latest release](https://github.com/juppeee/claude-session-browser/releases/latest) and run it.
+**[⬇ Download ClaudeSessionBrowser-Setup.exe](https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe)** and run it. That's the whole installation.
 
 It installs per user, so **no admin rights and no UAC prompt**, and it never
 touches `~/.claude` — your sessions and settings are none of the installer's
