@@ -149,6 +149,15 @@ its battery level back, and warns you before it runs flat.
 Pair the device once in the Windows Bluetooth settings, then enable it under
 **Settings → Connections**.
 
+**Stock firmware is enough for most of it.** Usage and battery need nothing
+special — flash Hermann's firmware as usual and the device shows your quota
+while picking its own animations, exactly as it does without this app.
+
+Mirroring Clawd onto it needs two things his firmware doesn't carry yet: a
+field in the BLE payload so a host can name an animation, and sprites for the
+states it doesn't know — waiting for permission, out of quota. Until those land
+upstream they need a patched build of his firmware.
+
 **Want a case for it?** The STL files are on
 [MakerWorld](https://makerworld.com/de/@Juppi187) — print one and your
 Clawdmeter gets a body to match the buddy.
@@ -246,4 +255,11 @@ What this project adds on top of Hermann's work is two things: the Bluetooth con
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+The **code** in this repository is MIT — see [LICENSE](LICENSE).
+
+That covers the code and nothing else. Clawd is Anthropic's mascot, and the
+sprites in `clawd_sprites.py` are him; they started at
+[claudepix](https://claudepix.vercel.app) and were reworked from there. The
+artwork isn't mine to license, so the MIT grant doesn't reach it. Hermann says
+the same thing about his repository, and he's right to — worth knowing before
+you reuse any of it.
