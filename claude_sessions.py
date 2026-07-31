@@ -4918,21 +4918,82 @@ function t(text, vars){
   if(vars) out = out.replace(/\{(\w+)\}/g, (m,k)=> (k in vars ? vars[k] : m));
   return out;
 }
-// Festes Markup: uebersetzt wird ueber Markierungen, damit das HTML seinen
-// deutschen Text behaelt und beim Sprachwechsel nur ein Durchgang noetig ist.
-function applyStaticT(root){
-  const r = root || document;
-  r.querySelectorAll('[data-t]').forEach(el=>{
-    const key = el.getAttribute('data-t');
-    if(key) el.textContent = t(key);
+/* Festes Markup
+
+   Statt jede der rund sechzig Stellen von Hand zu markieren, wird das
+   Grundgeruest einmal beim Start durchlaufen und der deutsche Wortlaut
+   gemerkt. Das geht nur, solange die Tabellen und Panels noch leer sind -
+   deshalb laeuft collectStaticT() vor dem ersten Zeichnen. Alles, was
+   danach entsteht, uebersetzt sich ueber t() beim Aufbauen selbst.
+
+   Gemerkt wird der deutsche Ausgangstext, nicht der angezeigte: sonst
+   liesse sich nach dem Umschalten auf Englisch nichts mehr nachschlagen. */
+/* Frisch aufgebaute Bereiche uebersetzen.
+
+   Einstellungen und Buddy-Seite entstehen als grosse Vorlagen. Statt dort
+   jede Ueberschrift und jeden Beschreibungssatz einzeln zu umklammern, laeuft
+   nach dem Aufbauen ein Durchgang darueber: was genau einem Eintrag der
+   Tabelle entspricht, wird ersetzt. Der deutsche Wortlaut bleibt dadurch im
+   Code stehen und ist beim Lesen sofort sichtbar.
+
+   Uebersprungen wird alles unter data-raw - dort stehen Sessiontitel, Pfade
+   und Fenstertitel. Hiesse eine Session zufaellig „Suche", wuerde sie sonst
+   im Englischen als „Search" auftauchen. */
+function translateDom(root){
+  if(!root || !I18N.table) return;
+  const lauf = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n){
+      for(let p = n.parentElement; p && p !== root; p = p.parentElement){
+        if(p.hasAttribute('data-raw')) return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
   });
-  r.querySelectorAll('[data-t-ph]').forEach(el=>{
-    const key = el.getAttribute('data-t-ph');
-    if(key) el.setAttribute('placeholder', t(key));
+  const treffer = [];
+  for(let n = lauf.nextNode(); n; n = lauf.nextNode()){
+    const kern = n.nodeValue && n.nodeValue.trim();
+    if(kern && I18N.table[kern]) treffer.push([n, kern]);
+  }
+  treffer.forEach(([n, kern])=>{
+    n.nodeValue = n.nodeValue.replace(kern, I18N.table[kern]);
   });
-  r.querySelectorAll('[data-t-title]').forEach(el=>{
-    const key = el.getAttribute('data-t-title');
-    if(key) el.setAttribute('title', t(key));
+  root.querySelectorAll('[title],[placeholder]').forEach(el=>{
+    ['title','placeholder'].forEach(a=>{
+      const v = el.getAttribute(a);
+      if(v && I18N.table[v]) el.setAttribute(a, I18N.table[v]);
+    });
+  });
+}
+
+let STATIC_T = [];
+function collectStaticT(){
+  STATIC_T = [];
+  const lauf = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for(let n = lauf.nextNode(); n; n = lauf.nextNode()){
+    const roh = n.nodeValue;
+    if(!roh || !roh.trim()) continue;
+    const eltern = n.parentNode;
+    if(eltern && (eltern.tagName === 'SCRIPT' || eltern.tagName === 'STYLE')) continue;
+    STATIC_T.push({node:n, de:roh});
+  }
+  document.querySelectorAll('[placeholder]').forEach(el=>{
+    STATIC_T.push({el:el, attr:'placeholder', de:el.getAttribute('placeholder')});
+  });
+  document.querySelectorAll('[title]').forEach(el=>{
+    STATIC_T.push({el:el, attr:'title', de:el.getAttribute('title')});
+  });
+}
+function applyStaticT(){
+  STATIC_T.forEach(e=>{
+    // Fuehrende und folgende Leerzeichen erhalten - sonst kleben Texte, die
+    // im Markup neben einem Symbol stehen, ploetzlich daran fest.
+    if(e.node){
+      const kern = e.de.trim();
+      const uebersetzt = t(kern);
+      if(uebersetzt !== kern) e.node.nodeValue = e.de.replace(kern, uebersetzt);
+    }else if(e.el && e.de){
+      e.el.setAttribute(e.attr, t(e.de));
+    }
   });
   document.documentElement.setAttribute('lang', I18N.lang || 'de');
 }
@@ -5054,7 +5115,10 @@ async function boot(){
     applyAccent(STATE.settings.accent || "#ec7456");
     applyBg(STATE.settings.bg_base || "#4a3a30");
     ingest(STATE);
-    applyStaticT();          // festes Markup uebersetzen, bevor es sichtbar wird
+    // Erst einsammeln, dann uebersetzen - beides vor dem ersten Zeichnen,
+    // solange Tabelle und Panels noch leer sind.
+    collectStaticT();
+    applyStaticT();
     buildSwatches();
     renderHead();
     render();
@@ -5071,8 +5135,8 @@ async function boot(){
   }catch(e){
     BOOTED=false; bootTries=(bootTries||0)+1;
     const c=document.getElementById('count');
-    if(bootTries<5){ if(c)c.textContent='Lädt erneut…'; setTimeout(()=>{ if(!BOOTED) boot(); }, 700); }
-    else if(c){ c.textContent='Fehler beim Laden: '+e; }
+    if(bootTries<5){ if(c)c.textContent=t('Lädt erneut…'); setTimeout(()=>{ if(!BOOTED) boot(); }, 700); }
+    else if(c){ c.textContent=t('Fehler beim Laden: {grund}', {grund: e}); }
   }
 }
 let bootTries=0;
@@ -5109,7 +5173,7 @@ function renderHead(){
   applyCols();
   document.getElementById('thead').innerHTML = visCols().map(c=>{
     const arr = c.key===sortCol ? `<span class="arr">${sortRev?'▼':'▲'}</span>`:'';
-    return `<div class="th ${c.num?'num':''}" onclick="sortBy('${c.key}')">${c.label}${arr}</div>`;
+    return `<div class="th ${c.num?'num':''}" onclick="sortBy('${c.key}')">${t(c.label)}${arr}</div>`;
   }).join('');
 }
 
@@ -5117,15 +5181,15 @@ function render(){
   const rows=visible();
   const tb=document.getElementById('tbody');
   if(!STATE.found){
-    tb.innerHTML=`<div class="empty"><div><div class="big">Kein Sessions-Ordner gefunden</div>
-      Lege ihn unter „Einstellungen“ fest.</div></div>`;
+    tb.innerHTML=`<div class="empty"><div><div class="big">${t('Kein Sessions-Ordner gefunden')}</div>
+      ${t('Lege ihn unter „Einstellungen“ fest.')}</div></div>`;
     document.getElementById('count').textContent='';
     return;
   }
   // Auswahl loeschen, wenn die Zeile (durch Suche/Filter) nicht mehr sichtbar ist
   if(selected && !rows.some(s=>s.id===selected)) selected=null;
   if(rows.length===0){
-    tb.innerHTML=`<div class="empty"><div><div class="big">Keine Sessions</div>Nichts gefunden.</div></div>`;
+    tb.innerHTML=`<div class="empty"><div><div class="big">${t('Keine Sessions')}</div>${t('Nichts gefunden.')}</div></div>`;
   } else {
     tb.innerHTML=rows.map(s=>{
       const col=s.color;
@@ -5134,12 +5198,15 @@ function render(){
         style=`style="background:${col};color:${tc}"`; cls+=' colored';}
       if(selected===s.id) cls+=' sel';
       const cells=visCols().map(c=>cellHtml(s,c.key)).join('');
-      return `<div class="${cls}" ${style} data-id="${s.id}"
+      // data-raw: in den Zeilen stehen Sessiontitel und Pfade. Ein Titel, der
+      // zufaellig wie ein Oberflaechentext lautet, darf nicht mituebersetzt
+      // werden.
+      return `<div class="${cls}" ${style} data-id="${s.id}" data-raw
         onclick="selectRow('${s.id}')" ondblclick="doResumeRow('${s.id}')">${cells}</div>`;
     }).join('');
   }
   const total=sessions.length, q=document.getElementById('search').value.trim();
-  let txt = q ? `${rows.length} Treffer` : `${rows.length} Sessions`;
+  let txt = q ? t('{n} Treffer', {n: rows.length}) : t('{n} Sessions', {n: rows.length});
   document.getElementById('count').textContent=txt;
   updateDetail();   // Panel/Buttons immer synchron zur Auswahl halten
 }
@@ -5155,28 +5222,29 @@ function updateDetail(){
   ['btn-resume','btn-rename','btn-color','btn-copy'].forEach(b=>document.getElementById(b).disabled=!en);
   const d=document.getElementById('detail');
   if(!s){
-    d.innerHTML='<div class="dt-empty">Wähle eine Session aus, um Details zu sehen.</div>';
+    d.innerHTML=`<div class="dt-empty">${t('Wähle eine Session aus, um Details zu sehen.')}</div>`;
     return;
   }
   const start = (s.first_user||'').replace(/\s+/g,' ').trim().slice(0,600);
-  const pfad  = s.cwd || '(unbekannt)';
+  const pfad  = s.cwd || t('(unbekannt)');
   // Nur Anfang und Ende der ID: die vollen 36 Zeichen brachen ueber zwei
   // Zeilen um und standen ganz oben, obwohl man sie fast nie braucht.
   const kurz = s.id.length > 16
     ? s.id.slice(0,8) + '…' + s.id.slice(-4)
     : s.id;
   d.innerHTML =
-     `<div class="dt-head">${esc(s.display_title || '(ohne Titel)')}</div>`
+     `<div class="dt-head" data-raw>${esc(s.display_title || t('(ohne Titel)'))}</div>`
    + `<div class="dt-rows">`
-   +   `<div class="k">Ordner</div>`
-   +   `<div class="v path" title="${esc(pfad)}">${esc(pfad)}</div>`
-   +   `<div class="k">Verlauf</div>`
-   +   `<div class="v">${s.user_msgs} von dir · ${s.assistant_msgs} von Claude</div>`
+   +   `<div class="k">${t('Ordner')}</div>`
+   +   `<div class="v path" data-raw title="${esc(pfad)}">${esc(pfad)}</div>`
+   +   `<div class="k">${t('Verlauf')}</div>`
+   +   `<div class="v">${t('{du} von dir · {claude} von Claude',
+                          {du: s.user_msgs, claude: s.assistant_msgs})}</div>`
    +   `<div class="k">ID</div>`
-   +   `<div class="v id" title="${esc(s.id)}">${esc(kurz)}</div>`
+   +   `<div class="v id" data-raw title="${esc(s.id)}">${esc(kurz)}</div>`
    + `</div>`
-   + (start ? `<div class="dt-quote"><span class="k">Erste Frage</span>`
-            + `<div class="t">${esc(start)}</div></div>` : '');
+   + (start ? `<div class="dt-quote"><span class="k">${t('Erste Frage')}</span>`
+            + `<div class="t" data-raw>${esc(start)}</div></div>` : '');
 }
 
 function sortBy(c){
@@ -5230,8 +5298,8 @@ function renderShortcutBar(v){
   const bar = document.getElementById('shortcutbar');
   if(!bar) return;
   const list = SHORTCUTS[v] || [];
-  bar.innerHTML = list.map(([k, t])=>
-    `<span><kbd>${esc(k)}</kbd>${esc(t)}</span>`).join('');
+  bar.innerHTML = list.map(([k, was])=>
+    `<span><kbd>${esc(k)}</kbd>${esc(t(was))}</span>`).join('');
 }
 async function refreshBuddyStatus(){
   try{
@@ -5252,7 +5320,7 @@ async function refreshBuddyStatus(){
 async function doRefresh(btn){if(btn)btn.disabled=true; ingest(await api.refresh()); render(); updateDetail(); if(btn)btn.disabled=false;}
 async function doResume(){const s=getSel(); if(!s)return; await api.resume(s.id,s.cwd,s.project||'');}
 async function doResumeRow(id){const s=sessions.find(x=>x.id===id); if(!s)return; selected=id; render(); await api.resume(s.id,s.cwd,s.project||'');}
-async function doCopy(){const s=getSel(); if(!s)return; await api.copy(s.id); toast('Session-ID kopiert ✓');}
+async function doCopy(){const s=getSel(); if(!s)return; await api.copy(s.id); toast(t('Session-ID kopiert ✓'));}
 
 /* ---- Farbe ---- */
 function buildSwatches(){
@@ -5305,7 +5373,7 @@ async function resetTitle(){
   const s=getSel(); if(!s) return;
   ingest(await api.rename(s.id,''));   // leerer Titel = Override loeschen -> Auto-Titel
   render(); updateDetail(); closeOverlay('overlay-rename');
-  toast('Standard-Titel wiederhergestellt');
+  toast(t('Standard-Titel wiederhergestellt'));
 }
 function closeOverlay(id){document.getElementById(id).classList.remove('show');}
 
@@ -5343,7 +5411,7 @@ async function renderBuddy(){
   const previewList = anims.map(a=>{
     const cached = BUDDY_PREVIEWS[a.name] || '';
     const srcAttr = cached ? `src="${cached}"` : '';
-    return `<div class="ba-cell" title="${esc(a.name)} · ${a.frames} Frames · Klick zum Vorspielen" onclick="buddyPickAnim('${esc(a.name)}', this)">
+    return `<div class="ba-cell" title="${esc(t('{name} · {n} Frames · Klick zum Vorspielen', {name: a.name, n: a.frames}))}" onclick="buddyPickAnim('${esc(a.name)}', this)">
       <img data-anim="${esc(a.name)}" ${srcAttr} alt="${esc(a.name)}">
       <div class="ba-name">${esc(a.name)}</div>
     </div>`;
@@ -5455,6 +5523,7 @@ async function renderBuddy(){
     </div>
     </div>
   `;
+  translateDom(document.getElementById('buddy-panel'));
 
   // BMP-Previews fuer alle Anims nachladen (nur wenn nicht im Cache)
   document.querySelectorAll('#buddy-panel img[data-anim]').forEach(async img=>{
@@ -5479,6 +5548,7 @@ function renderMonitorTabs(mons){
   }).join('');
   const auto = (BUDDY_MON_IDX===null)?'active':'';
   box.innerHTML = `<button class="ba-monitor-tab ${auto}" onclick="buddyPickMonitor(null)" title="Ecke/Kante auf dem Monitor unter dem Buddy">aktuell</button>` + tabs;
+  translateDom(box);
 }
 
 async function buddyToggle(){
@@ -5486,7 +5556,7 @@ async function buddyToggle(){
   const next = !b.enabled;
   await api.buddy_set('enabled', next);
   await renderBuddy();
-  toast(next ? 'Buddy an ✓' : 'Buddy aus');
+  toast(next ? t('Buddy an ✓') : t('Buddy aus'));
 }
 async function buddySet(key, value){
   await api.buddy_set(key, value);
@@ -5503,7 +5573,7 @@ function buddyLive(key, value){
 }
 async function buddySurprise(){
   await api.buddy_surprise();
-  toast('Buddy: Überraschung!');
+  toast(t('Buddy: Überraschung!'));
 }
 async function buddyPlace(){
   await api.buddy_place();
@@ -5516,7 +5586,7 @@ async function buddyPickAnim(name, cell){
   const hp = document.getElementById('buddy-heading-preview');
   if(hp){ hp.src = await api.buddy_icon(name); }
   await api.buddy_preview_anim(name);
-  toast('Buddy zeigt: ' + name);
+  toast(t('Buddy zeigt: {name}', {name: name}));
 }
 let BUDDY_MON_IDX = null;   // Auswahl im Monitor-Picker (null = aktueller unter Buddy)
 async function buddyAnchor(pos){
@@ -5535,7 +5605,7 @@ function buddyPickMonitor(idx){
 }
 async function buddyPickWindow(){
   const list = await api.buddy_windows();
-  if(!list || !list.length){ toast('Keine Fenster gefunden.'); return; }
+  if(!list || !list.length){ toast(t('Keine Fenster gefunden.')); return; }
   // Simples Overlay-Menue
   // data-win, nicht data-t: data-t ist fuer Uebersetzungen reserviert, sonst
   // wuerde der Uebersetzungsdurchgang die Fenstertitel ueberschreiben.
@@ -5758,6 +5828,9 @@ function renderSettings(){
       </div>
     </div>
   `;
+  // Uebersetzen bevor die Sprungleiste gebaut wird - sie liest die
+  // Ueberschriften aus dem fertigen Baum.
+  translateDom(document.getElementById('settings'));
   buildSettingsJump();
   refreshLimit();
   refreshClawd();
@@ -5785,8 +5858,9 @@ function limitCard(pct, resetAt, tag, voll){
   const rest = resetAt ? (resetAt*1000 - Date.now())/1000 : 0;
   const stufe = voll || pct >= 90 ? 'hot' : (pct >= 60 ? 'mid' : '');
   const sub = voll
-    ? (resetAt ? `voll – zurückgesetzt in ${fmtDauer(rest)}` : 'voll')
-    : (resetAt ? `zurückgesetzt in ${fmtDauer(rest)}` : 'Reset-Zeit noch unbekannt');
+    ? (resetAt ? t('voll – zurückgesetzt in {dauer}', {dauer: fmtDauer(rest)}) : t('voll'))
+    : (resetAt ? t('zurückgesetzt in {dauer}', {dauer: fmtDauer(rest)})
+               : t('Reset-Zeit noch unbekannt'));
   return `<div class="lcard ${stufe}${voll?' full':''}">`
     + `<div class="top"><span class="num">${pct}%</span>`
     +   `<span class="tag">${esc(tag)}</span></div>`
@@ -5798,12 +5872,13 @@ function paintLimit(){
   if(!box) return;
   const d = LIMIT;
   if(!d || !d.known){
-    box.innerHTML = '<div class="lempty">Noch keine Auslastungsdaten – '
-      + 'kommt mit der nächsten Abfrage.</div>';
+    box.innerHTML = '<div class="lempty">'
+      + t('Noch keine Auslastungsdaten – kommt mit der nächsten Abfrage.')
+      + '</div>';
     return;
   }
   if(d.reset_at && d.reset_at*1000 <= Date.now()){ refreshLimit(); return; }
-  let html = limitCard(d.hit ? 100 : d.pct, d.reset_at, '5 Stunden', d.hit);
+  let html = limitCard(d.hit ? 100 : d.pct, d.reset_at, t('5 Stunden'), d.hit);
   // Wochenwert nur wenn er wirklich vorliegt - ohne Clawdmeter-Abfrage
   // steht er auf 0 und eine leere Kachel waere irrefuehrend.
   if(d.wpct > 0 || d.wreset_at) html += limitCard(d.wpct, d.wreset_at, 'Woche', false);
@@ -5892,14 +5967,14 @@ async function pickClawd(addr){
   const r = await api.clawdmeter_pick(addr);
   ingest(await api.get_state());
   setClawdStatus(document.getElementById('clawd-status'), r);
-  toast(addr ? 'Gerät gewählt ✓' : 'Gerät wird automatisch gesucht');
+  toast(addr ? t('Gerät gewählt ✓') : t('Gerät wird automatisch gesucht'));
 }
 // Verbindungszustand als {dot, text}. Der Punkt spart das Lesen - man sieht
 // auf einen Blick ob die Verbindung steht, wie beim "Aktuell ✓" der Updates.
 function clawdInfo(r){
   if(!r) return {dot:'off', text:''};
-  if(!r.available) return {dot:'err', text:'Bluetooth-Modul nicht verfügbar (bleak fehlt).'};
-  if(!r.enabled)   return {dot:'off', text:'Aus.'};
+  if(!r.available) return {dot:'err', text:t('Bluetooth-Modul nicht verfügbar (bleak fehlt).')};
+  if(!r.enabled)   return {dot:'off', text:t('Aus.')};
   const s = r.status || {};
   if(s.connected){
     const ago = s.last_send ? Math.round(Date.now()/1000 - s.last_send) : null;
@@ -5909,15 +5984,15 @@ function clawdInfo(r){
     // dann steht dort einfach nichts statt "unbekannt".
     const akku = (typeof s.battery === 'number') ? s.battery : null;
     return {dot:'ok', akku,
-            text: ago===null ? 'Verbunden.'
-                             : `Verbunden — zuletzt gesendet vor ${ago}s.`};
+            text: ago===null ? t('Verbunden.')
+                             : t('Verbunden — zuletzt gesendet vor {sek}s.', {sek: ago})};
   }
   // Beim Verbinden den Versuch mitzaehlen. Ein stummes "Verbinde…" ueber
   // eine Minute sieht aus wie ein Haenger, obwohl im Hintergrund immer
   // wieder angeklopft wird.
-  const nr = s.attempt > 1 ? ` (${s.attempt}. Versuch)` : '';
-  return s.last_error ? {dot:'err',  text:`Nicht verbunden: ${s.last_error}`}
-                      : {dot:'wait', text:'Verbinde…' + nr};
+  const nr = s.attempt > 1 ? t(' ({nr}. Versuch)', {nr: s.attempt}) : '';
+  return s.last_error ? {dot:'err',  text:t('Nicht verbunden: {grund}', {grund: s.last_error})}
+                      : {dot:'wait', text:t('Verbinde…') + nr};
 }
 function battHtml(pct){
   if(typeof pct !== 'number') return '';
@@ -5942,7 +6017,7 @@ async function toggleClawd(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   const r = await api.clawdmeter_set(on);
   setClawdStatus(document.getElementById('clawd-status'), r);
-  toast(on?'Clawdmeter an ✓':'Clawdmeter aus');
+  toast(on?t('Clawdmeter an ✓'):t('Clawdmeter aus'));
 }
 async function clawdReconnect(btn){
   const alt = btn.textContent;
@@ -5960,7 +6035,7 @@ async function clawdReconnect(btn){
 async function toggleClawdBuddy(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   ingest(await api.update_setting('clawdmeter_buddy', on));
-  toast(on?'Gerät spiegelt den Clawd-Buddy ✓':'Gerät wählt wieder selbst');
+  toast(on?t('Gerät spiegelt den Clawd-Buddy ✓'):t('Gerät wählt wieder selbst'));
 }
 setInterval(()=>{ if(document.getElementById('clawd-status')) refreshClawd(); }, 5000);
 
@@ -5973,19 +6048,19 @@ async function toggleTray(el){
 async function toggleLimitNotif(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   ingest(await api.update_setting('notify_limit_reset', on));
-  toast(on?'Limit-Benachrichtigung an ✓':'Limit-Benachrichtigung aus');
+  toast(on?t('Limit-Benachrichtigung an ✓'):t('Limit-Benachrichtigung aus'));
 }
 async function toggleLimitNear(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   ingest(await api.update_setting('notify_limit_near', on));
   renderSettings();   // der Hinweis darunter haengt am Schalter
-  toast(on?'Vorwarnung an ✓':'Vorwarnung aus');
+  toast(on?t('Vorwarnung an ✓'):t('Vorwarnung aus'));
 }
 async function setWarnPct(el){
   let v=parseInt(el.value,10); if(isNaN(v)) v=90;
   v=Math.max(10,Math.min(100,v)); el.value=v;
   ingest(await api.update_setting('limit_warn_pct', v));
-  toast('Warnschwelle: '+v+'%');
+  toast(t('Warnschwelle: {v}%', {v: v}));
 }
 async function toggleClawdBattery(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
@@ -5998,14 +6073,14 @@ async function setClawdBatteryPct(el){
   // Sperre loesen: nach einer neuen Schwelle soll wieder gewarnt werden
   // duerfen, sonst bliebe eine frueher ausgeloeste Meldung fuer immer stumm.
   await api.update_setting('clawd_battery_warned', false);
-  toast('Akku-Warnung ab '+v+'%');
+  toast(t('Akku-Warnung ab {v}%', {v: v}));
 }
 async function toggleAutostart(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   const r = await api.set_autostart(on);
   ingest(await api.get_state());
-  if(!r || !r.ok) toast('Autostart konnte nicht gesetzt werden');
-  else toast(on?'Autostart an ✓':'Autostart aus');
+  if(!r || !r.ok) toast(t('Autostart konnte nicht gesetzt werden'));
+  else toast(on?t('Autostart an ✓'):t('Autostart aus'));
 }
 async function reallyQuit(){
   await api.buddy_real_quit();
@@ -6017,7 +6092,7 @@ async function toggleHome(el){const on=!el.classList.contains('on');
 async function unhideIdx(i){const f=(STATE.settings.hidden_folders||[])[i]; if(f===undefined)return;
   ingest(await api.remove_hidden_folder(f)); render(); renderSettings();}
 async function hideCurrent(){const s=getSel();
-  if(!s||!s.cwd){toast('Erst im Tab „Sessions" eine Session auswählen.');return;}
+  if(!s||!s.cwd){toast(t('Erst im Tab „Sessions" eine Session auswählen.'));return;}
   ingest(await api.add_hidden_folder(s.cwd)); render(); renderSettings(); }
 async function setAccent(c){applyAccent(c); ingest(await api.update_setting('accent',c)); renderSettings();}
 async function setBg(base){applyBg(base); ingest(await api.update_setting('bg_base',base)); renderSettings();}
@@ -6034,7 +6109,7 @@ let UPD=null;
 function showUpdateBar(u){
   UPD=u;
   const bar=document.getElementById('updatebar');
-  bar.querySelector('.utext').textContent='Update verfügbar: v'+u.latest;
+  bar.querySelector('.utext').textContent=t('Update verfügbar: v{v}', {v: u.latest});
   bar.querySelector('.unotes').textContent=u.notes? ('— '+u.notes) : '';
   bar.classList.add('show');
 }
@@ -6042,7 +6117,7 @@ async function checkUpdate(){
   try{
     // Falls das letzte Update-Batch nicht durchkam, informieren.
     if(await api.consume_update_failed_marker()){
-      toast('Update konnte nicht übernommen werden – bitte manuell installieren');
+      toast(t('Update konnte nicht übernommen werden – bitte manuell installieren'));
     }
     const u=await api.check_update();
     if(u&&u.available) showUpdateBar(u);
@@ -6098,18 +6173,19 @@ async function doInstall(){
   if(r && !r.ok){   // Fehler -> zurueck zur Info-Ansicht
     const pop=document.getElementById('upd-pop');
     pop.classList.remove('installing','ready');
-    toast('Update fehlgeschlagen: '+((r&&r.error)||'unbekannt'));
+    toast(t('Update fehlgeschlagen: {grund}', {grund: (r&&r.error)||t('unbekannt')}));
   }
   // bei Erfolg schliesst Python das Fenster nach der Animation
 }
 function dismissUpdate(){ document.getElementById('updatebar').classList.remove('show'); }
 async function manualCheck(btn){
   btn.disabled=true; const s=document.getElementById('upd-status');
-  s.className='badge'; s.textContent='Prüfe…';
+  s.className='badge'; s.textContent=t('Prüfe…');
   let u=null; try{ u=await api.check_update(); }catch(_){}
-  if(u && u.available){ showUpdateBar(u); s.className='badge no'; s.textContent='v'+u.latest+' verfügbar';
+  if(u && u.available){ showUpdateBar(u); s.className='badge no';
+    s.textContent=t('v{v} verfügbar', {v: u.latest});
     openUpdateDialog(); }
-  else { s.className='badge ok'; s.textContent='Aktuell ✓'; }
+  else { s.className='badge ok'; s.textContent=t('Aktuell ✓'); }
   btn.disabled=false;
 }
 
@@ -6120,11 +6196,11 @@ let obStep=0;
 function obShow(){
   const returning = !!STATE.settings.onboarded;
   if(returning){
-    document.getElementById('ob-title').textContent = 'Neu in dieser Version ✨';
+    document.getElementById('ob-title').textContent = t('Neu in dieser Version ✨');
     document.getElementById('ob-intro').innerHTML =
-      'Kurzer Rundgang – deine Einstellungen bleiben unberührt.<br><br>' +
-      '<b>Neu:</b> Ein animierter Clawd-Buddy für deinen Desktop, der zeigt was Claude gerade macht. ' +
-      'Neuer Tab „Buddy" mit allen Einstellungen – Position, Größe, Rahmen, Sichtbarkeit nur wenn Claude Code läuft.';
+      t('Kurzer Rundgang – deine Einstellungen bleiben unberührt.') + '<br><br>' +
+      '<b>' + t('Neu:') + '</b> ' +
+      t('Ein animierter Clawd-Buddy für deinen Desktop, der zeigt was Claude gerade macht. Neuer Tab „Buddy" mit allen Einstellungen – Position, Größe, Rahmen, Sichtbarkeit nur wenn Claude Code läuft.');
   }
   const cur=STATE.settings.accent;
   document.getElementById('ob-swatches').innerHTML=OB_ACCENTS.map(c=>

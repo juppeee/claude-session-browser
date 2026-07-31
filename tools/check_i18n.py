@@ -20,6 +20,7 @@ import ast
 import os
 import re
 import sys
+from html.parser import HTMLParser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -55,7 +56,34 @@ def python_keys(baum):
 # nicht dabei: ein Schluessel mit eingesetztem Wert waere in der Tabelle nicht
 # wiederzufinden. Dafuer gibt es die Platzhalter-Form t('… {x} …', {x: …}).
 JS_AUFRUF = re.compile(r"\bt\(\s*(['\"])((?:\\.|(?!\1).)*?)\1")
-JS_MARKE = re.compile(r"data-t(?:-ph|-title)?=\"([^\"]*)\"")
+
+
+class MarkupTexte(HTMLParser):
+    """Sammelt aus dem festen Markup dasselbe ein wie collectStaticT() zur
+    Laufzeit: sichtbare Texte sowie placeholder- und title-Attribute."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.texte = set()
+        self._stumm = 0   # in <script>/<style> stehen keine Nutzertexte
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self._stumm += 1
+        for name, wert in attrs:
+            if name in ("placeholder", "title") and wert and wert.strip():
+                self.texte.add(wert)
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self._stumm:
+            self._stumm -= 1
+
+    def handle_data(self, data):
+        if self._stumm:
+            return
+        kern = data.strip()
+        if kern:
+            self.texte.add(kern)
 
 
 def js_keys(quelltext):
@@ -66,10 +94,69 @@ def js_keys(quelltext):
     out = set()
     for _, text in JS_AUFRUF.findall(block):
         out.add(text.replace("\\'", "'").replace('\\"', '"'))
-    for text in JS_MARKE.findall(block):
-        if text:
-            out.add(text)
+
+    # Festes Markup: von </style> bis <script>. Was danach kommt, baut sich
+    # zur Laufzeit auf und geht ohnehin durch t().
+    von = block.find("</style>")
+    bis = block.find("<script>")
+    if von < 0 or bis < 0 or bis < von:
+        return out, "Markup-Bereich nicht gefunden"
+    p = MarkupTexte()
+    p.feed(block[von:bis])
+    out |= p.texte
+
+    # Rohtext in den JavaScript-Vorlagen. Der steht nicht in t(), sondern
+    # wird zur Laufzeit von translateDom() im fertigen Baum nachgeschlagen -
+    # ohne ihn hier hielte die Pruefung jeden zweiten Eintrag fuer eine
+    # Karteileiche.
+    out |= js_rohtexte(block)
     return out, None
+
+
+def template_literale(block):
+    """Alle `…`-Zeichenketten. Ein einfacher Durchlauf statt eines Suchmusters:
+    Backticks laufen ueber viele Zeilen und enthalten ${…}."""
+    out = []
+    i, n = 0, len(block)
+    while i < n:
+        if block[i] == "`":
+            j = i + 1
+            while j < n:
+                if block[j] == "\\":
+                    j += 2
+                    continue
+                if block[j] == "`":
+                    break
+                j += 1
+            out.append(block[i + 1:j])
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
+HAT_BUCHSTABE = re.compile(r"[A-Za-zÄÖÜäöüß]")
+ZWISCHEN_TAGS = re.compile(r">([^<>{}`]+)<")
+UNINTERESSANT = re.compile(
+    r"^(?:[\d\s.,:;%/–—·✓✕▲▼…]+|[A-Za-z_]+\s*=|https?://\S+)$")
+
+
+def js_rohtexte(block):
+    beginn = block.find("<script>")
+    ende = block.rfind("</script>")
+    if beginn < 0 or ende < 0:
+        return set()
+    out = set()
+    for lit in template_literale(block[beginn:ende]):
+        ohne_werte = re.sub(r"\$\{[^{}]*\}", "\x00", lit)
+        for treffer in ZWISCHEN_TAGS.findall(ohne_werte):
+            kern = re.sub(r"\s+", " ", treffer).strip()
+            if not kern or "\x00" in kern:
+                continue
+            if not HAT_BUCHSTABE.search(kern) or UNINTERESSANT.match(kern):
+                continue
+            out.add(kern)
+    return out
 
 
 def main():

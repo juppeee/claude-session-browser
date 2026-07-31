@@ -14,12 +14,20 @@ set SETUPTOOLS_USE_DISTUTILS=stdlib
 set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 
 echo.
-echo [1/4] Alte Builds loeschen...
+echo [0/5] Uebersetzungen pruefen...
+REM Faengt fehlende englische Saetze und vertauschte Platzhalter ab, bevor
+REM sie in einem Release landen.
+set PYTHONIOENCODING=utf-8
+python tools\check_i18n.py
+if errorlevel 1 goto :error
+
+echo.
+echo [1/5] Alte Builds loeschen...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
 echo.
-echo [2/4] PyInstaller: onedir-Build (fuer Installer)...
+echo [2/5] PyInstaller: onedir-Build (fuer Installer)...
 pyinstaller ^
   --onedir ^
   --noconsole ^
