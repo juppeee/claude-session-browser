@@ -240,6 +240,8 @@ those gone too.
 
 Talking to it is one feature of this app among many. The Session Browser is first and foremost a browser for your Claude Code sessions: it searches them, colour-codes them and puts you back into one with a double-click, and it does all of that without a Clawdmeter anywhere in sight.
 
+**Clawd himself** started out at [claudepix](https://claudepix.vercel.app) by [@amaanbuilds](https://x.com/amaanbuilds), a library of pixel-art Clawd sprites — the same source Hermann's firmware draws on. The animations in this app have since been reworked by hand, and several of them drawn from scratch.
+
 What this project adds on top of Hermann's work is two things: the Bluetooth connection for Windows (his daemon is a Linux shell script built on bluez), and **activity-driven animations**. Upstream picks an animation from how fast your quota is burning — a rate measured over a six-sample ring buffer and grouped into calm / normal / active / heavy. It cannot know *what* Claude is doing. The Session Browser reads the session transcripts, works out the actual state — thinking, writing code, waiting for permission, out of quota — and tells the device which animation to show. Turn that off and the device falls back to Hermann's usage groups.
 
 ## License
