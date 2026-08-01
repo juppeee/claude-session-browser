@@ -14,7 +14,7 @@
 
 <a href="https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"><img src="https://img.shields.io/badge/Download-Installer%20for%20Windows-ec7456?style=for-the-badge&logo=windows&logoColor=white" alt="Download the installer for Windows"></a>
 
-<sub>Runs it per user — no admin rights, no UAC prompt, and it never touches `~/.claude`</sub>
+<sub>Installs per user — no admin rights, no UAC prompt, and it never touches `~/.claude`</sub>
 
 [Quick start](#quick-start) · [What you get](#what-you-get) · [Clawd](#clawd-your-desktop-buddy) · [Clawdmeter](#clawdmeter) · [Settings](#settings) · [Uninstall](#updating-and-uninstalling) · [Credits](#credits)
 
@@ -46,7 +46,7 @@ and puts you back into one with a double-click.
 - **[Clawd](#clawd-your-desktop-buddy)** — a 20×20 pixel buddy on your desktop who acts out what Claude is doing
 - **[Clawdmeter](#clawdmeter) support** — mirror Clawd onto a real device over Bluetooth
 - **German and English**, following your Windows language
-- **Updates itself** from GitHub, and shrugs politely when you're offline
+- **Updates itself** from GitHub
 
 ## Quick start
 
@@ -265,6 +265,5 @@ The **code** in this repository is MIT — see [LICENSE](LICENSE).
 That covers the code and nothing else. Clawd is Anthropic's mascot, and the
 sprites in `clawd_sprites.py` are him; they started at
 [claudepix](https://claudepix.vercel.app) and were reworked from there. The
-artwork isn't mine to license, so the MIT grant doesn't reach it. Hermann says
-the same thing about his repository, and he's right to — worth knowing before
-you reuse any of it.
+artwork isn't mine to license, so the MIT grant doesn't reach it. The Clawdmeter
+repository carries the same note.
