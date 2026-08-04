@@ -3595,22 +3595,72 @@ class Api:
             except Exception:
                 pass
 
+    def _kick_usage_poll(self):
+        """Einmalige Ratelimit-Abfrage im Hintergrund.
+
+        Jede Abfrage ist eine echte Anfrage an die API, deshalb hoechstens
+        einmal pro Minute und nur wenn die Anzeige sie wirklich braucht. Der
+        Aufrufer wartet nicht - der naechste Durchlauf der Seite (alle 20 s)
+        findet das Ergebnis vor.
+        """
+        now = time.time()
+        if now - float(getattr(self, "_usage_kick_at", 0) or 0) < 60:
+            return
+        self._usage_kick_at = now
+
+        def _go():
+            try:
+                from clawdmeter import poll_usage_meta, read_token
+                token = read_token()
+                if not token:
+                    return
+                _payload, meta = poll_usage_meta(token)
+                if meta:
+                    self.on_usage_meta(meta)
+            except Exception:
+                pass
+
+        threading.Thread(target=_go, daemon=True,
+                         name="usage-kick").start()
+
     def limit_state(self):
         """Aktueller Stand des 5-Stunden-Limits fuer die Einstellungs-Seite.
 
-        Zwei Quellen, bewusst in dieser Reihenfolge: die Ratelimit-Header der
-        API sind genau und kennen auch den Stand unterhalb von 100%. Die
-        Limit-Meldung im Transcript kennt nur "voll", ist dafuer aber sofort
-        da - auch wenn gerade keine API-Abfrage lief.
+        Zwei Quellen, und die Header gewinnen: sie wissen alles, was das
+        Transcript weiss, und zusaetzlich alles darunter - den Unterschied
+        zwischen 40% und 100%. Das Transcript kennt nur "voll" und weiss nicht,
+        wann das aufhoert; eine Limit-Meldung von vorgestern sieht dort genauso
+        aus wie eine von gerade eben. Als alleinige Quelle taugt es nur, wenn
+        keine frische Messung vorliegt - kein Token, kein Netz, Abfrage aus.
         """
+        now = time.time()
         meta = getattr(self, "_usage_meta", None) or {}
         pct = int(meta.get("pct") or 0)
         reset_at = float(meta.get("reset_at") or 0)
         stand_von = float(meta.get("at") or 0)
 
-        # Laeuft der Buddy, hat er die Lage ohnehin im Blick - dann kostet es
-        # nichts. Ist er aus, wird selbst nachgesehen; die Anzeige darf nicht
-        # davon abhaengen, ob der Buddy eingeschaltet ist.
+        if stand_von and (now - stand_von) < self._LIMIT_HEADER_TRUST_S:
+            # Frische Messung. Sie entscheidet allein - auch darueber, ob das
+            # Limit voll ist. Alles andere waere eine Zweitmeinung von etwas,
+            # das weniger weiss. Ist der Reset-Zeitpunkt durch, ist nur das
+            # Fenster gewechselt: die Prozentzahl gilt weiter, die naechste
+            # Abfrage bringt den neuen Zeitpunkt.
+            wreset = float(meta.get("wreset_at") or 0)
+            return {"pct": pct, "reset_at": reset_at if reset_at > now else 0,
+                    "hit": pct >= 100,
+                    "wpct": int(meta.get("wpct") or 0),
+                    "wreset_at": wreset if wreset > now else 0,
+                    "known": True, "now": now}
+
+        # Nichts Frisches da. Selbst eine holen - sonst haengt die Anzeige
+        # davon ab, ob der Nutzer die Limit-Meldungen eingeschaltet hat, und
+        # wer sie aus hat, saehe hier nie etwas.
+        self._kick_usage_poll()
+
+        # Bis die Antwort da ist: aufs Transcript zurueckfallen. Laeuft der
+        # Buddy, hat er die Lage ohnehin im Blick; ist er aus, wird selbst
+        # nachgesehen - die Anzeige darf nicht davon abhaengen, ob der Buddy
+        # eingeschaltet ist.
         hit, until = False, 0.0
         if self.buddy.is_alive():
             hit, until = getattr(self.buddy, "_pub_limit", (False, 0.0))
@@ -3621,18 +3671,18 @@ class Api:
                 until = float(st.get("reset_at") or 0)
             except Exception:
                 pass
-        if hit and not reset_at:
-            reset_at = until
-
-        if reset_at and reset_at <= time.time():
-            hit, reset_at = False, 0.0    # Fenster ist durch
-
-        wreset = float(meta.get("wreset_at") or 0)
-        if wreset and wreset <= time.time():
-            wreset = 0.0
-        return {"pct": pct, "reset_at": reset_at or 0, "hit": hit,
-                "wpct": int(meta.get("wpct") or 0), "wreset_at": wreset,
-                "known": bool(stand_von or hit), "now": time.time()}
+        # Eine Meldung, deren Reset-Zeit durch ist, beschreibt ein Fenster, das
+        # es nicht mehr gibt. Ohne lesbare Reset-Zeit bleibt sie stehen - dann
+        # ist sie das Einzige, was wir haben.
+        if until and until <= now:
+            hit = False
+        reset_at = until if hit else 0.0
+        # Der Wochenwert kommt nur aus den Headern. Ohne frische Messung waere
+        # er derselbe alte Wert, der eben verworfen wurde - also weglassen; die
+        # Oberflaeche blendet die Kachel dann aus.
+        return {"pct": 100 if hit else 0, "reset_at": reset_at, "hit": hit,
+                "wpct": 0, "wreset_at": 0,
+                "known": bool(hit), "now": now}
 
     def clawdmeter_state(self):
         """Status fuer die Einstellungs-Seite."""
