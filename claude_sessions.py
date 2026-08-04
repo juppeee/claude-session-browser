@@ -1798,6 +1798,7 @@ class BuddyController:
         # Limit-Lage zum Mitlesen (Einstellungs-Seite). Ein Tupel wird in
         # einem Rutsch ersetzt, nie halb beschrieben - deshalb kein Lock.
         self._pub_limit = (False, 0.0)   # (im Limit?, bis wann)
+        self._pub_rect = None            # (x, y, w, h) solange sichtbar
 
     def _app_window_visible(self):
         """True wenn das Session-Browser-Hauptfenster gerade wirklich als
@@ -1893,7 +1894,7 @@ class BuddyController:
             if toast is None:
                 toast = LimitResetToast()
                 self.api._reset_toast = toast
-            toast.show()
+            toast.show(avoid=self._pub_rect)
         except Exception:
             pass
         # Zusaetzlich Tray-Notification als Bonus
@@ -2769,6 +2770,33 @@ class BuddyController:
             self._pub_anim = state["anim"]
             self._pub_limit = (bool(state.get("is_limited")),
                                float(state.get("limited_until") or 0.0))
+            # Wo der Buddy steht, zum Mitlesen: die Reset-Karte kommt oben
+            # rechts herein und wuerde sonst unter ihm landen. Bewusst
+            # unabhaengig davon, ob er gerade eingeblendet ist - dieselbe
+            # Meldung weckt ihn ja auf ("surprise"), er waere also Sekunden
+            # spaeter doch da. Der Platz gehoert ihm, auch wenn er gerade
+            # nicht hinschaut.
+            rect = None
+            try:
+                rect = (root.winfo_x(), root.winfo_y(),
+                        state.get("px_w", px_w), state.get("px_h", px_h))
+            except Exception:
+                pass
+            self._pub_rect = rect
+
+            # Haengengebliebenes Hover aufloesen. Durchsichtig wird der Buddy
+            # ueber <Enter>, zurueck ueber <Leave> - und <Leave> kommt nicht
+            # zuverlaessig an, wenn ihn ein anderes Fenster ueberdeckt oder die
+            # Maus in einem Rutsch aus dem Bild faehrt. Dann stuende er auf
+            # Dauer-15%. Die Mausposition weiss es besser als das Ereignis.
+            if state.get("hover") and rect:
+                try:
+                    mx, my = root.winfo_pointerxy()
+                    rx, ry, rw, rh = rect
+                    if not (rx <= mx < rx + rw and ry <= my < ry + rh):
+                        _on_leave(None)
+                except Exception:
+                    pass
             # Frame-Rate getrennt von tick-Rate: Frame-Advance nur alle
             # _FRAME_MS, aber tick bleibt schnell fuer Visibility/Fade/Hover.
             if state["current_alpha"] > 0.01:
@@ -2793,11 +2821,40 @@ class BuddyController:
             pass
         finally:
             self._alive = False
+            self._pub_rect = None
 
 
 # --------------------------------------------------------------------------- #
 #  Limit-Reset-Karte: schwebende Karte oben rechts, bleibt bis Klick weg
 # --------------------------------------------------------------------------- #
+def _dodge_y(x, y, w, h, avoid, screen_h, gap=14, margin=8):
+    """Schiebt ein Fenster senkrecht aus `avoid` heraus.
+
+    Gedacht fuer die Reset-Karte, die oben rechts hereinkommt - genau dort, wo
+    viele ihren Buddy stehen haben. Der Buddy steht, wo der Nutzer ihn
+    hingestellt hat, also weicht die Karte aus: erst darunter, sonst darueber.
+    Passt beides nicht, bleibt es beim alten Platz - dann ist der Bildschirm
+    ohnehin zu klein fuer beides.
+    """
+    if not avoid:
+        return y
+    try:
+        ax, ay, aw, ah = (int(v) for v in avoid)
+    except (TypeError, ValueError):
+        return y
+    if aw <= 0 or ah <= 0:
+        return y
+    if not (ax < x + w and ax + aw > x and ay < y + h and ay + ah > y):
+        return y
+    below = ay + ah + gap
+    if below + h <= screen_h - margin:
+        return below
+    above = ay - h - gap
+    if above >= margin:
+        return above
+    return y
+
+
 class LimitResetToast:
     """Zeigt eine Anthropic-Style-Karte oben rechts am Bildschirm die den User
     darueber informiert dass sein Claude-Limit zurueckgesetzt wurde. Karte
@@ -2819,16 +2876,18 @@ class LimitResetToast:
         self._alive = False
         self._t = None
 
-    def show(self, title=None, subtitle=None):
+    def show(self, title=None, subtitle=None, avoid=None):
         # Erst hier uebersetzen, nicht als Standardwert im Kopf: Standardwerte
         # werden beim Import ausgewertet, da steht die Sprache noch nicht fest.
+        # `avoid` ist ein Rechteck (x, y, w, h), das die Karte freilassen soll -
+        # der Buddy steht bei vielen oben rechts, genau im Anflugweg.
         title = title or t("Dein Claude-Limit ist zurückgesetzt")
         subtitle = subtitle or t("Du kannst weitermachen")
         if self._alive:
             return
         self._alive = True
         self._t = threading.Thread(
-            target=self._run, args=(title, subtitle), daemon=True)
+            target=self._run, args=(title, subtitle, avoid), daemon=True)
         self._t.start()
         try:
             import winsound
@@ -2849,7 +2908,7 @@ class LimitResetToast:
         return cv.create_polygon(pts, smooth=True, fill=fill,
                                  outline=outline)
 
-    def _run(self, title, subtitle):
+    def _run(self, title, subtitle, avoid=None):
         try:
             import tkinter as tk
         except Exception:
@@ -2886,6 +2945,11 @@ class LimitResetToast:
             sw = 1920
         target_x = sw - W - 28
         target_y = 40
+        try:
+            sh = root.winfo_screenheight()
+        except Exception:
+            sh = 1080
+        target_y = _dodge_y(target_x, target_y, W, H, avoid, sh)
         start_x = sw + 20
         root.geometry(f"{W}x{H}+{start_x}+{target_y}")
 
@@ -3190,6 +3254,11 @@ def _sprite_icon_png(anim, box_px=40):
 
 
 class Api:
+    # Wie lange eine Ratelimit-Messung als aktuell gilt. Der Watcher fragt
+    # alle 5 Minuten; drei Intervalle Luft, damit ein einzelner Fehlschlag
+    # die Anzeige nicht sofort auf die schlechtere Quelle wirft.
+    _LIMIT_HEADER_TRUST_S = 15 * 60
+
     def __init__(self):
         self.overrides = load_json(TITLES_FILE, {})
         self.settings = load_settings()
