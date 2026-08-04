@@ -1,9 +1,9 @@
 {
-  "version": "1.3.9",
-  "notes": "The interface now speaks English as well as German and follows your Windows language. Turn Clawd's frame off and his dark backdrop goes with it. Permission prompts are spotted properly via a Claude Code hook instead of being guessed from the window title. Usage has its own section at the top of the settings, and long waits read \"4 d 5 h\" instead of \"101 h\".",
+  "version": "1.4.0",
+  "notes": "Usage now shows what the API says: the settings page could sit at 100% while the account was barely used, because a limit message from hours ago outweighed the measured value. The reset card no longer ends up behind Clawd, and Clawd no longer gets stuck see-through when another window covers him. The settings now name the firmware fork you need if you want the device to show what Claude is doing.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "30d918e6065c7807b85a5bc1972769495bdb33d7051811e500bdfe5ad096507a",
-  "sha256": "b73bae3fd230dbc3b12884ef5a3751b44b9690ec1584a58d02334db0a144da46"
+  "installer_sha256": "5e1e928cd0dedcb96a4940950fc1e0551d1f34879bdd86c9dead7448a38cfbda",
+  "sha256": "074cfc8719fb37f51b722008f7438e97a0b99d18855157a9a83b3bfcad5a3838"
 }
