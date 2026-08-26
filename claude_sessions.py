@@ -5656,9 +5656,9 @@ async function refreshBuddyStatus(){
     if(!d) return;
     const b = d.config || {};
     let s;
-    if (!d.have_sprites) s = 'Sprite-Daten fehlen – bitte neu installieren.';
-    else if (!b.enabled) s = 'Buddy aus';
-    else if (!d.running) s = 'Startet…';
+    if (!d.have_sprites) s = t('Sprite-Daten fehlen – bitte neu installieren.');
+    else if (!b.enabled) s = t('Buddy aus');
+    else if (!d.running) s = t('Startet…');
     else if (d.reason) s = t('Buddy läuft · {grund}', {grund: d.reason});
     else s = t('Buddy läuft');
     const el = document.getElementById('buddy-status');
@@ -5744,9 +5744,9 @@ async function renderBuddy(){
   if (hp) { try { hp.src = await api.buddy_icon(previewName); } catch(e){} }
 
   let statusTxt;
-  if (!data.have_sprites) statusTxt = 'Sprite-Daten fehlen – bitte neu installieren.';
-  else if (!b.enabled) statusTxt = 'Buddy aus';
-  else if (!data.running) statusTxt = 'Startet…';
+  if (!data.have_sprites) statusTxt = t('Sprite-Daten fehlen – bitte neu installieren.');
+  else if (!b.enabled) statusTxt = t('Buddy aus');
+  else if (!data.running) statusTxt = t('Startet…');
   else if (data.reason) statusTxt = t('Buddy läuft · {grund}', {grund: data.reason});
   else statusTxt = t('Buddy läuft');
   document.getElementById('buddy-status').textContent = statusTxt;
