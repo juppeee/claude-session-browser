@@ -5781,8 +5781,7 @@ async function renderBuddy(){
     </div>
 
     <div class="ba-off-hint ${b.enabled?'':'show'}">
-      ${ic('info')}<span>Der Buddy ist ausgeschaltet. Die Einstellungen darunter
-      wirken erst, wenn du ihn oben einschaltest.</span>
+      ${ic('info')}<span>Der Buddy ist ausgeschaltet. Die Einstellungen darunter wirken erst, wenn du ihn oben einschaltest.</span>
     </div>
 
     <div class="ba-sub ${b.enabled?'':'off'}">
