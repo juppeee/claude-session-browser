@@ -743,7 +743,10 @@ class ClawdmeterLink:
     async def _send_once(self, client, poll: bool = True) -> None:
         import asyncio
         if poll or self._last_payload is None:
-            token = read_token()
+            # Nicht direkt aufrufen: auf macOS liest read_token() ueber einen
+            # Unterprozess aus dem Schluesselbund und wuerde die Loop
+            # blockieren -- und damit die BLE-Benachrichtigungen mit.
+            token = await asyncio.to_thread(read_token)
             if not token:
                 self._set(last_error="Kein Claude-Token gefunden")
                 return
