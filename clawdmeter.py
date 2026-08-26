@@ -103,8 +103,31 @@ def _extract_token(blob: str) -> str | None:
     return None
 
 
+# Auf macOS legt Claude Code den Token in den Schluesselbund, nicht in eine
+# Datei -- eine Standardinstallation hat gar keine .credentials.json. Ohne
+# diesen Weg findet read_token() dort nie etwas.
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def _read_token_keychain() -> str | None:
+    """Den Token aus dem macOS-Schluesselbund lesen."""
+    import getpass
+    base = ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE]
+    # Erst auf den angemeldeten Benutzer eingegrenzt, sonst ohne -a: je nach
+    # Installation haengt der Eintrag am Konto oder steht allein.
+    for args in ([*base, "-a", getpass.getuser(), "-w"], [*base, "-w"]):
+        try:
+            out = subprocess.run(args, check=True, capture_output=True,
+                                 text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if tok := _extract_token(out.stdout):
+            return tok
+    return None
+
+
 def read_token() -> str | None:
-    """Liest den Claude-OAuth-Token aus der ersten gefundenen Credentials-Datei."""
+    """Liest den Claude-OAuth-Token aus Credentials-Datei oder Schluesselbund."""
     for path in _credential_candidates():
         try:
             tok = _extract_token(path.read_text(encoding="utf-8"))
@@ -112,6 +135,8 @@ def read_token() -> str | None:
             continue
         if tok:
             return tok
+    if sys.platform == "darwin":
+        return _read_token_keychain()
     return None
 
 
