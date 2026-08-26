@@ -634,6 +634,12 @@ class ClawdmeterLink:
         target = address
         if sys.platform == "darwin":
             target = await macos_resolve(address)
+            if target is not None:
+                # Den Platzhalter weder in der Oberflaeche noch im Protokoll
+                # stehen lassen -- dort gehoert die Adresse hin, die wirklich
+                # benutzt wird.
+                address = target.address
+                self._set(address=address)
             if target is None:
                 self._set(connected=False, last_error=(
                     "Kein verbundenes Clawdmeter — in den Bluetooth-"
