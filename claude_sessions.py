@@ -6382,7 +6382,7 @@ async function toggleClawd(el){
 }
 async function clawdReconnect(btn){
   const alt = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Verbinde…';
+  btn.disabled = true; btn.textContent = t('Verbinde…');
   try{
     setClawdStatus(document.getElementById('clawd-status'),
                    await api.clawdmeter_reconnect());
@@ -6513,7 +6513,7 @@ function openUpdateDialog(){
   document.getElementById('upd-title').textContent=t('Update auf v{neu} (aktuell v{alt})', {neu: UPD.latest, alt: UPD.current});
   document.getElementById('upd-notes').textContent=UPD.notes||t('Verbesserungen und Fehlerbehebungen.');
   const b=document.getElementById('upd-install');
-  b.disabled=false; b.textContent= UPD.frozen ? 'Jetzt installieren' : 'Zur Download-Seite';
+  b.disabled=false; b.textContent= UPD.frozen ? t('Jetzt installieren') : t('Zur Download-Seite');
   document.getElementById('overlay-update').classList.add('show');
 }
 function buildConfetti(){
@@ -6534,19 +6534,19 @@ function setProgress(p){
 function startInstallUI(){
   const pop=document.getElementById('upd-pop');
   pop.classList.add('installing'); pop.classList.remove('ready');
-  setProgress(0); document.getElementById('inst-state').textContent='Lädt herunter…';
+  setProgress(0); document.getElementById('inst-state').textContent=t('Lädt herunter…');
   buildConfetti();
   document.getElementById('overlay-update').classList.add('show');
 }
 // von Python aufgerufen
 window.updateProgress=function(p){
   setProgress(p);
-  if(p>=100) document.getElementById('inst-state').textContent='Fast fertig…';
+  if(p>=100) document.getElementById('inst-state').textContent=t('Fast fertig…');
 };
 window.downloadDone=function(){
   setProgress(100);
   document.getElementById('upd-pop').classList.add('ready');
-  document.getElementById('inst-state').textContent='Bereit! Programm startet neu…';
+  document.getElementById('inst-state').textContent=t('Bereit! Programm startet neu…');
 };
 async function doInstall(){
   if(!(UPD && UPD.frozen)){   // Dev/keine .exe -> nur Release-Seite oeffnen
@@ -6612,7 +6612,7 @@ function obRender(){
   let dots=''; for(let i=0;i<OB_STEPS;i++) dots+=`<i class="${i===obStep?'on':''}"></i>`;
   document.getElementById('ob-dots').innerHTML=dots;
   document.getElementById('ob-back').style.visibility = obStep===0?'hidden':'visible';
-  document.getElementById('ob-next').textContent = obStep===OB_STEPS-1 ? "Los geht's! 🎉" : 'Weiter';
+  document.getElementById('ob-next').textContent = obStep===OB_STEPS-1 ? t("Los geht's! 🎉") : t('Weiter');
 }
 function obNext(){ if(obStep<OB_STEPS-1){ obStep++; obRender(); } else obFinish(); }
 function obPrev(){ if(obStep>0){ obStep--; obRender(); } }
