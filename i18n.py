@@ -290,8 +290,8 @@ TRANSLATIONS = {
             "German",
         "Die Akzentfarbe der Oberfläche. Du kannst sie später jederzeit in den Einstellungen ändern.":
             "The accent color of the interface. You can change it anytime later in settings.",
-        "Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\\\Run.":
-            "The app starts automatically when you log in – handy so Buddy and tray mode are ready right away. Registry entry under HKCU\\\\Run.",
+        "Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.":
+            "The app starts automatically when you log in – handy so Buddy and tray mode are ready right away. Registry entry under HKCU\\Run.",
         "Die Spalten":
             "The columns",
         "Die wichtigsten Handgriffe – der Rest ergibt sich beim Ausprobieren.":
