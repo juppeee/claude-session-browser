@@ -254,6 +254,13 @@ def list_paired_devices(force: bool = False) -> list[dict]:
 
     Ein gekoppeltes UND verbundenes Geraet sendet keine Advertisements mehr,
     ein normaler BLE-Scan findet es also nicht -- Windows kennt es aber."""
+    if sys.platform == "darwin":
+        # CoreBluetooth darf nur in der Loop des Link-Threads angefasst
+        # werden, und diese Funktion ruft die GUI synchron auf. Wir geben
+        # deshalb zurueck, was der Link-Thread zuletzt gesehen hat. Vor dem
+        # ersten Verbindungsversuch ist die Liste leer -- dann greift der
+        # MACOS_AUTO-Platzhalter aus discover_address().
+        return list(_macos_seen["value"])
     if sys.platform != "win32":
         return []
     now = time.time()
@@ -304,6 +311,120 @@ def list_paired_devices(force: bool = False) -> list[dict]:
     return list(out)
 
 
+# --------------------------------------------------------------------------
+# macOS: das verbundene Geraet ueber CoreBluetooth holen statt zu scannen
+# --------------------------------------------------------------------------
+# Auf macOS ist ein gekoppeltes Clawdmeter fuer einen Scan unsichtbar: die
+# Firmware meldet sich als BLE-HID-Tastatur, das System verbindet sich von
+# selbst und haelt die Verbindung -- und ein verbundenes Peripheral sendet
+# keine Advertisements mehr. BleakClient(adresse) hilft ebenfalls nicht, weil
+# bleak intern auch nur scannt.
+#
+# Der dokumentierte Ausweg ist retrieveConnectedPeripheralsWithServices_: es
+# liefert genau die Peripherals, mit denen das System schon verbunden ist. Das
+# Ergebnis wird in ein BLEDevice verpackt, das die lebende (peripheral,
+# manager)-Kombination traegt -- damit verbindet sich BleakClient direkt, ohne
+# zu scannen. CoreBluetooth teilt sich die eine physische Verbindung, die
+# HID-Tastatur laeuft also weiter.
+#
+# Alles hier drin laeuft ausschliesslich in der asyncio-Loop des
+# ClawdmeterLink-Threads. Ein CentralManagerDelegate ist an die Loop gebunden,
+# in der er erzeugt wurde; ihn ueber Loop-Grenzen zu teilen haengt sich auf --
+# deshalb merkt sich _get_cb_manager() die Loop und legt bei einer anderen
+# einen neuen an, statt einen fremden weiterzureichen.
+#
+# Dass retrieveConnectedPeripheralsWithServices_ hier der richtige Weg ist,
+# stammt aus dem macOS-Zweig des Clawdmeter-Daemons von Hermann Bjoergvin
+# (github.com/HermannBjorgvin/Clawdmeter, dort portiert von Chris Davidson).
+# Der Code unten ist eigenstaendig fuer dieses Modul geschrieben -- das
+# Clawdmeter-Repo steht unter keiner Lizenz, aus ihm wurde nichts kopiert.
+MACOS_AUTO = "auto"          # Platzhalter-"Adresse": das System-Geraet nehmen
+_HID_SERVICE = "1812"        # generischer HID-Dienst (auch fremde Tastaturen)
+_cb_state: dict = {"loop": None, "manager": None}
+# Was der Link-Thread zuletzt gesehen hat, fuer die Einstellungen.
+_macos_seen: dict = {"at": 0.0, "value": []}
+
+
+async def _get_cb_manager():
+    """Den CoreBluetooth-CentralManager dieser Loop liefern.
+
+    CBCentralManager haengt an der Loop, unter der er erzeugt wurde. Wir
+    merken uns deshalb beides zusammen und bauen nur dann neu, wenn wir
+    tatsaechlich in einer anderen Loop laufen -- so kann ein Aufrufer aus
+    einem anderen Thread keinen fremden Manager erwischen.
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    if _cb_state["manager"] is None or _cb_state["loop"] is not loop:
+        from bleak.backends.corebluetooth.CentralManagerDelegate import (
+            CentralManagerDelegate,
+        )
+        mgr = CentralManagerDelegate()
+        await mgr.wait_until_ready()   # wirft, wenn Bluetooth aus oder verboten
+        _cb_state["loop"], _cb_state["manager"] = loop, mgr
+    return _cb_state["manager"]
+
+
+async def macos_connected_devices() -> list:
+    """System-verbundene Clawdmeter als [{name, address, device}, ...].
+
+    Zwei Stufen, das eindeutigste Signal zuerst:
+      1. Peripherals unter unserem EIGENEN Service -- diese Zugehoerigkeit ist
+         unverwechselbar, der Name darf deshalb fehlen (macOS liefert ihn
+         nicht immer).
+      2. Ersatzweise der generische HID-Dienst 0x1812, aber nur bei exakt
+         passendem Namen -- den Dienst haben auch fremde Tastaturen und Maeuse.
+    """
+    from CoreBluetooth import CBUUID
+    from bleak.backends.device import BLEDevice
+
+    try:
+        manager = await _get_cb_manager()
+    except Exception:
+        return []
+
+    cm = manager.central_manager
+    out, seen = [], set()
+
+    def collect(peripherals, name_required: bool) -> None:
+        for p in peripherals or []:
+            name = p.name()
+            if name_required and name != DEVICE_NAME:
+                continue
+            uuid = p.identifier().UUIDString()
+            if uuid in seen:
+                continue
+            seen.add(uuid)
+            out.append({"name": (name or DEVICE_NAME),
+                        "address": uuid,
+                        "device": BLEDevice(uuid, name, (p, manager))})
+
+    collect(cm.retrieveConnectedPeripheralsWithServices_(
+        [CBUUID.UUIDWithString_(SERVICE_UUID)]), name_required=False)
+    collect(cm.retrieveConnectedPeripheralsWithServices_(
+        [CBUUID.UUIDWithString_(_HID_SERVICE)]), name_required=True)
+
+    # Fuer die Geraeteliste in den Einstellungen nur Name und Adresse
+    # hinterlegen -- das lebende Peripheral bleibt in dieser Loop.
+    _macos_seen["at"] = time.time()
+    _macos_seen["value"] = [{"name": d["name"], "address": d["address"]}
+                            for d in out]
+    return out
+
+
+async def macos_resolve(address: str | None):
+    """Die zu MACOS_AUTO bzw. einer UUID passende BLEDevice-Instanz holen."""
+    devices = await macos_connected_devices()
+    if not devices:
+        return None
+    if address and address != MACOS_AUTO:
+        for d in devices:
+            if d["address"].upper() == address.upper():
+                return d["device"]
+        return None
+    return devices[0]["device"]
+
+
 def _looks_like_clawdmeter(name: str) -> bool:
     return "clawd" in (name or "").lower()
 
@@ -328,6 +449,11 @@ def discover_address(preferred: str | None = None) -> str | None:
             return d["address"]
     if len(devices) == 1:
         return devices[0]["address"]
+    # macOS fuehrt keine solche Liste (siehe list_paired_devices). Dort wird
+    # das Geraet erst in der Link-Loop aufgeloest, wo CoreBluetooth erlaubt
+    # ist -- bis dahin steht dieser Platzhalter fuer "nimm das System-Geraet".
+    if sys.platform == "darwin":
+        return MACOS_AUTO
     return None
 
 
@@ -478,7 +604,18 @@ class ClawdmeterLink:
         with self._lock:
             erster = int(self._status.get("attempt") or 1) <= 1
         timeout = CONNECT_TIMEOUT_FIRST if erster else CONNECT_TIMEOUT
-        async with BleakClient(address, timeout=timeout) as client:
+        # macOS: nicht die Adresse uebergeben, sondern das lebende Peripheral
+        # -- sonst wuerde bleak scannen und das verbundene Geraet nie finden.
+        target = address
+        if sys.platform == "darwin":
+            target = await macos_resolve(address)
+            if target is None:
+                self._set(connected=False, last_error=(
+                    "Kein verbundenes Clawdmeter — in den Bluetooth-"
+                    "Einstellungen koppeln und verbinden"))
+                await self._sleep(RETRY_INTERVAL)
+                return
+        async with BleakClient(target, timeout=timeout) as client:
             # Fehlt der Service, hat das zwei moegliche Gruende: falsches
             # Geraet gewaehlt -- oder das Geraet haengt schon an einem anderen
             # Programm, dann liefert Windows eine unvollstaendige Service-Liste.
