@@ -6074,7 +6074,7 @@ function renderSettings(){
       <h2>${ic('power')}Autostart</h2>
       <div class="row2">
         <div><div class="lbl">Mit Windows starten</div>
-          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.</div></div>
+          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\Run.</div></div>
         <div class="toggle ${st.autostart!==false?'on':''}" onclick="toggleAutostart(this)"></div>
       </div>
     </div>
