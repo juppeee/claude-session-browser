@@ -6006,7 +6006,7 @@ function renderSettings(){
       <h2>${ic('eye')}Anzeige</h2>
       <div class="row2">
         <div><div class="lbl">Heimatordner ausblenden</div>
-          <div class="desc">Sessions direkt in ${esc(STATE.home)} verstecken (Unterordner bleiben sichtbar).</div></div>
+          <div class="desc">${t('Sessions direkt in {ordner} verstecken (Unterordner bleiben sichtbar).', {ordner: esc(STATE.home)})}</div></div>
         <div class="toggle ${st.hide_home?'on':''}" onclick="toggleHome(this)"></div>
       </div>
     </div>
