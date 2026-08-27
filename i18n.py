@@ -290,6 +290,12 @@ TRANSLATIONS = {
             "German",
         "Die Akzentfarbe der Oberfläche. Du kannst sie später jederzeit in den Einstellungen ändern.":
             "The accent color of the interface. You can change it anytime later in settings.",
+        "Das X beendet die App jetzt wirklich – Buddy, Clawdmeter und Benachrichtigungen laufen dann nicht mehr.":
+            "The X really does close the app now — the buddy, the Clawdmeter and "
+            "notifications all stop with it.",
+        "Ohne Vorwarnung merkst du es erst bei 100 % – dann ist es zum Reagieren zu spät.":
+            "With no early warning you only notice at 100%, and by then it is too "
+            "late to do anything about it.",
         "Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.":
             "The app starts automatically when you log in – handy so Buddy and tray mode are ready right away. Registry entry under HKCU\\Run.",
         "Die Spalten":
