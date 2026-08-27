@@ -676,6 +676,8 @@ TRANSLATIONS = {
         "Zur Download-Seite": "Open the download page",
         "Automatisch (nichts gefunden)": "Automatic (nothing found)",
         "Automatisch ({geraet})": "Automatic ({geraet})",
+        "Sessions direkt in {ordner} verstecken (Unterordner bleiben sichtbar).":
+            "Hide sessions directly in {ordner} (subfolders stay visible).",
         "Sprite-Daten fehlen – bitte neu installieren.":
             "Sprite data is missing – please reinstall.",
         "Los geht's! 🎉": "Let's go! 🎉",
