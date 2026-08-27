@@ -290,6 +290,8 @@ TRANSLATIONS = {
             "German",
         "Die Akzentfarbe der Oberfläche. Du kannst sie später jederzeit in den Einstellungen ändern.":
             "The accent color of the interface. You can change it anytime later in settings.",
+        "wartet auf Claude": "waiting for Claude",
+        "wartet auf Fenster": "waiting for window",
         "Das X beendet die App jetzt wirklich – Buddy, Clawdmeter und Benachrichtigungen laufen dann nicht mehr.":
             "The X really does close the app now — the buddy, the Clawdmeter and "
             "notifications all stop with it.",

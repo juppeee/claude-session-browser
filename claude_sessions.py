@@ -3485,13 +3485,16 @@ class Api:
         reason = ""
         if bud.get("enabled") and self.buddy.is_alive():
             mode = bud.get("visibility", "when_claude")
+            # Der Grund wird als {grund} in einen schon uebersetzten Satz
+            # eingesetzt, also hier uebersetzen -- sonst bliebe die Haelfte des
+            # Satzes deutsch.
             if mode == "when_claude" and not _claude_context_active():
-                reason = "wartet auf Claude"
+                reason = t("wartet auf Claude")
             elif mode == "when_window":
                 needle = (bud.get("target_window") or "").lower().strip()
                 fg = _win_foreground_title().lower()
                 if needle and needle not in fg:
-                    reason = "wartet auf Fenster"
+                    reason = t("wartet auf Fenster")
         return {
             "config": bud,
             "anims": anims,
