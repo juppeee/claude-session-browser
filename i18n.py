@@ -675,6 +675,7 @@ TRANSLATIONS = {
         "Bereit! Programm startet neu…": "Ready – restarting…",
         "Zur Download-Seite": "Open the download page",
         "Automatisch (nichts gefunden)": "Automatic (nothing found)",
+        "Automatisch ({geraet})": "Automatic ({geraet})",
         "Sprite-Daten fehlen – bitte neu installieren.":
             "Sprite data is missing – please reinstall.",
         "Los geht's! 🎉": "Let's go! 🎉",

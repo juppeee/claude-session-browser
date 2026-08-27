@@ -6317,7 +6317,11 @@ async function loadClawdDevices(rescan){
   const cur = (STATE.settings.clawdmeter_addr||'');
   const devs = (r&&r.devices)||[];
   const autoName = (devs.find(d=>d.address===(r&&r.auto))||{}).name;
-  const autoLbl = r&&r.auto ? `Automatisch (${esc(autoName||r.auto)})` : 'Automatisch (nichts gefunden)';
+  // Diese Liste entsteht erst nach dem Uebersetzungslauf ueber die Seite und
+  // wird zusammengesetzt -- ein fertiger Satz stuende hier also nie in der
+  // Tabelle. Deshalb ueber t() mit Platzhalter.
+  const autoLbl = r&&r.auto ? t('Automatisch ({geraet})', {geraet: esc(autoName||r.auto)})
+                            : t('Automatisch (nichts gefunden)');
   let html = `<option value="" ${cur?'':'selected'}>${autoLbl}</option>`;
   if(!devs.length){
     html += '<option value="" disabled>' + t('Keine gekoppelten Bluetooth-Geräte') + '</option>';
