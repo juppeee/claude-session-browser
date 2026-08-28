@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -3150,16 +3150,19 @@ class TrayManager:
             win.restore()
         except Exception:
             pass
-        # Notausgang: liegt das Fenster ausserhalb jedes Bildschirms (Monitor
-        # abgesteckt, Anordnung geaendert), holt "Oeffnen" es in die Mitte
-        # zurueck. Sonst waere es ueber das Tray-Menue nicht erreichbar.
-        try:
-            w, h = int(win.width or 1180), int(win.height or 760)
-            if not _position_is_usable(int(win.x), int(win.y), w, h):
-                win.move(max(0, (_screen_w() - w) // 2),
-                         max(0, (_screen_h() - h) // 2))
-        except Exception:
-            pass
+        # Notausgang: steht das Fenster ausserhalb der Bildschirme oder ragt
+        # es oben heraus (Monitor abgesteckt, Anordnung geaendert), rueckt
+        # "Oeffnen" es wieder zurecht. Sonst waere es ueber das Tray-Menue
+        # nicht mehr erreichbar. Nur falls kein Fensterhandle zu finden war,
+        # bleibt der alte Weg ueber die Fenstermitte.
+        if not _fit_main_window_now():
+            try:
+                w, h = int(win.width or 1180), int(win.height or 760)
+                if not _position_is_usable(int(win.x), int(win.y), w, h):
+                    win.move(max(0, (_screen_w() - w) // 2),
+                             max(0, (_screen_h() - h) // 2))
+            except Exception:
+                pass
 
     def stop(self):
         if self.icon:
@@ -3330,6 +3333,16 @@ class Api:
                     return
                 self._geo["x"], self._geo["y"] = a[0], a[1]
 
+        def on_shown(*a):
+            # Erst wenn das Fenster steht, laesst sich seine Lage gegen die
+            # Bildschirme pruefen. Eine gemerkte Groesse von einem groesseren
+            # Monitor oder einer anderen Skalierung schiebt die Titelleiste
+            # sonst ueber den oberen Rand - dann ist das X nicht mehr da.
+            # win.moved/win.resized melden die Korrektur zurueck, self._geo
+            # zieht also von selbst nach.
+            if not self._max:
+                _fit_main_window_now()
+
         def on_max(*a):
             self._max = True
 
@@ -3349,6 +3362,7 @@ class Api:
             self.settings["win_max"] = bool(self._max)
             save_json(SETTINGS_FILE, self.settings)
 
+        win.events.shown += on_shown
         win.events.resized += on_resized
         win.events.moved += on_moved
         win.events.maximized += on_max
@@ -7001,6 +7015,114 @@ def _position_is_usable(x, y, w, h):
         return ox >= 160 and oy >= 40
     except Exception:
         return True
+
+
+def _fit_window_to_screen(x, y, w, h):
+    """Rueckt ein Fenster so zurecht, dass es ganz auf den Arbeitsbereich
+    passt. Rueckgabe: (x, y, w, h).
+
+    Eine gemerkte Geometrie kann von einem groesseren Bildschirm stammen, von
+    einer anderen Skalierung oder von einer anderen Monitor-Anordnung. Dann
+    faengt das Fenster oberhalb des Schreibtischs an und die Titelleiste mit
+    dem X liegt ausserhalb - das Fenster laesst sich weder schliessen noch
+    verschieben. Deshalb erst die Groesse auf den Arbeitsbereich begrenzen,
+    dann die Ecke hineinschieben.
+    """
+    if not _IS_WIN:
+        return x, y, w, h
+    try:
+        x, y, w, h = int(x), int(y), int(w), int(h)
+    except (TypeError, ValueError):
+        return x, y, w, h
+    # Der Monitor unter der Fenstermitte - nicht unter der Ecke: die Ecke
+    # liegt im Fehlerfall gerade ausserhalb und wuerde den Nachbarmonitor
+    # treffen.
+    work = _win_monitor_work_from_point(x + w // 2, y + h // 2)
+    if not work:
+        return x, y, w, h
+    left, top, right, bottom = work
+    aw, ah = right - left, bottom - top
+    if aw <= 0 or ah <= 0:
+        return x, y, w, h
+    w = min(w, aw)
+    h = min(h, ah)
+    x = max(left, min(x, right - w))
+    y = max(top, min(y, bottom - h))
+    return x, y, w, h
+
+
+def _own_window_hwnd():
+    """Fensterhandle des eigenen Hauptfensters, oder 0.
+
+    Sucht nur in den Fenstern dieses Prozesses - der Titel allein wuerde auch
+    eine zweite Instanz treffen.
+    """
+    if not _IS_WIN:
+        return 0
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        own_pid = os.getpid()
+        found = {"hwnd": 0}
+
+        EnumWindowsProc = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+        def enum_cb(hwnd, _lparam):
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value != own_pid:
+                return True
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if buf.value.strip().lower() == _OWN_APP_TITLE_EXACT:
+                found["hwnd"] = hwnd
+                return False
+            return True
+
+        user32.EnumWindows(EnumWindowsProc(enum_cb), 0)
+        return found["hwnd"]
+    except Exception:
+        return 0
+
+
+def _fit_main_window_now():
+    """Holt das Hauptfenster ganz auf den Bildschirm. True wenn etwas
+    geaendert wurde.
+
+    Bewusst ueber das Fensterhandle statt ueber win.move()/win.x: pywebview
+    rechnet in seiner API in logischen Pixeln, GetMonitorInfo liefert
+    physische. Auf einem skalierten Bildschirm (125 %, 150 %) waeren das zwei
+    verschiedene Massstaebe - ueber das Handle bleibt alles in einem.
+    """
+    hwnd = _own_window_hwnd()
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.windll.user32
+
+        class RECT(ctypes.Structure):
+            _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
+                        ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+        rc = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rc)):
+            return False
+        x, y, w, h = rc.l, rc.t, rc.r - rc.l, rc.b - rc.t
+        if w <= 0 or h <= 0:
+            return False
+        nx, ny, nw, nh = _fit_window_to_screen(x, y, w, h)
+        if (nx, ny, nw, nh) == (x, y, w, h):
+            return False
+        SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
+        user32.SetWindowPos(hwnd, 0, nx, ny, nw, nh,
+                            SWP_NOZORDER | SWP_NOACTIVATE)
+        return True
+    except Exception:
+        return False
 
 
 def _restore_existing_window():
