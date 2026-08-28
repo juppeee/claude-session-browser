@@ -1,9 +1,9 @@
 {
-  "version": "1.4.0",
-  "notes": "Usage now shows what the API says: the settings page could sit at 100% while the account was barely used, because a limit message from hours ago outweighed the measured value. The reset card no longer ends up behind Clawd, and Clawd no longer gets stuck see-through when another window covers him. The settings now name the firmware fork you need if you want the device to show what Claude is doing.",
+  "version": "1.4.1",
+  "notes": "The window can no longer end up with its title bar above the top of the screen. A remembered position was only checked for a scrap of overlap with any monitor, so a window sitting a little too high passed the check and the close button was off screen. A size remembered from a larger monitor or a different display scaling had the same effect. The window is now fitted to the work area when it opens and when it is brought back from the tray.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "5e1e928cd0dedcb96a4940950fc1e0551d1f34879bdd86c9dead7448a38cfbda",
-  "sha256": "074cfc8719fb37f51b722008f7438e97a0b99d18855157a9a83b3bfcad5a3838"
+  "installer_sha256": "04a69299f9bdb7e79f4182a3d8552a3be7df225ce19e8dc048e03509922921a0",
+  "sha256": "eaf983868e2a24f66c079b9a9e1728b074e84907d64017fb20eed3b34cf06f5d"
 }
