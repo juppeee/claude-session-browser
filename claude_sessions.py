@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -980,10 +980,18 @@ def parse_session(path):
     }
 
 
+# Geparste Sessions je Datei, gueltig solange Groesse und Aenderungszeit
+# gleich bleiben. Ohne das liest jedes Aktualisieren alle JSONL komplett -
+# bei ein paar hundert MB Verlauf mehrere Sekunden, und das Fenster laedt
+# die Liste inzwischen bei jedem Zurueckholen nach.
+_SESSION_PARSE_CACHE = {}
+
+
 def collect_sessions(projects_dir):
     out = []
     if not projects_dir or not os.path.isdir(projects_dir):
         return out
+    seen = {}
     for project in os.listdir(projects_dir):
         pdir = os.path.join(projects_dir, project)
         if not os.path.isdir(pdir):
@@ -991,10 +999,24 @@ def collect_sessions(projects_dir):
         for name in os.listdir(pdir):
             if not name.endswith(".jsonl"):
                 continue
-            info = parse_session(os.path.join(pdir, name))
+            path = os.path.join(pdir, name)
+            # Vor dem Lesen messen: waechst die Datei waehrenddessen, passt
+            # der Schluessel beim naechsten Mal nicht mehr und sie wird neu
+            # gelesen.
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            key = (st.st_mtime_ns, st.st_size)
+            hit = _SESSION_PARSE_CACHE.get(path)
+            info = hit[1] if hit and hit[0] == key else parse_session(path)
+            seen[path] = (key, info)
             if info:
                 info["project"] = project
                 out.append(info)
+    # Geloeschte Dateien fallen dabei mit heraus.
+    _SESSION_PARSE_CACHE.clear()
+    _SESSION_PARSE_CACHE.update(seen)
     return out
 
 
@@ -5501,6 +5523,19 @@ async function boot(){
   }
 }
 let bootTries=0;
+
+// Holt man das Fenster zurueck (Tray, Taskleiste, zweiter Start), still die
+// Liste nachladen - sonst fehlen Sessions, die inzwischen dazugekommen sind.
+// 'focus' ist das eine Ereignis, das alle drei Wege melden: visibilitychange
+// bleibt beim Verstecken in den Tray auf "visible".
+const FOCUS_REFRESH={busy:false, at:0};
+window.addEventListener('focus', async ()=>{
+  if(!BOOTED || FOCUS_REFRESH.busy || Date.now()-FOCUS_REFRESH.at < 2000) return;
+  FOCUS_REFRESH.busy=true;
+  try{ ingest(await api.refresh()); render(); updateDetail(); }
+  catch(e){}
+  finally{ FOCUS_REFRESH.busy=false; FOCUS_REFRESH.at=Date.now(); }
+});
 
 function ingest(st){STATE=st; sessions=st.sessions||[];}
 
