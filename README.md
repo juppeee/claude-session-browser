@@ -93,6 +93,16 @@ separate updater.
 
 </details>
 
+## Linux and macOS
+
+The Session Browser is built and tested on Windows only. Others have ported it:
+
+- **Linux** — [JayceTheGaymer/claude-session-browser](https://github.com/JayceTheGaymer/claude-session-browser) by @JayceTheGaymer ("Tested on CachyOS with KDE Plasma only")
+- **macOS** — [ryanmaule/claude-session-browser](https://github.com/ryanmaule/claude-session-browser/tree/macos-ble-port) by @ryanmaule
+- **macOS** — [amcgready/claude-session-browser](https://github.com/amcgready/claude-session-browser) by @amcgready
+
+These are independent forks. We haven't tested them — questions and bugs belong in the fork's own issues.
+
 ## Clawd, your desktop buddy
 
 Clawd is a tiny animated character who sits on your desktop and shows what
