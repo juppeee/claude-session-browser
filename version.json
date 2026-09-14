@@ -1,9 +1,9 @@
 {
-  "version": "1.4.2",
-  "notes": "The session list now refreshes itself when you bring the window back - from the tray, the taskbar, or by starting the app a second time. It used to load only at startup and on the refresh button, so new sessions never showed up while the app sat in the tray. Refreshing is also much faster: sessions are only reread when their file has changed.",
+  "version": "1.4.3",
+  "notes": "Double-clicking a session no longer makes the detail panel flicker. Every click of a double-click used to toggle the selection, so the panel opened, closed and opened again. Selecting still happens instantly; the second click of a double-click is ignored, and deselecting waits out the Windows double-click time.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "1cdb2066c82e241654033729389eb9c1d12d37cab3a48e9009071e8cfabf8585",
-  "sha256": "66f0938d43787c67cd1be9a5d7cdf3441db941253173b25e18aba153f7f44149"
+  "installer_sha256": "8292a74fe5a7ee1f5948ac2ebc8ba5b61655e158e71cd4f37025bcf181367b76",
+  "sha256": "0cb4490f0ea47e422281c976deff73aa2dffdbe2dd5d4b84a985c3cf11ecb550"
 }
