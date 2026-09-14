@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -985,6 +985,16 @@ def parse_session(path):
 # bei ein paar hundert MB Verlauf mehrere Sekunden, und das Fenster laedt
 # die Liste inzwischen bei jedem Zurueckholen nach.
 _SESSION_PARSE_CACHE = {}
+
+
+def _dblclick_ms():
+    """Doppelklick-Zeit aus den Windows-Einstellungen, sonst der Standard."""
+    if _IS_WIN:
+        try:
+            return int(ctypes.windll.user32.GetDoubleClickTime()) or 500
+        except Exception:
+            pass
+    return 500
 
 
 def collect_sessions(projects_dir):
@@ -3419,6 +3429,7 @@ class Api:
             "home": HOME,
             "version": VERSION,
             "onboarding_version": ONBOARDING_VERSION,
+            "dblclick_ms": _dblclick_ms(),
         }
 
     # -- von JS aufgerufen --
@@ -5598,7 +5609,7 @@ function render(){
       // zufaellig wie ein Oberflaechentext lautet, darf nicht mituebersetzt
       // werden.
       return `<div class="${cls}" ${style} data-id="${s.id}" data-raw
-        onclick="selectRow('${s.id}')" ondblclick="doResumeRow('${s.id}')">${cells}</div>`;
+        onclick="selectRow('${s.id}', event)" ondblclick="doResumeRow('${s.id}')">${cells}</div>`;
     }).join('');
   }
   const total=sessions.length, q=document.getElementById('search').value.trim();
@@ -5607,7 +5618,18 @@ function render(){
   updateDetail();   // Panel/Buttons immer synchron zur Auswahl halten
 }
 
-function selectRow(id){ selected = (selected===id ? null : id); render(); }   // erneuter Klick = abwählen
+// Ein Doppelklick kommt als Klick, Klick, Doppelklick an. Schaltete jeder
+// Klick die Auswahl um, ginge das Panel auf, zu und wieder auf. Deshalb
+// waehlt ein Klick sofort aus, der zweite Klick eines Doppelklicks zaehlt
+// nicht, und das Abwaehlen (erneuter Klick) wartet die Doppelklick-Zeit ab.
+let DESELECT_T=null;
+function selectRow(id, ev){
+  if(ev && ev.detail>1) return;
+  clearTimeout(DESELECT_T);
+  if(selected!==id){ selected=id; render(); return; }
+  const wait=((STATE && STATE.dblclick_ms) || 500) + 50;
+  DESELECT_T=setTimeout(()=>{ if(selected===id){ selected=null; render(); } }, wait);
+}
 function getSel(){return sessions.find(s=>s.id===selected);}
 
 function updateDetail(){
@@ -5717,7 +5739,7 @@ async function refreshBuddyStatus(){
 
 async function doRefresh(btn){if(btn)btn.disabled=true; ingest(await api.refresh()); render(); updateDetail(); if(btn)btn.disabled=false;}
 async function doResume(){const s=getSel(); if(!s)return; await api.resume(s.id,s.cwd,s.project||'');}
-async function doResumeRow(id){const s=sessions.find(x=>x.id===id); if(!s)return; selected=id; render(); await api.resume(s.id,s.cwd,s.project||'');}
+async function doResumeRow(id){clearTimeout(DESELECT_T); const s=sessions.find(x=>x.id===id); if(!s)return; selected=id; render(); await api.resume(s.id,s.cwd,s.project||'');}
 async function doCopy(){const s=getSel(); if(!s)return; await api.copy(s.id); toast(t('Session-ID kopiert ✓'));}
 
 /* ---- Farbe ---- */
