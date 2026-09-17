@@ -100,6 +100,7 @@ The Session Browser is built and tested on Windows only. Others have ported it:
 - **Linux** — [JayceTheGaymer/claude-session-browser](https://github.com/JayceTheGaymer/claude-session-browser) by @JayceTheGaymer ("Tested on CachyOS with KDE Plasma only")
 - **macOS** — [ryanmaule/claude-session-browser](https://github.com/ryanmaule/claude-session-browser/tree/macos-ble-port) by @ryanmaule
 - **macOS** — [amcgready/claude-session-browser](https://github.com/amcgready/claude-session-browser) by @amcgready
+- **macOS** — [wdonega/claude-session-browser](https://github.com/wdonega/claude-session-browser) by @wdonega
 
 These are independent forks. We haven't tested them — questions and bugs belong in the fork's own issues.
 
