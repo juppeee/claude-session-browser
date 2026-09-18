@@ -40,7 +40,7 @@ and puts you back into one with a double-click.
 ## What you get
 
 - **Every session in one list** — Claude's auto-title or your own, folder, message count, last activity
-- **Find it fast** — live search across title, folder, ID and first question; sortable, configurable columns
+- **Find it fast** — live search across title, folder, ID and first question; sortable columns you can show, hide and resize by dragging their borders
 - **Make it yours** — colour-code sessions, rename them for good, copy the ID
 - **One click back in** — opens Windows Terminal or `cmd` with the session resumed
 - **Know where your quota stands** — 5-hour and weekly usage with a live countdown to the reset
@@ -163,8 +163,8 @@ its battery level back, and warns you before it runs flat.
 
 </div>
 
-Pair the device once in the Windows Bluetooth settings, then enable it under
-**Settings → Connections**.
+Pair the device once in the Windows Bluetooth settings, then enable it in the
+**Clawdmeter** tab.
 
 **Stock firmware is enough for most of it.** Usage and battery need nothing
 special — flash Hermann's firmware as usual and the device shows your quota

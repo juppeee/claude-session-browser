@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.4.5"
+VERSION = "1.5.0"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -4632,6 +4632,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     display:flex; align-items:center; gap:5px; min-width:0; overflow:hidden;
   }
   .th:hover{color:var(--fg)}
+  .th{position:relative}
+  /* Griff zum Ziehen der Spaltenbreite, am rechten Rand jeder Kopfzelle */
+  .colgrip{position:absolute; top:0; right:0; width:9px; height:100%; cursor:col-resize; z-index:2}
+  .colgrip::after{content:""; position:absolute; top:28%; bottom:28%; right:3px; width:2px;
+    border-radius:1px; background:var(--muted); opacity:0; transition:opacity .1s}
+  .th:hover .colgrip::after, .colgrip.active::after{opacity:.7}
+  .colw-tip{position:fixed; z-index:9999; padding:3px 8px; border-radius:6px; background:var(--bg);
+    border:1px solid var(--border); font-size:11.5px; color:var(--fg); pointer-events:none;
+    font-variant-numeric:tabular-nums}
+  body.col-resizing, body.col-resizing *{cursor:col-resize !important; user-select:none}
   .th.num{justify-content:flex-start}
   .th .arr{font-size:10px; opacity:.9}
   .tbody{flex:1; overflow-y:auto; padding:5px}
@@ -5102,6 +5112,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="tabs">
     <div class="tab active" data-view="sessions" onclick="switchView('sessions')">Sessions</div>
     <div class="tab" data-view="buddy" onclick="switchView('buddy')">Buddy</div>
+    <div class="tab" data-view="clawd" onclick="switchView('clawd')">Clawdmeter</div>
     <div class="tab" data-view="settings" onclick="switchView('settings')">Einstellungen</div>
   </div>
 
@@ -5183,6 +5194,18 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       <div class="count" id="buddy-status"></div>
     </div>
     <div class="settings" id="buddy-panel"></div>
+  </div>
+
+  <!-- Clawdmeter -->
+  <div class="view" id="view-clawd">
+    <div class="head">
+      <h1 class="titlewrap">
+        <span class="hlogo" id="clawd-hlogo" style="display:inline-flex;align-items:center;justify-content:center;color:var(--accent)"></span>
+        <span>Clawdmeter</span>
+      </h1>
+      <div class="count" id="clawd-head-status"></div>
+    </div>
+    <div class="settings" id="clawd-panel"></div>
   </div>
 
   <!-- Einstellungen -->
@@ -5460,15 +5483,51 @@ function normCols(){
   const saved=(STATE && STATE.settings.columns)||[];
   const order=saved.map(c=>c.key).filter(k=>ALL_COLS[k]);
   Object.keys(ALL_COLS).forEach(k=>{ if(!order.includes(k)) order.push(k); });
-  return order.map(k=>{const f=saved.find(c=>c.key===k); return {key:k, on: f?!!f.on:DEFAULT_ON[k]};});
+  return order.map(k=>{const f=saved.find(c=>c.key===k);
+    const col={key:k, on: f?!!f.on:DEFAULT_ON[k]};
+    // Gezogene Breite in Pixeln; ohne w bleibt die Spalte anteilig.
+    if(f && f.w) col.w=Math.max(COL_MIN[k]||60, Math.round(f.w));
+    return col;});
 }
-// Wird die Tabelle schmal (kleines Fenster, Detailpanel offen), faellt der
-// Ordner weg - er steht ohnehin im Panel, und so bleibt Platz fuer den Titel.
-const NARROW_TABLE_PX = 640;
-let tableNarrow = false;
+// Mindestbreiten. Nachrichten und Zuletzt aktiv wie seit e4fe3b2 - darunter
+// schnitten sie Anzahl und Datum ab.
+const COL_MIN = {title:160, project:120, msgs:120, when:150, id:110, first:160};
+// So viel Platz soll dem Titel bleiben. Wird es weniger, weicht der Ordner -
+// er steht ohnehin im Detailpanel. Mit den Standardbreiten liegt die Grenze
+// bei rund 640 px Tabellenbreite, wie vorher fest eingestellt.
+const TITLE_ROOM = 250;
+let tableNarrow = false, tableW = 0;
+let COLW_TEMP = {};   // Breite waehrend des Ziehens, noch nicht gespeichert
+
 function visCols(){
   return normCols().filter(c=>c.on && !(tableNarrow && c.key==='project'))
-                   .map(c=>({key:c.key, ...ALL_COLS[c.key]}));
+                   .map(c=>({...c, ...ALL_COLS[c.key]}));
+}
+// Die Spalte, die den Rest nimmt: der Titel, ohne Titel die letzte.
+function fillerKey(cols){
+  if(!cols.length) return '';
+  return cols.some(c=>c.key==='title') ? 'title' : cols[cols.length-1].key;
+}
+function colFr(grow){ const m=/([\d.]+fr)\)?$/.exec(grow||''); return m?m[1]:'1fr'; }
+function colTrack(c, filler){
+  const min=COL_MIN[c.key]||60;
+  const w=COLW_TEMP[c.key]||c.w;
+  if(c.key!==filler && w) return w+'px';
+  return `minmax(${min}px,${colFr(c.grow)})`;
+}
+function checkNarrow(){
+  if(!tableW) return;
+  const cols=normCols().filter(c=>c.on), f=fillerKey(cols);
+  let narrow=false;
+  if(cols.some(c=>c.key==='project') && f!=='project'){
+    const belegt=cols.filter(c=>c.key!==f)
+      .reduce((a,c)=>a+(COLW_TEMP[c.key]||c.w||COL_MIN[c.key]||60), 0);
+    const room = f==='title' ? TITLE_ROOM : (COL_MIN[f]||60);
+    narrow = (tableW - 12 - belegt) < room;
+  }
+  if(narrow===tableNarrow) return;
+  tableNarrow=narrow;
+  if(STATE){ renderHead(); render(); }
 }
 function watchTableWidth(){
   const el=document.querySelector('.table');
@@ -5476,13 +5535,92 @@ function watchTableWidth(){
   new ResizeObserver(([e])=>{
     const w=e.contentRect.width;
     if(!w) return;   // Tab nicht sichtbar
-    const narrow = w < NARROW_TABLE_PX;
-    if(narrow===tableNarrow) return;
-    tableNarrow=narrow;
-    if(STATE){ renderHead(); render(); }
+    tableW=w;
+    checkNarrow();
   }).observe(el);
 }
-function applyCols(){ document.documentElement.style.setProperty('--cols', visCols().map(c=>c.grow).join(' ')); }
+function applyCols(){
+  const cols=visCols(), f=fillerKey(cols);
+  document.documentElement.style.setProperty('--cols', cols.map(c=>colTrack(c,f)).join(' '));
+}
+
+// ---- Spaltenbreite ziehen (wie in Excel) ----
+// Der Griff sitzt am rechten Rand einer Spalte und aendert deren Breite. Am
+// Rand der Titelspalte zieht er stattdessen die Nachbarspalte - der Titel
+// selbst nimmt immer den Rest.
+function colTarget(key){
+  const cols=visCols(), f=fillerKey(cols), i=cols.findIndex(c=>c.key===key);
+  if(i<0) return null;
+  if(key!==f) return {key, sign:1, idx:i};
+  const nb=cols[i+1];
+  return nb ? {key:nb.key, sign:-1, idx:i+1} : null;
+}
+let COLDRAG=null;
+function colDragStart(ev, key){
+  ev.preventDefault(); ev.stopPropagation();
+  const tg=colTarget(key); if(!tg) return;
+  const th=document.querySelectorAll('#thead .th')[tg.idx]; if(!th) return;
+  const tip=document.createElement('div'); tip.className='colw-tip'; document.body.appendChild(tip);
+  COLDRAG={...tg, x0:ev.clientX, w0:Math.round(th.getBoundingClientRect().width),
+           w:0, moved:false, tip, grip:ev.currentTarget};
+  COLDRAG.grip.classList.add('active');
+  document.body.classList.add('col-resizing');
+  document.addEventListener('mousemove', colDragMove);
+  document.addEventListener('mouseup', colDragEnd);
+}
+function colDragMove(ev){
+  const d=COLDRAG; if(!d) return;
+  const dx=ev.clientX-d.x0;
+  if(!d.moved && Math.abs(dx)<2) return;
+  d.moved=true;
+  d.w=Math.max(COL_MIN[d.key]||60, Math.round(d.w0 + d.sign*dx));
+  COLW_TEMP={[d.key]: d.w};
+  applyCols();
+  d.tip.textContent=d.w+' px';
+  d.tip.style.left=(ev.clientX+14)+'px'; d.tip.style.top=(ev.clientY+16)+'px';
+}
+function colDragEnd(){
+  const d=COLDRAG; COLDRAG=null;
+  document.removeEventListener('mousemove', colDragMove);
+  document.removeEventListener('mouseup', colDragEnd);
+  document.body.classList.remove('col-resizing');
+  if(!d) return;
+  d.tip.remove(); d.grip.classList.remove('active');
+  // Ein Klick ohne Bewegung (auch jeder Teil eines Doppelklicks) speichert
+  // nichts - sonst waere die Spalte danach ungewollt auf Pixel festgelegt.
+  if(d.moved) saveColWidth(d.key, d.w);
+}
+// Doppelklick auf den Griff: Spalte auf ihren breitesten Inhalt setzen.
+// Gemessen wird der Text selbst ueber eine Range - scrollWidth ist nie
+// kleiner als die Zelle und liefert deshalb nur die jetzige Breite.
+function contentWidth(el, stopBefore){
+  const r=document.createRange();
+  r.selectNodeContents(el);
+  if(stopBefore) r.setEndBefore(stopBefore);
+  const cs=getComputedStyle(el);
+  return r.getBoundingClientRect().width
+       + parseFloat(cs.paddingLeft||0) + parseFloat(cs.paddingRight||0);
+}
+function colFit(ev, key){
+  ev.preventDefault(); ev.stopPropagation();
+  const tg=colTarget(key); if(!tg) return;
+  let w=0;
+  const th=document.querySelectorAll('#thead .th')[tg.idx];
+  if(th) w=contentWidth(th, th.querySelector('.colgrip'));
+  document.querySelectorAll('#tbody .row').forEach(r=>{
+    const c=r.children[tg.idx]; if(c) w=Math.max(w, contentWidth(c));
+  });
+  if(w) saveColWidth(tg.key, Math.max(COL_MIN[tg.key]||60, Math.ceil(w)+4));
+}
+async function saveColWidth(key, w){
+  const cols=normCols();
+  const c=cols.find(x=>x.key===key); if(!c) return;
+  c.w=w;
+  COLW_TEMP={};
+  ingest(await api.update_setting('columns', cols));
+  checkNarrow();
+  renderHead(); render();
+}
 function cellHtml(s,key){
   switch(key){
     case 'title':   return `<div class="cell title">${esc(s.display_title)}</div>`;
@@ -5647,9 +5785,15 @@ function visible(){
 
 function renderHead(){
   applyCols();
-  document.getElementById('thead').innerHTML = visCols().map(c=>{
+  const cols = visCols(), f = fillerKey(cols);
+  document.getElementById('thead').innerHTML = cols.map((c,i)=>{
     const arr = c.key===sortCol ? `<span class="arr">${sortRev?'▼':'▲'}</span>`:'';
-    return `<div class="th ${c.num?'num':''}" onclick="sortBy('${c.key}')">${t(c.label)}${arr}</div>`;
+    // Kein Griff nur dort, wo nichts zu ziehen ist: am rechten Rand der
+    // letzten Spalte, wenn sie selbst den Rest nimmt.
+    const grip = (c.key===f && i===cols.length-1) ? '' :
+      '<span class="colgrip" onmousedown="colDragStart(event,\'' + c.key + '\')"'
+      + ' ondblclick="colFit(event,\'' + c.key + '\')" onclick="event.stopPropagation()"></span>';
+    return `<div class="th ${c.num?'num':''}" onclick="sortBy('${c.key}')">${t(c.label)}${arr}${grip}</div>`;
   }).join('');
 }
 
@@ -5748,6 +5892,8 @@ function switchView(v){
   document.getElementById('view-sessions').classList.toggle('active',v==='sessions');
   document.getElementById('view-settings').classList.toggle('active',v==='settings');
   document.getElementById('view-buddy').classList.toggle('active',v==='buddy');
+  document.getElementById('view-clawd').classList.toggle('active',v==='clawd');
+  if(v==='clawd') renderClawd();
   if(v==='buddy'){
     renderBuddy();
     if(!BUDDY_STATUS_TIMER) BUDDY_STATUS_TIMER = setInterval(refreshBuddyStatus, 2500);
@@ -5767,6 +5913,7 @@ function renderAll(){
   render();
   renderSettings();
   if(v === 'buddy') renderBuddy();
+  if(v === 'clawd') renderClawd();
   renderShortcutBar(v);
 }
 
@@ -6263,40 +6410,6 @@ function renderSettings(){
       </div>
     </div>
 
-    <div class="card">
-      <h2>${ic('bluetooth')}Clawdmeter</h2>
-      <div class="sub">Schickt deine Claude-Auslastung per Bluetooth an ein Clawdmeter-Gerät. Das Gerät muss einmalig in den Windows-Bluetooth-Einstellungen gekoppelt werden.</div>
-      <div class="row2">
-        <div><div class="lbl">Anbindung aktiv</div><div class="desc" id="clawd-status">…</div></div>
-        <div class="toggle ${st.clawdmeter?'on':''}" onclick="toggleClawd(this)"></div>
-      </div>
-      <div class="row2">
-        <div><div class="lbl">Gerät</div><div class="desc">Welches gekoppelte Gerät benutzt wird.</div></div>
-        <select class="sel-input" id="clawd-dev" onchange="pickClawd(this.value)">
-          <option value="">Wird geladen…</option>
-        </select>
-      </div>
-      <div class="row2">
-        <div><div class="lbl">Clawd-Buddy spiegeln</div><div class="desc">Das Gerät zeigt dieselbe Animation wie dein Clawd-Buddy auf dem Desktop — statt selbst eine nach Auslastung zu wählen. Braucht einen eingeschalteten Buddy.</div></div>
-        <div class="toggle ${st.clawdmeter_buddy!==false?'on':''}" onclick="toggleClawdBuddy(this)"></div>
-      </div>
-      <div class="row2">
-        <div><div class="lbl">Warnen wenn der Akku zur Neige geht</div>
-          <div class="desc">Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.</div></div>
-        <div class="toggle ${st.notify_clawd_battery!==false?'on':''}" onclick="toggleClawdBattery(this)"></div>
-      </div>
-      <div class="row2">
-        <div><div class="lbl">Schwelle für die Akku-Warnung</div>
-          <div class="desc">Ab wie viel Restladung gewarnt wird.</div></div>
-        <div><input type="number" min="5" max="90" step="5"
-             value="${st.clawd_battery_pct||15}" onchange="setClawdBatteryPct(this)"
-             style="width:74px;text-align:right"> %</div>
-      </div>
-      <div class="field">
-        <button class="btn accent" onclick="clawdReconnect(this)">Jetzt verbinden</button>
-        <button class="btn" onclick="loadClawdDevices(true)">Geräte neu suchen</button>
-      </div>
-    </div>
 
     <div class="secthead" id="sect-app">App</div>
     <div class="card">
@@ -6334,8 +6447,6 @@ function renderSettings(){
   buildSettingsJump();
   refreshHooks();
   refreshLimit();
-  refreshClawd();
-  loadClawdDevices(false);
 }
 
 // ---- Limit-Anzeige ----
@@ -6509,15 +6620,77 @@ function setClawdStatus(el, r){
   const i = clawdInfo(r);
   el.innerHTML = `<span class="dot ${i.dot}"></span>${esc(i.text)}` + battHtml(i.akku);
 }
+// Eigener Tab seit 1.5.0 - der Block war der groesste auf der Einstellungs-
+// seite und eher eine Geraeteansicht als eine Einstellung. Solange die
+// Anbindung aus ist, steht nur der Schalter mit dem Kopplungshinweis da.
+function renderClawd(){
+  const box = document.getElementById('clawd-panel');
+  if(!box) return;
+  const st = STATE.settings, on = !!st.clawdmeter;
+  const logo = document.getElementById('clawd-hlogo');
+  if(logo) logo.innerHTML = '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" '
+    + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+    + (ICONS.bluetooth||'') + '</svg>';
+  // Getrennt statt verschachtelt: tools/check_i18n.py liest keine
+  // Template-Strings in Template-Strings.
+  const rest = on ? `
+      <div class="row2">
+        <div><div class="lbl">Gerät</div><div class="desc">Welches gekoppelte Gerät benutzt wird.</div></div>
+        <select class="sel-input" id="clawd-dev" onchange="pickClawd(this.value)">
+          <option value="">Wird geladen…</option>
+        </select>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Clawd-Buddy spiegeln</div><div class="desc">Das Gerät zeigt dieselbe Animation wie dein Clawd-Buddy auf dem Desktop — statt selbst eine nach Auslastung zu wählen. Braucht einen eingeschalteten Buddy.</div></div>
+        <div class="toggle ${st.clawdmeter_buddy!==false?'on':''}" onclick="toggleClawdBuddy(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Warnen wenn der Akku zur Neige geht</div>
+          <div class="desc">Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.</div></div>
+        <div class="toggle ${st.notify_clawd_battery!==false?'on':''}" onclick="toggleClawdBattery(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Schwelle für die Akku-Warnung</div>
+          <div class="desc">Ab wie viel Restladung gewarnt wird.</div></div>
+        <div><input type="number" min="5" max="90" step="5"
+             value="${st.clawd_battery_pct||15}" onchange="setClawdBatteryPct(this)"
+             style="width:74px;text-align:right"> %</div>
+      </div>
+      <div class="field">
+        <button class="btn accent" onclick="clawdReconnect(this)">Jetzt verbinden</button>
+        <button class="btn" onclick="loadClawdDevices(true)">Geräte neu suchen</button>
+      </div>
+` : '';
+  box.innerHTML = `
+    <div class="card">
+      <h2>${ic('bluetooth')}Clawdmeter</h2>
+      <div class="sub">Schickt deine Claude-Auslastung per Bluetooth an ein Clawdmeter-Gerät. Das Gerät muss einmalig in den Windows-Bluetooth-Einstellungen gekoppelt werden.</div>
+      <div class="row2">
+        <div><div class="lbl">Anbindung aktiv</div><div class="desc" id="clawd-status">…</div></div>
+        <div class="toggle ${st.clawdmeter?'on':''}" onclick="toggleClawd(this)"></div>
+      </div>
+      ${rest}
+    </div>`;
+  translateDom(box);
+  refreshClawd();
+  if(on) loadClawdDevices(false);
+}
 async function refreshClawd(){
   const el = document.getElementById('clawd-status');
   if(!el) return;
-  try{ setClawdStatus(el, await api.clawdmeter_state()); }catch(e){}
+  try{
+    const r = await api.clawdmeter_state();
+    setClawdStatus(el, r);
+    setClawdStatus(document.getElementById('clawd-head-status'), r);
+  }catch(e){}
 }
 async function toggleClawd(el){
   const on=!el.classList.contains('on'); el.classList.toggle('on',on);
   const r = await api.clawdmeter_set(on);
+  STATE.settings.clawdmeter = on;
+  renderClawd();
   setClawdStatus(document.getElementById('clawd-status'), r);
+  setClawdStatus(document.getElementById('clawd-head-status'), r);
   toast(on?t('Clawdmeter an ✓'):t('Clawdmeter aus'));
 }
 async function clawdReconnect(btn){
