@@ -361,6 +361,31 @@ def _fehlertext(e: Exception) -> str:
     return str(e) or type(e).__name__
 
 
+def _ble_target(address: str):
+    """Was BleakClient zum Verbinden bekommt.
+
+    Mit einer blossen Adresse sucht bleak unter Windows das Geraet erst per
+    Scan. Ein gekoppelter Clawdmeter haengt aber als HID-Tastatur schon an
+    Windows - und ein verbundenes BLE-Geraet wirbt nicht mehr. Der Scan fand
+    es dann nie ("Device ... was not found"), obwohl die Verbindung stand.
+    Windows kann ein gekoppeltes Geraet auch direkt ueber die Adresse
+    ansprechen; dafuer bekommt bleak ein BLEDevice mit der Adresse als Zahl
+    und laesst den Scan weg. Faellt das weg (anderes System, andere bleak-
+    Version), bleibt es bei der Adresse und damit beim Scan.
+    """
+    if sys.platform != "win32":
+        return address
+    try:
+        from types import SimpleNamespace
+        from bleak.backends.device import BLEDevice
+        from bleak.backends.winrt.scanner import RawAdvData
+        nummer = int(address.replace(":", ""), 16)
+        return BLEDevice(address, DEVICE_NAME, RawAdvData(
+            adv=SimpleNamespace(bluetooth_address=nummer), scan=None))
+    except Exception:
+        return address
+
+
 # --------------------------------------------------------------------------
 # Hintergrund-Link
 # --------------------------------------------------------------------------
@@ -508,7 +533,7 @@ class ClawdmeterLink:
         with self._lock:
             erster = int(self._status.get("attempt") or 1) <= 1
         timeout = CONNECT_TIMEOUT_FIRST if erster else CONNECT_TIMEOUT
-        async with BleakClient(address, timeout=timeout) as client:
+        async with BleakClient(_ble_target(address), timeout=timeout) as client:
             # Fehlt der Service, hat das zwei moegliche Gruende: falsches
             # Geraet gewaehlt -- oder das Geraet haengt schon an einem anderen
             # Programm, dann liefert Windows eine unvollstaendige Service-Liste.
