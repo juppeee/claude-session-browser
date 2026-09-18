@@ -12,6 +12,8 @@
 
 **Every Claude Code session you ever started, in one window — search them, and double-click one to jump straight back in.**
 
+https://github.com/user-attachments/assets/4718ca04-9353-42bd-baa3-5b24d559bd8d
+
 <a href="https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe"><img src="https://img.shields.io/badge/Download-Installer%20for%20Windows-ec7456?style=for-the-badge&logo=windows&logoColor=white" alt="Download the installer for Windows"></a>
 
 <sub>Installs per user — no admin rights, no UAC prompt, and it never touches `~/.claude`</sub>
