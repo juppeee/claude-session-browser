@@ -1,9 +1,9 @@
 {
-  "version": "1.4.4",
-  "notes": "A maximized window's position is no longer saved as its normal one, so restoring it no longer puts the close button above the screen. A limit reset is announced once instead of card plus Windows notification, and no longer repeated later. The session table stays readable in a small window. Clawdmeter: plain messages when Bluetooth is off, and the status line is translated.",
+  "version": "1.4.5",
+  "notes": "The buddy no longer shows the permission animation while a command is simply running. Claude Code changed the spinner in its window title, so the app never saw Claude as working and treated every tool running longer than 30 seconds as a permission prompt, even in auto mode.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "55b60b51be8cbf937a66e095fd08b173196bda0db530bb88318af456ece080fd",
-  "sha256": "015c42ddd2e3e79efd28fa4728050b0564ad3df4405f84485a56c52cc6960cd2"
+  "installer_sha256": "477cef3d5200b82ffc3d189f3265d5dc9a8e329efe132f14ee96eb79436055cc",
+  "sha256": "935fc43fcad231fbf2e3515179a886e0a4375706e6fc16a4f7248bd91b9088c2"
 }
