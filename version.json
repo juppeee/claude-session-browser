@@ -1,9 +1,9 @@
 {
-  "version": "1.4.3",
-  "notes": "Double-clicking a session no longer makes the detail panel flicker. Every click of a double-click used to toggle the selection, so the panel opened, closed and opened again. Selecting still happens instantly; the second click of a double-click is ignored, and deselecting waits out the Windows double-click time.",
+  "version": "1.4.4",
+  "notes": "A maximized window's position is no longer saved as its normal one, so restoring it no longer puts the close button above the screen. A limit reset is announced once instead of card plus Windows notification, and no longer repeated later. The session table stays readable in a small window. Clawdmeter: plain messages when Bluetooth is off, and the status line is translated.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "8292a74fe5a7ee1f5948ac2ebc8ba5b61655e158e71cd4f37025bcf181367b76",
-  "sha256": "0cb4490f0ea47e422281c976deff73aa2dffdbe2dd5d4b84a985c3cf11ecb550"
+  "installer_sha256": "55b60b51be8cbf937a66e095fd08b173196bda0db530bb88318af456ece080fd",
+  "sha256": "015c42ddd2e3e79efd28fa4728050b0564ad3df4405f84485a56c52cc6960cd2"
 }
