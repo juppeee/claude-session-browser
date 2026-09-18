@@ -30,6 +30,8 @@ sys.path.insert(0, ROOT)
 import i18n  # noqa: E402
 
 QUELLE = os.path.join(ROOT, "claude_sessions.py")
+# Weitere Module mit t()-Aufrufen - nur Python, ohne Oberflaeche.
+WEITERE = [os.path.join(ROOT, "clawdmeter.py")]
 
 
 def python_keys(baum):
@@ -224,6 +226,9 @@ def main():
 
     baum = ast.parse(quelltext)
     aus_py = python_keys(baum)
+    for pfad in WEITERE:
+        with open(pfad, encoding="utf-8") as fh:
+            aus_py |= python_keys(ast.parse(fh.read()))
     aus_js, fehler = js_keys(quelltext)
     if fehler:
         print("FEHLER:", fehler)

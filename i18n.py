@@ -582,6 +582,22 @@ TRANSLATIONS = {
         "{name} · {n} Frames · Klick zum Vorspielen":
             "{name} · {n} frames · click to play it",
 
+        # ---- Clawdmeter-Status (aus clawdmeter.py) ------------------------
+        "Bluetooth ist ausgeschaltet": "Bluetooth is turned off",
+        "Kein Bluetooth-Adapter gefunden": "No Bluetooth adapter found",
+        "Der Bluetooth-Adapter unterstützt kein Bluetooth LE":
+            "The Bluetooth adapter does not support Bluetooth LE",
+        "Bluetooth-Zugriff wurde verweigert": "Bluetooth access was denied",
+        "Bluetooth-Zugriff ist vom System gesperrt":
+            "Bluetooth access is blocked by the system",
+        "Kein Gerät ausgewählt": "No device selected",
+        "Gerät meldet keinen Clawdmeter-Dienst — falsches Gerät, "
+        "oder es ist von einem anderen Programm belegt":
+            "The device reports no Clawdmeter service — wrong device, "
+            "or another program is using it",
+        "Kein Claude-Token gefunden": "No Claude token found",
+        "API-Abfrage fehlgeschlagen": "API request failed",
+
         # ---- Ueber Umwege uebersetzt -------------------------------------
         # Diese Saetze stehen nicht im Markup, sondern als Wert in einer
         # Liste und laufen ueber t(variable). Weder die Suche im Markup noch
