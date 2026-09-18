@@ -4602,7 +4602,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .th{
     padding:13px 12px; font-size:11.5px; font-weight:700; color:var(--muted);
     text-transform:uppercase; letter-spacing:.6px; cursor:pointer; white-space:nowrap;
-    display:flex; align-items:center; gap:5px;
+    display:flex; align-items:center; gap:5px; min-width:0; overflow:hidden;
   }
   .th:hover{color:var(--fg)}
   .th.num{justify-content:flex-start}
@@ -5421,8 +5421,10 @@ const COLORS = ["#4aa3ff","#3ecf8e","#ffb454","#ff6b6b","#c08cff","#ffe066","#34
 const ALL_COLS = {
   title:   {label:"Titel",         grow:"2.6fr"},
   project: {label:"Ordner",        grow:"2fr"},
-  msgs:    {label:"Nachrichten",   grow:"1.1fr", num:true},
-  when:    {label:"Zuletzt aktiv", grow:"1fr"},
+  // Feste Untergrenze fuer die kurzen Spalten: nur mit Anteilen schrumpften
+  // sie im kleinen Fenster mit und schnitten Datum und Anzahl ab.
+  msgs:    {label:"Nachrichten",   grow:"minmax(120px,1.1fr)", num:true},
+  when:    {label:"Zuletzt aktiv", grow:"minmax(150px,1fr)"},
   id:      {label:"Session-ID",    grow:"1.7fr"},
   first:   {label:"Erste Frage",   grow:"2.4fr"},
 };
@@ -5433,7 +5435,26 @@ function normCols(){
   Object.keys(ALL_COLS).forEach(k=>{ if(!order.includes(k)) order.push(k); });
   return order.map(k=>{const f=saved.find(c=>c.key===k); return {key:k, on: f?!!f.on:DEFAULT_ON[k]};});
 }
-function visCols(){ return normCols().filter(c=>c.on).map(c=>({key:c.key, ...ALL_COLS[c.key]})); }
+// Wird die Tabelle schmal (kleines Fenster, Detailpanel offen), faellt der
+// Ordner weg - er steht ohnehin im Panel, und so bleibt Platz fuer den Titel.
+const NARROW_TABLE_PX = 640;
+let tableNarrow = false;
+function visCols(){
+  return normCols().filter(c=>c.on && !(tableNarrow && c.key==='project'))
+                   .map(c=>({key:c.key, ...ALL_COLS[c.key]}));
+}
+function watchTableWidth(){
+  const el=document.querySelector('.table');
+  if(!el || !window.ResizeObserver) return;
+  new ResizeObserver(([e])=>{
+    const w=e.contentRect.width;
+    if(!w) return;   // Tab nicht sichtbar
+    const narrow = w < NARROW_TABLE_PX;
+    if(narrow===tableNarrow) return;
+    tableNarrow=narrow;
+    if(STATE){ renderHead(); render(); }
+  }).observe(el);
+}
 function applyCols(){ document.documentElement.style.setProperty('--cols', visCols().map(c=>c.grow).join(' ')); }
 function cellHtml(s,key){
   switch(key){
@@ -5536,6 +5557,7 @@ async function boot(){
     buildSwatches();
     renderHead();
     render();
+    watchTableWidth();
     renderSettings();
     renderShortcutBar('sessions');   // Startansicht
     // Onboarding zeigen bei Erstinstallation ODER wenn seit dem letzten Anzeigen
