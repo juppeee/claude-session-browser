@@ -1,9 +1,9 @@
 {
-  "version": "1.5.0",
-  "notes": "Clawdmeter has its own tab next to Buddy, with the connection status and battery level in the header. Table columns can be resized by dragging their header borders, like in Excel; a double-click fits a column to its content, and the widths are remembered.",
+  "version": "1.5.1",
+  "notes": "The Clawdmeter connects again once it is paired. Windows keeps a paired Clawdmeter connected as a keyboard, so it stops advertising, and the app never found it by scanning. It now connects directly by address.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "b3ea2413d5354a49fae4e12003afc651e7021745670832dd94364047d700d80f",
-  "sha256": "d9fbad240bc2d2dde46a6ce1dabae482168aedfe75995e5e17261030a2786407"
+  "installer_sha256": "9d7058e4105b7ad15720e8e26768a0ab839fa1c7ffe23c4ceb496465965be215",
+  "sha256": "f8f874b09242001585b7235013f62e0faf21b2c5bde4e44b2a74d12f05b5e9a0"
 }
