@@ -331,6 +331,31 @@ def discover_address(preferred: str | None = None) -> str | None:
     return None
 
 
+_BT_NICHT_VERFUEGBAR = {
+    "POWERED_OFF": "Bluetooth ist ausgeschaltet",
+    "NO_BLUETOOTH": "Kein Bluetooth-Adapter gefunden",
+    "NO_BLE_CENTRAL_ROLE": "Der Bluetooth-Adapter unterstützt kein Bluetooth LE",
+    "DENIED_BY_USER": "Bluetooth-Zugriff wurde verweigert",
+    "DENIED_BY_SYSTEM": "Bluetooth-Zugriff ist vom System gesperrt",
+    "DENIED_BY_UNKNOWN": "Bluetooth-Zugriff wurde verweigert",
+}
+
+
+def _fehlertext(e: Exception) -> str:
+    """Lesbarer Grund fuer die Statuszeile.
+
+    bleak legt bei fehlendem Bluetooth Meldung und Grund zusammen in die
+    Exception. str(e) zeigt dann das rohe Tupel:
+    ('Bluetooth radio is not powered on. ...', <...Reason.POWERED_OFF: 3>)
+    """
+    grund = getattr(getattr(e, "reason", None), "name", None)
+    if grund in _BT_NICHT_VERFUEGBAR:
+        return _BT_NICHT_VERFUEGBAR[grund]
+    if len(e.args) > 1 and isinstance(e.args[0], str):
+        return e.args[0]
+    return str(e) or type(e).__name__
+
+
 # --------------------------------------------------------------------------
 # Hintergrund-Link
 # --------------------------------------------------------------------------
@@ -433,7 +458,7 @@ class ClawdmeterLink:
             asyncio.run(self._loop())
         except Exception as e:
             self._log(f"Clawdmeter-Thread beendet: {e}")
-            self._set(connected=False, last_error=str(e))
+            self._set(connected=False, last_error=_fehlertext(e))
 
     async def _loop(self) -> None:
         import asyncio
@@ -460,7 +485,7 @@ class ClawdmeterLink:
                 raise
             except Exception as e:
                 fails += 1
-                self._set(connected=False, last_error=str(e))
+                self._set(connected=False, last_error=_fehlertext(e))
                 self._log(f"Clawdmeter-Verbindung verloren: {e}")
                 wait = RETRY_BACKOFF[min(fails - 1, len(RETRY_BACKOFF) - 1)]
                 await self._sleep(wait)
