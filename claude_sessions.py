@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -3350,8 +3350,24 @@ class Api:
             "x": s.get("win_x"), "y": s.get("win_y"),
         }
 
+        self._hwnd = 0
+
+        def is_normal():
+            # pywebview ruft jeden Handler in einem eigenen Thread auf. Beim
+            # Maximieren kommt "moved" mit -8/-8 und "resized" mit der vollen
+            # Groesse oft vor "maximized" an - self._max steht dann noch auf
+            # False, und die Maximiert-Lage landete als normale Lage in den
+            # Einstellungen. Nach dem naechsten Wiederherstellen ragte die
+            # Titelleiste oben aus dem Bildschirm. Deshalb den echten
+            # Fensterzustand fragen.
+            if self._max:
+                return False
+            if not self._hwnd:
+                self._hwnd = _own_window_hwnd()
+            return _window_is_normal(self._hwnd)
+
         def on_resized(*a):
-            if len(a) >= 2 and not self._max:
+            if len(a) >= 2 and is_normal():
                 self._geo["w"], self._geo["h"] = a[0], a[1]
 
         def on_moved(*a):
@@ -3360,7 +3376,7 @@ class Api:
             # Position gespeichert - und beim naechsten Start ein Fenster
             # ausserhalb jedes Bildschirms: Eintrag in der Taskleiste, aber
             # nichts zu sehen, und das dauerhaft.
-            if len(a) >= 2 and not self._max:
+            if len(a) >= 2 and is_normal():
                 if a[0] <= -30000 or a[1] <= -30000:
                     return
                 self._geo["x"], self._geo["y"] = a[0], a[1]
@@ -3380,6 +3396,10 @@ class Api:
 
         def on_restore(*a):
             self._max = False
+            # Aus dem Maximiert-Zustand geht Windows auf die gemerkte normale
+            # Lage zurueck. Stammt die von einem anderen Monitor oder aus
+            # einer aelteren Version, haengt die Titelleiste oben heraus.
+            _fit_main_window_now()
 
         def on_closing(*a):
             if getattr(self, "_geo_saved", False):
@@ -7144,6 +7164,18 @@ def _own_window_hwnd():
         return found["hwnd"]
     except Exception:
         return 0
+
+
+def _window_is_normal(hwnd):
+    """True wenn das Fenster weder maximiert noch minimiert ist. Ohne Handle
+    (oder ausserhalb von Windows) True - dann entscheidet der Aufrufer allein."""
+    if not _IS_WIN or not hwnd:
+        return True
+    try:
+        user32 = ctypes.windll.user32
+        return not user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd)
+    except Exception:
+        return True
 
 
 def _fit_main_window_now():
