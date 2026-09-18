@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -369,12 +369,22 @@ APPROVAL_AFTER_S = 30.0
 _BUSY_CACHE = {"t": 0.0, "v": False}
 
 
+def _is_spinner(ch):
+    """Laufanzeige am Titelanfang? Kennt beide Formen, die Claude Code bisher
+    benutzt hat - kennt sie eine nicht, gilt Claude nie als beschaeftigt, und
+    jedes laengere Werkzeug sieht nach 30 s wie eine Rueckfrage aus."""
+    o = ord(ch)
+    return 0x2800 <= o <= 0x28FF or 0x25D0 <= o <= 0x25D3
+
+
 def _claude_is_busy():
     """True wenn irgendein Claude-Terminal gerade sichtbar arbeitet.
 
-    Claude Code stellt dem Fenstertitel waehrend der Arbeit ein Braille-Zeichen
-    als Laufanzeige voran (U+2800..U+28FF, z.B. '⠂ Mein Projekt'). Sobald
-    Claude auf eine Eingabe oder eine Erlaubnis wartet, verschwindet es.
+    Claude Code stellt dem Fenstertitel waehrend der Arbeit eine Laufanzeige
+    voran. Aeltere Versionen nahmen Braille-Zeichen (U+2800..U+28FF, z.B.
+    '⠂ Mein Projekt'), neuere drehen einen Halbkreis (U+25D0..U+25D3,
+    '◐ Mein Projekt'). Sobald Claude auf eine Eingabe oder eine Erlaubnis
+    wartet, verschwindet sie.
 
     Das ist das einzige Lebenszeichen von aussen: waehrend ein Werkzeug laeuft,
     schreibt Claude Code nichts ins Protokoll, und die Rueckfrage steht nur im
@@ -394,7 +404,7 @@ def _claude_is_busy():
             t = title.strip()
             if not t or "claude" not in t.lower():
                 continue
-            if 0x2800 <= ord(t[0]) <= 0x28FF:
+            if _is_spinner(t[0]):
                 busy = True
                 break
     except Exception:
