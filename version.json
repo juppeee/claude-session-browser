@@ -1,9 +1,9 @@
 {
-  "version": "1.4.5",
-  "notes": "The buddy no longer shows the permission animation while a command is simply running. Claude Code changed the spinner in its window title, so the app never saw Claude as working and treated every tool running longer than 30 seconds as a permission prompt, even in auto mode.",
+  "version": "1.5.0",
+  "notes": "Clawdmeter has its own tab next to Buddy, with the connection status and battery level in the header. Table columns can be resized by dragging their header borders, like in Excel; a double-click fits a column to its content, and the widths are remembered.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "477cef3d5200b82ffc3d189f3265d5dc9a8e329efe132f14ee96eb79436055cc",
-  "sha256": "935fc43fcad231fbf2e3515179a886e0a4375706e6fc16a4f7248bd91b9088c2"
+  "installer_sha256": "b3ea2413d5354a49fae4e12003afc651e7021745670832dd94364047d700d80f",
+  "sha256": "d9fbad240bc2d2dde46a6ce1dabae482168aedfe75995e5e17261030a2786407"
 }
