@@ -1908,48 +1908,65 @@ class BuddyController:
         if self.is_alive():
             self._q.put(("pulse", "surprise"))
 
+    # Drei Stellen koennen den Reset melden (Timer, Limit-Abfrage, Session-
+    # Aktivitaet), jede auf ihrem eigenen Thread. Pruefen und Markieren
+    # muessen deshalb ein Schritt sein, sonst rutschen zwei gleichzeitig durch.
+    _limit_reset_lock = threading.Lock()
+
     def _notify_limit_reset(self):
-        """Feuert die Limit-Reset-Karte (persistent, dismissible) + optional
-        Windows-Tray-Notification. Doppel-Feuer wird via
-        limit_reset_notified_for verhindert."""
+        """Zeigt die Limit-Reset-Karte (bleibt stehen, bis man sie wegklickt).
+
+        Eine Windows-Benachrichtigung gibt es nur noch, wenn die Karte nicht
+        erscheinen konnte - vorher kamen beide fuer dasselbe Ereignis."""
         if not self.api.settings.get("notify_limit_reset", True):
             return
-        # Doppel-Schutz: fuer welche Reset-Zeit haben wir schon benachrichtigt?
-        reset_at = float(self.api.settings.get("limit_reset_at", 0) or 0)
-        notified_for = float(
-            self.api.settings.get("limit_reset_notified_for", 0) or 0)
-        if reset_at > 0 and abs(notified_for - reset_at) < 30:
-            return
-        # Karte zeigen
+        with self._limit_reset_lock:
+            # Doppel-Schutz: fuer welche Reset-Zeit haben wir schon gemeldet?
+            reset_at = float(self.api.settings.get("limit_reset_at", 0) or 0)
+            notified_for = float(
+                self.api.settings.get("limit_reset_notified_for", 0) or 0)
+            if reset_at > 0 and abs(notified_for - reset_at) < 30:
+                return
+            # Nach einer Meldung steht limit_reset_at auf 0, und ein Ausloeser
+            # ohne bekannte Reset-Zeit (Session-Aktivitaet) kam frueher
+            # deshalb immer durch. Zwei echte Resets liegen Stunden
+            # auseinander - innerhalb einer halben Stunde ist es derselbe.
+            last = float(
+                self.api.settings.get("limit_reset_notified_at", 0) or 0)
+            if time.time() - last < 30 * 60:
+                return
+            # Markieren, bevor irgendetwas erscheint.
+            try:
+                if reset_at > 0:
+                    self.api.settings["limit_reset_notified_for"] = reset_at
+                self.api.settings["limit_reset_notified_at"] = time.time()
+                self.api.settings["limit_reset_at"] = 0
+                save_json(SETTINGS_FILE, self.api.settings)
+            except Exception:
+                pass
+        shown = False
         try:
             toast = getattr(self.api, "_reset_toast", None)
             if toast is None:
                 toast = LimitResetToast()
                 self.api._reset_toast = toast
             toast.show(avoid=self._pub_rect)
+            shown = True
         except Exception:
             pass
-        # Zusaetzlich Tray-Notification als Bonus
-        tray = getattr(self.api, "_tray", None)
-        if tray and tray.icon:
-            try:
-                tray.icon.notify(
-                    t("Dein Claude-Limit ist zurück – weitermachen!"),
-                    "Clawd")
-            except Exception:
-                pass
+        if not shown:
+            tray = getattr(self.api, "_tray", None)
+            if tray and tray.icon:
+                try:
+                    tray.icon.notify(
+                        t("Dein Claude-Limit ist zurück – weitermachen!"),
+                        "Clawd")
+                except Exception:
+                    pass
         # Buddy kurz "surprise" spielen wenn er sichtbar ist
         try:
             if self.is_alive():
                 self._q.put(("pulse", "surprise"))
-        except Exception:
-            pass
-        # Marker speichern damit's nicht doppelt feuert
-        try:
-            if reset_at > 0:
-                self.api.settings["limit_reset_notified_for"] = reset_at
-            self.api.settings["limit_reset_at"] = 0
-            save_json(SETTINGS_FILE, self.api.settings)
         except Exception:
             pass
 
