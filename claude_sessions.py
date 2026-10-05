@@ -269,6 +269,7 @@ DEFAULT_SETTINGS = {
     ],
     "win_w": 0, "win_h": 0,      # gemerkte Fenstergroesse (0 = noch nicht gesetzt)
     "win_x": None, "win_y": None,  # gemerkte Position
+    "plugins": {},               # je Plugin-Kennung: {"enabled": bool, "data": {...}}
     "win_max": False,            # war das Fenster maximiert?
     "close_to_tray": True,       # X = App verstecken (Tray-Icon) statt beenden
     "autostart": True,           # Beim Windows-Start automatisch mitstarten
@@ -3315,6 +3316,265 @@ def _sprite_icon_png(anim, box_px=40):
     return _png_rgba(box_px, box_px, rows)
 
 
+# --------------------------------------------------------------------------- #
+#  Plugins
+# --------------------------------------------------------------------------- #
+# Ein Plugin ist ein Ordner mit einem Manifest und einer ui.js, die einen
+# eigenen Tab fuellt. Die ui.js laeuft im Fenster und kommt an Daten nur ueber
+# den Host - sie hat weder Dateisystem noch Token. Nur Plugins, die im
+# Manifest "native" verlangen, duerfen zusaetzlich Python mitbringen; die
+# brauchen eine gruendliche Pruefung, bevor sie in den Katalog kommen.
+#
+#   <PLUGINS_DIR>/<kennung>/<version>/manifest.json
+#                                    /ui.js
+#                                    /backend.py   (nur mit "native")
+#
+# Der Code liegt bewusst nicht in ~/.claude: dort stehen Einstellungen, die
+# Leute sichern und synchronisieren - fremder Programmcode gehoert da nicht hin.
+PLUGIN_API = 1
+PLUGIN_PERMISSIONS = ("usage", "sessions", "network", "native")
+PLUGINS_DIR = os.environ.get("CSB_PLUGINS_DIR") or os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local"),
+    "ClaudeSessionBrowser", "plugins")
+_PLUGIN_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+
+
+def plugins_abgeschaltet():
+    """Notausgang: Start mit gedrueckter Shift-Taste laedt kein Plugin.
+
+    Ein Plugin, das beim Start quer schlaegt, darf die App nicht unbenutzbar
+    machen - sonst kommt niemand mehr an den Schalter, mit dem er es wieder
+    los wird.
+    """
+    if os.environ.get("CSB_NO_PLUGINS"):
+        return True
+    if _IS_WIN:
+        try:
+            # VK_SHIFT; das hohe Bit bedeutet "gerade gedrueckt".
+            return bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
+        except Exception:
+            return False
+    return False
+
+
+def _manifest_lesen(ordner, kennung, version):
+    """Manifest pruefen. Rueckgabe (info, fehler) - genau eins davon ist leer."""
+    pfad = os.path.join(ordner, "manifest.json")
+    try:
+        with open(pfad, encoding="utf-8") as fh:
+            m = json.load(fh)
+        if not isinstance(m, dict):
+            raise ValueError("kein Objekt")
+    except (OSError, ValueError, TypeError) as e:
+        return None, t("Manifest nicht lesbar: {grund}", grund=str(e)[:120])
+
+    if m.get("id") != kennung:
+        return None, t("Kennung im Manifest passt nicht zum Ordner")
+    if not _PLUGIN_ID.match(kennung):
+        return None, t("Unzulässige Kennung")
+    if str(m.get("version") or "") != version:
+        return None, t("Version im Manifest passt nicht zum Ordner")
+    try:
+        if int(m.get("api_version") or 0) != PLUGIN_API:
+            return None, t("Gebaut für eine andere Plugin-Schnittstelle")
+    except (TypeError, ValueError):
+        return None, t("Gebaut für eine andere Plugin-Schnittstelle")
+    mindest = str(m.get("min_app_version") or "0")
+    if _vtuple(mindest) > _vtuple(VERSION):
+        return None, t("Braucht mindestens Version {v} der App", v=mindest)
+
+    rechte = m.get("permissions") or []
+    if not isinstance(rechte, list) or any(r not in PLUGIN_PERMISSIONS for r in rechte):
+        return None, t("Unbekannte Berechtigung im Manifest")
+
+    ui = str(m.get("ui") or "ui.js")
+    backend = str(m.get("backend") or "")
+    for datei in (ui, backend):
+        # Kein Ausbrechen aus dem Plugin-Ordner.
+        if datei and (os.path.isabs(datei) or ".." in datei.replace("\\", "/").split("/")):
+            return None, t("Unzulässiger Dateiname im Manifest")
+    if not os.path.isfile(os.path.join(ordner, ui)):
+        return None, t("Die Datei {datei} fehlt", datei=ui)
+    if backend and "native" not in rechte:
+        return None, t("Python-Teil ohne die Berechtigung \"native\"")
+    if backend and not os.path.isfile(os.path.join(ordner, backend)):
+        return None, t("Die Datei {datei} fehlt", datei=backend)
+
+    return {
+        "id": kennung,
+        "version": version,
+        "name": str(m.get("name") or kennung)[:60],
+        "description": str(m.get("description") or "")[:300],
+        "author": str(m.get("author") or "")[:60],
+        "permissions": list(rechte),
+        "path": ordner,
+        "ui": ui,
+        "backend": backend,
+    }, ""
+
+
+def plugins_finden():
+    """Alle Plugins im Ordner, je Kennung die hoechste Version.
+
+    Fehlerhafte Plugins fliegen nicht raus, sie kommen mit ihrem Fehlertext
+    zurueck - sonst sucht der Nutzer im Dunkeln, warum sein Tab fehlt.
+    """
+    gefunden = []
+    if not os.path.isdir(PLUGINS_DIR):
+        return gefunden
+    for kennung in sorted(os.listdir(PLUGINS_DIR)):
+        p_dir = os.path.join(PLUGINS_DIR, kennung)
+        if not os.path.isdir(p_dir):
+            continue
+        versionen = [v for v in os.listdir(p_dir)
+                     if os.path.isdir(os.path.join(p_dir, v))]
+        if not versionen:
+            continue
+        version = sorted(versionen, key=_vtuple)[-1]
+        info, fehler = _manifest_lesen(os.path.join(p_dir, version), kennung, version)
+        if fehler:
+            gefunden.append({"id": kennung, "version": version, "name": kennung,
+                             "description": "", "author": "", "permissions": [],
+                             "path": os.path.join(p_dir, version), "ui": "",
+                             "backend": "", "error": fehler})
+        else:
+            info["error"] = ""
+            gefunden.append(info)
+    return gefunden
+
+
+class PluginHost:
+    """Was ein natives Plugin vom Programm bekommt - und nur das.
+
+    Jeder Zugriff haengt an einer Berechtigung aus dem Manifest. Was dort
+    nicht steht, gibt es hier nicht; das ist zugleich die Pruefliste beim
+    Durchsehen eines eingereichten Plugins.
+    """
+
+    def __init__(self, api, info):
+        self._api = api
+        self._info = info
+        self.id = info["id"]
+        self.version = info["version"]
+
+    def _darf(self, recht):
+        if recht not in self._info.get("permissions", []):
+            raise PermissionError("Plugin %s ohne Berechtigung %r" % (self.id, recht))
+
+    def log(self, msg):
+        print("[plugin %s] %s" % (self.id, msg))
+
+    def get_setting(self, key, default=None):
+        eintrag = (self._api.settings.get("plugins") or {}).get(self.id) or {}
+        return (eintrag.get("data") or {}).get(key, default)
+
+    def set_setting(self, key, value):
+        alle = self._api.settings.setdefault("plugins", {})
+        eintrag = alle.setdefault(self.id, {})
+        eintrag.setdefault("data", {})[key] = value
+        save_json(SETTINGS_FILE, self._api.settings)
+
+    def usage(self):
+        """Letzte bekannte Limit-Werte. Braucht "usage"."""
+        self._darf("usage")
+        return dict(getattr(self._api, "_usage_meta", None) or {})
+
+    def sessions(self):
+        """Die Sessionliste, wie sie die Tabelle zeigt. Braucht "sessions"."""
+        self._darf("sessions")
+        return [dict(s) for s in self._api._sessions()]
+
+
+class PluginManager:
+    """Laedt die Plugins, haelt sie auseinander und faengt ihre Fehler ab."""
+
+    def __init__(self, api):
+        self.api = api
+        self.plugins = []        # Reihenfolge wie im Ordner
+        self.module = {}         # kennung -> Python-Modul
+        self.safe_mode = False
+
+    def laden(self):
+        self.plugins = []
+        self.module = {}
+        self.safe_mode = plugins_abgeschaltet()
+        if self.safe_mode:
+            return self.plugins
+        for info in plugins_finden():
+            info["enabled"] = self._ist_an(info["id"])
+            if info["enabled"] and not info["error"] and info["backend"]:
+                fehler = self._backend_laden(info)
+                if fehler:
+                    info["error"] = fehler
+            self.plugins.append(info)
+        return self.plugins
+
+    def _ist_an(self, kennung):
+        eintrag = (self.api.settings.get("plugins") or {}).get(kennung) or {}
+        return eintrag.get("enabled", True) is not False
+
+    def _backend_laden(self, info):
+        try:
+            import importlib.util
+            pfad = os.path.join(info["path"], info["backend"])
+            name = "csb_plugin_%s_%s" % (info["id"], info["version"].replace(".", "_"))
+            spec = importlib.util.spec_from_file_location(name, pfad)
+            modul = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(modul)
+            if hasattr(modul, "setup"):
+                modul.setup(PluginHost(self.api, info))
+            self.module[info["id"]] = modul
+            return ""
+        except Exception as e:
+            return "%s: %s" % (type(e).__name__, str(e)[:160])
+
+    def ui_quelltext(self, kennung):
+        info = next((p for p in self.plugins if p["id"] == kennung), None)
+        if not info or info.get("error") or not info.get("ui"):
+            return ""
+        try:
+            with open(os.path.join(info["path"], info["ui"]), encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    def zustand(self):
+        return {
+            "safe_mode": self.safe_mode,
+            "dir": PLUGINS_DIR,
+            "api_version": PLUGIN_API,
+            "plugins": [{k: p.get(k, "") for k in
+                         ("id", "name", "version", "description", "author",
+                          "permissions", "enabled", "error", "last_error")}
+                        for p in self.plugins],
+        }
+
+    def set_enabled(self, kennung, an):
+        alle = self.api.settings.setdefault("plugins", {})
+        alle.setdefault(kennung, {})["enabled"] = bool(an)
+        save_json(SETTINGS_FILE, self.api.settings)
+        return self.laden()
+
+    def aufrufen(self, kennung, methode, args):
+        """Bruecke fuer die ui.js: ein Einstieg statt einer Api-Methode je Tool."""
+        info = next((p for p in self.plugins if p["id"] == kennung), None)
+        if not info or not info.get("enabled") or info.get("error"):
+            return {"ok": False, "error": t("Plugin nicht geladen")}
+        modul = self.module.get(kennung)
+        if modul is None or not hasattr(modul, "call"):
+            return {"ok": False, "error": t("Plugin hat keinen Python-Teil")}
+        try:
+            return {"ok": True, "result": modul.call(str(methode), dict(args or {}))}
+        except Exception as e:
+            # Ein Plugin darf stolpern, ohne das Programm mitzureissen - und
+            # ohne sich selbst abzuschiessen: ein abgelehnter Zugriff oder ein
+            # Fehler in einem Aufruf sagt nichts darueber, ob der naechste
+            # Aufruf klappt. Unbenutzbar ist ein Plugin nur, wenn es sich gar
+            # nicht laden laesst.
+            info["last_error"] = "%s: %s" % (type(e).__name__, str(e)[:160])
+            return {"ok": False, "error": info["last_error"]}
+
+
 class Api:
     # Wie lange eine Ratelimit-Messung als aktuell gilt. Der Watcher fragt
     # alle 5 Minuten; drei Intervalle Luft, damit ein einzelner Fehlschlag
@@ -3938,6 +4198,28 @@ class Api:
             except Exception:
                 pass
         return {"ok": True}
+
+    # -- Plugins --
+    def plugins_state(self):
+        return self._plugins().zustand()
+
+    def plugin_set_enabled(self, plugin_id, an):
+        self._plugins().set_enabled(str(plugin_id), bool(an))
+        return self._plugins().zustand()
+
+    def plugin_ui(self, plugin_id):
+        return {"id": str(plugin_id), "js": self._plugins().ui_quelltext(str(plugin_id))}
+
+    def plugin_call(self, plugin_id, method, args=None):
+        return self._plugins().aufrufen(str(plugin_id), method, args)
+
+    def _plugins(self):
+        mgr = getattr(self, "_plugin_mgr", None)
+        if mgr is None:
+            mgr = PluginManager(self)
+            self._plugin_mgr = mgr
+            mgr.laden()
+        return mgr
 
     def buddy_notify_view(self, view):
         """Wird beim Tab-Wechsel im UI aufgerufen. Speichert die aktuelle
@@ -5724,6 +6006,7 @@ async function boot(){
     renderSettings();
     renderTabs(VIEWS[0] && VIEWS[0].id);
     renderShortcutBar(VIEWS[0] && VIEWS[0].id);   // Startansicht
+    ladePlugins();   // im Hintergrund, blockiert den Start nicht
     // Onboarding zeigen bei Erstinstallation ODER wenn seit dem letzten Anzeigen
     // eine neue Onboarding-Version hinzugekommen ist (nach Update). Einstellungen
     // werden dabei nicht angetastet – die Schritte spiegeln nur die aktuellen Werte.
@@ -5925,8 +6208,12 @@ function switchView(v){
   }
   const neu = viewById(v);
   if(neu && neu.onEnter){ try{ neu.onEnter(); }catch(e){} }
-  renderShortcutBar(v);
-  try{ api.buddy_notify_view(v); }catch(_){}
+  // Der Einstieg kann die Ansicht selbst gewechselt haben - ein Plugin, das
+  // beim Oeffnen stolpert, nimmt seinen eigenen Tab weg. Dann gilt die
+  // Ansicht, die jetzt offen ist, nicht die angeforderte.
+  const jetzt = activeViewId();
+  renderShortcutBar(jetzt);
+  try{ api.buddy_notify_view(jetzt); }catch(_){}
 }
 
 // Alles neu zeichnen - gebraucht beim Sprachwechsel. Die Ansichten bauen
@@ -5964,6 +6251,72 @@ registerView({
   id:'settings', label:'Einstellungen', el:'view-settings',
   shortcuts:[['Esc','Dialog schließen'], ['F11','Vollbild']],
 });
+
+// ---- Plugins im Fenster ---------------------------------------------------
+// Ein Plugin bekommt einen Container und ein csb-Objekt, sonst nichts: keine
+// api, kein Zugriff auf STATE. Was es an Daten braucht, holt es ueber
+// csb.call(), und was dort erlaubt ist, steht in seinem Manifest.
+//
+// Jeder Einstieg ist eingepackt - ein Plugin, das stolpert, zeigt eine Meldung
+// und verschwindet aus der Leiste, statt das Fenster mitzunehmen.
+let PLUGINS = [];
+function pluginSchnittstelle(p, el){
+  return {
+    id: p.id, version: p.version, el: el, t: t,
+    call: (methode, args) => api.plugin_call(p.id, methode, args || {}),
+    toast: (text) => toast(text),
+    onEnter: (fn) => { p._enter = fn; },
+    onLeave: (fn) => { p._leave = fn; },
+  };
+}
+function pluginAbschalten(p, fehler){
+  // Wo stand der Nutzer? Nach dem Entfernen laesst sich das nicht mehr
+  // ablesen - und ohne diese Frage bleibt das Fenster leer zurueck, weil die
+  // weggenommene Ansicht die offene war.
+  const war = activeViewId();
+  p._enter = null; p._leave = null;
+  p.laufzeitfehler = String(fehler).slice(0, 200);
+  const i = VIEWS.findIndex(v => v.id === 'plugin:' + p.id);
+  if(i >= 0) VIEWS.splice(i, 1);
+  const el = document.getElementById('view-plugin-' + p.id);
+  if(el) el.remove();
+  if(war === 'plugin:' + p.id) switchView(VIEWS[0] && VIEWS[0].id);
+  else renderTabs(war);
+  toast(t('Plugin „{name}“ abgeschaltet: {grund}', {name: p.name, grund: p.laufzeitfehler}));
+}
+async function startePlugin(p){
+  let quelle = '';
+  try{ quelle = (await api.plugin_ui(p.id)).js || ''; }catch(e){ return; }
+  if(!quelle) return;
+  const leiste = document.getElementById('shortcutbar');
+  const el = document.createElement('div');
+  el.className = 'view'; el.id = 'view-plugin-' + p.id;
+  leiste.parentNode.insertBefore(el, leiste);
+  try{
+    // Laeuft im Fenster, nicht in einem Sandkasten - deshalb kommen Plugins
+    // nur aus dem geprueften Katalog.
+    (new Function('csb', quelle))(pluginSchnittstelle(p, el));
+  }catch(e){
+    el.remove();
+    p.laufzeitfehler = String(e).slice(0, 200);
+    return;
+  }
+  registerView({
+    id: 'plugin:' + p.id, label: p.name, el: el.id, plugin: p.id,
+    onEnter: () => { if(p._enter){ try{ p._enter(); }catch(e){ pluginAbschalten(p, e); } } },
+    onLeave: () => { if(p._leave){ try{ p._leave(); }catch(e){ pluginAbschalten(p, e); } } },
+  });
+}
+async function ladePlugins(){
+  let st;
+  try{ st = await api.plugins_state(); }catch(e){ return; }
+  PLUGINS = (st && st.plugins) || [];
+  if(st && st.safe_mode) return;
+  for(const p of PLUGINS){
+    if(p.enabled && !p.error) await startePlugin(p);
+  }
+  renderTabs(activeViewId());
+}
 
 // Tastaturkuerzel je Ansicht. Bewusst nur das, was der keydown-Handler und
 // die Maus-Bindungen wirklich koennen - eine Fusszeile, die Kuerzel erfindet,
