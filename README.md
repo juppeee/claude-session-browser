@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/4718ca04-9353-42bd-baa3-5b24d559bd8d
 
 <sub>Installs per user — no admin rights, no UAC prompt, and it never touches `~/.claude`</sub>
 
-[Quick start](#quick-start) · [What you get](#what-you-get) · [Clawd](#clawd-your-desktop-buddy) · [Clawdmeter](#clawdmeter) · [Settings](#settings) · [Uninstall](#updating-and-uninstalling) · [Credits](#credits)
+[Quick start](#quick-start) · [What you get](#what-you-get) · [Clawd](#clawd-your-desktop-buddy) · [Clawdmeter](#clawdmeter) · [Plugins](#plugins) · [Settings](#settings) · [Uninstall](#updating-and-uninstalling) · [Credits](#credits)
 
 </div>
 
@@ -181,6 +181,21 @@ flash that branch and the device acts out what Claude is doing.
 Clawdmeter gets a body to match the buddy.
 
 See [Credits](#credits) for who built what.
+
+## Plugins
+
+The **Store** tab lists small add-on tools. Installing one adds a tab of its own;
+the switch next to it turns it off without removing it. Plugins come only from
+the reviewed catalogue in this repository, and every version is checked against
+its SHA-256 before it is unpacked.
+
+Most plugins are HTML and JavaScript and reach data only through the app, with no
+access to your files or your Claude token. A plugin that needs more says so in
+its manifest, and the store shows what it asks for. Starting the app with
+**Shift** held down loads no plugins at all.
+
+Writing one is described in [docs/plugins.md](docs/plugins.md); `plugins/ssd-health/`
+is a complete example.
 
 ## Settings
 
