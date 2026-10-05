@@ -590,6 +590,29 @@ TRANSLATIONS = {
         "{name} · {n} Frames · Klick zum Vorspielen":
             "{name} · {n} frames · click to play it",
 
+        # ---- Plugins ------------------------------------------------------
+        "Manifest nicht lesbar: {grund}": "Cannot read the manifest: {grund}",
+        "Kennung im Manifest passt nicht zum Ordner":
+            "The id in the manifest does not match the folder",
+        "Unzulässige Kennung": "Invalid id",
+        "Version im Manifest passt nicht zum Ordner":
+            "The version in the manifest does not match the folder",
+        "Gebaut für eine andere Plugin-Schnittstelle":
+            "Built for a different plugin API",
+        "Braucht mindestens Version {v} der App":
+            "Needs at least version {v} of the app",
+        "Unbekannte Berechtigung im Manifest":
+            "Unknown permission in the manifest",
+        "Unzulässiger Dateiname im Manifest":
+            "Invalid file name in the manifest",
+        "Die Datei {datei} fehlt": "The file {datei} is missing",
+        "Python-Teil ohne die Berechtigung \"native\"":
+            "Python part without the \"native\" permission",
+        "Plugin nicht geladen": "Plugin is not loaded",
+        "Plugin „{name}“ abgeschaltet: {grund}":
+            "Plugin “{name}” switched off: {grund}",
+        "Plugin hat keinen Python-Teil": "This plugin has no Python part",
+
         # ---- Clawdmeter-Status (aus clawdmeter.py) ------------------------
         "Bluetooth ist ausgeschaltet": "Bluetooth is turned off",
         "Kein Bluetooth-Adapter gefunden": "No Bluetooth adapter found",
