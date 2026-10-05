@@ -1,9 +1,9 @@
 {
-  "version": "1.5.1",
-  "notes": "The Clawdmeter connects again once it is paired. Windows keeps a paired Clawdmeter connected as a keyboard, so it stops advertising, and the app never found it by scanning. It now connects directly by address.",
+  "version": "1.5.2",
+  "notes": "Nine places where the English window still showed German are fixed: the onboarding button, the update dialog, the buddy status line and hint, the close-to-tray and limit warnings, the Clawdmeter device list, the hide-home description and the autostart registry path. Thanks to @ryanmaule for finding and fixing them.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "9d7058e4105b7ad15720e8e26768a0ab839fa1c7ffe23c4ceb496465965be215",
-  "sha256": "f8f874b09242001585b7235013f62e0faf21b2c5bde4e44b2a74d12f05b5e9a0"
+  "installer_sha256": "9af3e1fad984e4555b3130fe614dd5416674646ab90fda81aa56fb4cc8e955eb",
+  "sha256": "b830928fc1e67cc4d4dcca47baf5830fed5c8e1ac710e62a9eb490285ef54f87"
 }
