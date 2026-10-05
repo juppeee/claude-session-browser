@@ -1,9 +1,9 @@
 {
-  "version": "1.5.2",
-  "notes": "Nine places where the English window still showed German are fixed: the onboarding button, the update dialog, the buddy status line and hint, the close-to-tray and limit warnings, the Clawdmeter device list, the hide-home description and the autostart registry path. Thanks to @ryanmaule for finding and fixing them.",
+  "version": "1.5.3",
+  "notes": "Plugins: a new Store tab installs small add-on tools from a reviewed catalogue, each checked against its SHA-256, each with a tab of its own and a switch to turn it off. The first one, Drive health, lists your drives and how full they are. Holding Shift while starting loads no plugins at all.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "9af3e1fad984e4555b3130fe614dd5416674646ab90fda81aa56fb4cc8e955eb",
-  "sha256": "b830928fc1e67cc4d4dcca47baf5830fed5c8e1ac710e62a9eb490285ef54f87"
+  "installer_sha256": "dac3d16a366e2cbd28755c44bf6d09e307b4b880137cabb80d5f4e739c63eb3e",
+  "sha256": "05e890378dd3421587beac7e38b10fa0a55fcdf4ead4221ff29be2186f73317e"
 }
