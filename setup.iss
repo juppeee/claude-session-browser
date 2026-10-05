@@ -13,7 +13,7 @@
 ; ==========================================================================
 
 #define MyAppName "Claude Session Browser"
-#define MyAppVersion "1.5.1"
+#define MyAppVersion "1.5.2"
 #define MyAppPublisher "juppeee"
 #define MyAppURL "https://github.com/juppeee/claude-session-browser"
 #define MyAppExeName "ClaudeSessionBrowser.exe"
