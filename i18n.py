@@ -609,6 +609,32 @@ TRANSLATIONS = {
         "Python-Teil ohne die Berechtigung \"native\"":
             "Python part without the \"native\" permission",
         "Plugin nicht geladen": "Plugin is not loaded",
+        "Steht nicht im Katalog": "Not in the catalogue",
+        "Keine passende Version für diese App":
+            "No version that fits this app",
+        "Prüfsumme passt nicht - nichts installiert":
+            "Checksum does not match - nothing installed",
+        "Store": "Store",
+        "Mini-Werkzeuge für den Session Browser. Nur geprüfte Plugins aus unserem Katalog.":
+            "Mini-tools for the Session Browser. Only reviewed plugins from our catalogue.",
+        "Katalog neu laden": "Reload the catalogue",
+        "Installieren": "Install",
+        "Aktualisieren": "Update",
+        "Entfernen": "Remove",
+        "{n} installiert": "{n} installed",
+        "Version {v} installiert": "Version {v} installed",
+        "Version {v} verfügbar": "Version {v} available",
+        "Von Hand abgelegt": "Dropped in by hand",
+        "Nicht geladen: {grund}": "Not loaded: {grund}",
+        "Der Katalog ist nicht erreichbar: {grund}":
+            "The catalogue cannot be reached: {grund}",
+        "Noch keine Plugins im Katalog.": "No plugins in the catalogue yet.",
+        "Plugins sind aus: die App wurde mit gedrückter Shift-Taste gestartet.":
+            "Plugins are off: the app was started with Shift held down.",
+        "Braucht: {rechte}": "Needs: {rechte}",
+        "{name} installiert ✓": "{name} installed ✓",
+        "{name} entfernt": "{name} removed",
+        "Hat nicht geklappt: {grund}": "Did not work: {grund}",
         "Plugin „{name}“ abgeschaltet: {grund}":
             "Plugin “{name}” switched off: {grund}",
         "Plugin hat keinen Python-Teil": "This plugin has no Python part",

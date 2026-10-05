@@ -3445,6 +3445,30 @@ def plugins_finden():
     return gefunden
 
 
+CATALOG_URL = ("https://raw.githubusercontent.com/juppeee/"
+               "claude-session-browser/main/plugins.json")
+
+
+def _entpacken(zip_pfad, ziel):
+    """Archiv auspacken - nur Dateien, nur unterhalb von `ziel`.
+
+    Ein Archiv kann Pfade wie ..\\..\\Autostart enthalten. Geprueft wird
+    deshalb jeder Eintrag einzeln, bevor etwas geschrieben wird, und nicht
+    hinterher.
+    """
+    import zipfile
+    ziel_abs = os.path.abspath(ziel)
+    with zipfile.ZipFile(zip_pfad) as z:
+        for eintrag in z.infolist():
+            name = eintrag.filename
+            if name.endswith("/"):
+                continue
+            wohin = os.path.abspath(os.path.join(ziel_abs, name))
+            if not wohin.startswith(ziel_abs + os.sep):
+                raise ValueError("Archiv zeigt aus seinem Ordner heraus: %s" % name)
+        z.extractall(ziel_abs)
+
+
 class PluginHost:
     """Was ein natives Plugin vom Programm bekommt - und nur das.
 
@@ -3495,6 +3519,8 @@ class PluginManager:
         self.plugins = []        # Reihenfolge wie im Ordner
         self.module = {}         # kennung -> Python-Modul
         self.safe_mode = False
+        self._katalog = {}
+        self._katalog_at = 0.0
 
     def laden(self):
         self.plugins = []
@@ -3574,6 +3600,165 @@ class PluginManager:
         alle.setdefault(kennung, {})["enabled"] = bool(an)
         save_json(SETTINGS_FILE, self.api.settings)
         return self.laden()
+
+    # -- Katalog und Installation --
+    def katalog(self, erzwingen=False):
+        """Der geprueftе Katalog aus dem Repo, hoechstens alle 10 Minuten neu.
+
+        Es gibt bewusst keine freie Adresse: ein Plugin kommt aus dem Katalog
+        oder gar nicht. Alles andere waere eine Einladung, fremden Code mit
+        vollen Rechten nachzuladen.
+        """
+        jetzt = time.time()
+        if not erzwingen and self._katalog and jetzt - self._katalog_at < 600:
+            return self._katalog
+        req = urllib.request.Request(CATALOG_URL,
+                                     headers={"User-Agent": "ClaudeSessionBrowser"})
+        with urllib.request.urlopen(req, timeout=8,
+                                    context=self.api._ssl_ctx()) as r:
+            daten = json.loads(r.read().decode("utf-8"))
+        self._katalog = daten if isinstance(daten, dict) else {}
+        self._katalog_at = jetzt
+        return self._katalog
+
+    def _passende_version(self, eintrag):
+        """Die neueste Version, die zu dieser App passt - oder None."""
+        tauglich = []
+        for v in eintrag.get("versions") or []:
+            try:
+                if int(v.get("api_version") or 0) != PLUGIN_API:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if _vtuple(str(v.get("min_app_version") or "0")) > _vtuple(VERSION):
+                continue
+            if not v.get("url") or not v.get("sha256"):
+                continue
+            tauglich.append(v)
+        if not tauglich:
+            return None
+        return sorted(tauglich, key=lambda v: _vtuple(str(v.get("version") or "0")))[-1]
+
+    def angebot(self):
+        """Katalog und installierter Stand nebeneinander - fuer den Store."""
+        try:
+            kat = self.katalog()
+            fehler = ""
+        except Exception as e:
+            kat, fehler = {}, "%s: %s" % (type(e).__name__, str(e)[:120])
+        installiert = {p["id"]: p for p in self.plugins}
+        liste = []
+        for eintrag in kat.get("plugins") or []:
+            kennung = str(eintrag.get("id") or "")
+            if not _PLUGIN_ID.match(kennung):
+                continue
+            v = self._passende_version(eintrag)
+            da = installiert.get(kennung)
+            liste.append({
+                "id": kennung,
+                "name": str(eintrag.get("name") or kennung)[:60],
+                "description": str(eintrag.get("description") or "")[:300],
+                "author": str(eintrag.get("author") or "")[:60],
+                "permissions": [r for r in (eintrag.get("permissions") or [])
+                                if r in PLUGIN_PERMISSIONS],
+                "latest": (v or {}).get("version", ""),
+                "notes": str((v or {}).get("notes") or "")[:300],
+                "installed": da["version"] if da else "",
+                "enabled": bool(da and da.get("enabled")),
+                "error": (da or {}).get("error", ""),
+                "update": bool(v and da and _vtuple(str(v["version"])) > _vtuple(da["version"])),
+                "installable": bool(v),
+            })
+        # Was lokal liegt, aber nicht im Katalog steht, gehoert trotzdem gezeigt -
+        # sonst fehlt der Schalter fuer ein von Hand abgelegtes Plugin.
+        bekannt = {e["id"] for e in liste}
+        for p in self.plugins:
+            if p["id"] in bekannt:
+                continue
+            liste.append({
+                "id": p["id"], "name": p["name"], "description": p.get("description", ""),
+                "author": p.get("author", ""), "permissions": p.get("permissions", []),
+                "latest": "", "notes": "", "installed": p["version"],
+                "enabled": bool(p.get("enabled")), "error": p.get("error", ""),
+                "update": False, "installable": False,
+            })
+        return {"plugins": liste, "error": fehler, "dir": PLUGINS_DIR,
+                "safe_mode": self.safe_mode}
+
+    def installieren(self, kennung, version=""):
+        """Herunterladen, Pruefsumme vergleichen, auspacken, laden.
+
+        Die Pruefsumme entscheidet vor dem Auspacken - genau wie beim Update
+        der App. Geht beim Auspacken etwas schief, fliegt der halbe Ordner
+        wieder raus, damit kein Torso liegen bleibt.
+        """
+        kennung = str(kennung)
+        if not _PLUGIN_ID.match(kennung):
+            return {"ok": False, "error": t("Unzulässige Kennung")}
+        eintrag = next((e for e in (self.katalog().get("plugins") or [])
+                        if str(e.get("id")) == kennung), None)
+        if not eintrag:
+            return {"ok": False, "error": t("Steht nicht im Katalog")}
+        v = self._passende_version(eintrag)
+        if version:
+            v = next((x for x in (eintrag.get("versions") or [])
+                      if str(x.get("version")) == str(version)), None)
+        if not v:
+            return {"ok": False, "error": t("Keine passende Version für diese App")}
+
+        ziel = os.path.join(PLUGINS_DIR, kennung, str(v["version"]))
+        teil = ziel + ".teil"
+        try:
+            req = urllib.request.Request(str(v["url"]),
+                                         headers={"User-Agent": "ClaudeSessionBrowser"})
+            with urllib.request.urlopen(req, timeout=60,
+                                        context=self.api._ssl_ctx()) as r:
+                roh = r.read()
+        except Exception as e:
+            return {"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:120])}
+
+        import hashlib
+        digest = hashlib.sha256(roh).hexdigest()
+        if digest.lower() != str(v["sha256"]).lower():
+            return {"ok": False, "error": t("Prüfsumme passt nicht - nichts installiert")}
+
+        shutil.rmtree(teil, ignore_errors=True)
+        try:
+            os.makedirs(teil, exist_ok=True)
+            archiv = os.path.join(teil, "_plugin.zip")
+            with open(archiv, "wb") as fh:
+                fh.write(roh)
+            _entpacken(archiv, teil)
+            os.remove(archiv)
+            info, fehler = _manifest_lesen(teil, kennung, str(v["version"]))
+            if fehler:
+                raise ValueError(fehler)
+            shutil.rmtree(ziel, ignore_errors=True)
+            os.makedirs(os.path.dirname(ziel), exist_ok=True)
+            os.rename(teil, ziel)
+        except Exception as e:
+            shutil.rmtree(teil, ignore_errors=True)
+            return {"ok": False, "error": str(e)[:200]}
+
+        # Aeltere Versionen desselben Plugins raeumen wir ab: sie wuerden nie
+        # mehr geladen und liegen nur im Weg.
+        p_dir = os.path.join(PLUGINS_DIR, kennung)
+        for alt in os.listdir(p_dir):
+            if alt != str(v["version"]) and os.path.isdir(os.path.join(p_dir, alt)):
+                shutil.rmtree(os.path.join(p_dir, alt), ignore_errors=True)
+        self.laden()
+        return {"ok": True, "id": kennung, "version": str(v["version"])}
+
+    def entfernen(self, kennung):
+        kennung = str(kennung)
+        if not _PLUGIN_ID.match(kennung):
+            return {"ok": False, "error": t("Unzulässige Kennung")}
+        shutil.rmtree(os.path.join(PLUGINS_DIR, kennung), ignore_errors=True)
+        alle = self.api.settings.setdefault("plugins", {})
+        alle.pop(kennung, None)
+        save_json(SETTINGS_FILE, self.api.settings)
+        self.laden()
+        return {"ok": True, "id": kennung}
 
     def aufrufen(self, kennung, methode, args):
         """Bruecke fuer die ui.js: ein Einstieg statt einer Api-Methode je Tool."""
@@ -4231,6 +4416,21 @@ class Api:
         mgr = self._plugins()
         return {"id": str(plugin_id), "js": mgr.ui_quelltext(str(plugin_id)),
                 "i18n": mgr.ui_uebersetzung(str(plugin_id))}
+
+    def plugin_store(self, force=False):
+        mgr = self._plugins()
+        if force:
+            try:
+                mgr.katalog(erzwingen=True)
+            except Exception:
+                pass
+        return mgr.angebot()
+
+    def plugin_install(self, plugin_id, version=""):
+        return self._plugins().installieren(plugin_id, version)
+
+    def plugin_remove(self, plugin_id):
+        return self._plugins().entfernen(plugin_id)
 
     def plugin_call(self, plugin_id, method, args=None):
         return self._plugins().aufrufen(str(plugin_id), method, args)
@@ -5510,6 +5710,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="settings" id="clawd-panel"></div>
   </div>
 
+  <!-- Store -->
+  <div class="view" id="view-store">
+    <div class="head">
+      <h1 class="titlewrap"><span>Store</span></h1>
+      <div class="count" id="store-count"></div>
+    </div>
+    <div class="settings" id="store-panel"></div>
+  </div>
+
   <!-- Einstellungen -->
   <div class="view" id="view-settings">
     <div class="head"><h1>Einstellungen</h1></div>
@@ -6270,9 +6479,81 @@ registerView({
   onEnter:()=>renderClawd(),
 });
 registerView({
+  id:'store', label:'Store', el:'view-store',
+  onEnter:()=>renderStore(),
+});
+registerView({
   id:'settings', label:'Einstellungen', el:'view-settings',
   shortcuts:[['Esc','Dialog schließen'], ['F11','Vollbild']],
 });
+
+// ---- Store ----------------------------------------------------------------
+// Zeigt den Katalog und was davon installiert ist. Installiert wird nur aus
+// dem Katalog: die Pruefsumme steht dort, und ohne sie geht nichts.
+let STORE = {plugins: [], error: '', safe_mode: false};
+function storeKarte(p){
+  const rechte = (p.permissions||[]).length
+    ? `<div class="desc">${esc(t('Braucht: {rechte}', {rechte: p.permissions.join(', ')}))}</div>` : '';
+  const stand = p.installed
+    ? `<span class="badge">${esc(t('Version {v} installiert', {v: p.installed}))}</span>`
+    : (p.latest ? `<span class="badge">${esc(t('Version {v} verfügbar', {v: p.latest}))}</span>` : '');
+  const hinweis = p.error
+    ? `<div class="warnnote">${ic('warn')}<span>${esc(t('Nicht geladen: {grund}', {grund: p.error}))}</span></div>`
+    : (!p.latest && p.installed ? `<div class="desc">${esc(t('Von Hand abgelegt'))}</div>` : '');
+  const knopf = [];
+  if(p.update) knopf.push(`<button class="btn accent" onclick="storeInstall('${esc(p.id)}')">${esc(t('Aktualisieren'))}</button>`);
+  else if(!p.installed && p.installable) knopf.push(`<button class="btn accent" onclick="storeInstall('${esc(p.id)}')">${esc(t('Installieren'))}</button>`);
+  if(p.installed) knopf.push(`<button class="btn" onclick="storeRemove('${esc(p.id)}')">${esc(t('Entfernen'))}</button>`);
+  const schalter = p.installed
+    ? `<div class="toggle ${p.enabled?'on':''}" onclick="storeToggle('${esc(p.id)}', this)"></div>` : '';
+  return `<div class="card">
+      <h2>${esc(p.name)}</h2>
+      <div class="sub">${esc(p.description||'')}</div>
+      <div class="row2">
+        <div><div class="lbl">${esc(p.author ? '@'+p.author : '')}</div>${rechte}${hinweis}
+          <div class="field">${knopf.join('')}</div></div>
+        <div>${stand}${schalter}</div>
+      </div>
+    </div>`;
+}
+function renderStore(){
+  const box = document.getElementById('store-panel');
+  if(!box) return;
+  const kopf = `<div class="card">
+      <div class="sub">${esc(t('Mini-Werkzeuge für den Session Browser. Nur geprüfte Plugins aus unserem Katalog.'))}</div>
+      <div class="field"><button class="btn" onclick="storeLaden(true)">${esc(t('Katalog neu laden'))}</button></div>
+    </div>`;
+  const meldung = STORE.safe_mode
+    ? `<div class="card"><div class="warnnote">${ic('warn')}<span>${esc(t('Plugins sind aus: die App wurde mit gedrückter Shift-Taste gestartet.'))}</span></div></div>`
+    : (STORE.error ? `<div class="card"><div class="warnnote">${ic('warn')}<span>${esc(t('Der Katalog ist nicht erreichbar: {grund}', {grund: STORE.error}))}</span></div></div>` : '');
+  const liste = (STORE.plugins||[]).map(storeKarte).join('')
+    || `<div class="card"><div class="sub">${esc(t('Noch keine Plugins im Katalog.'))}</div></div>`;
+  box.innerHTML = kopf + meldung + liste;
+  const zahl = (STORE.plugins||[]).filter(p=>p.installed).length;
+  document.getElementById('store-count').textContent = zahl ? t('{n} installiert', {n: zahl}) : '';
+}
+async function storeLaden(erzwingen){
+  try{ STORE = await api.plugin_store(!!erzwingen) || STORE; }catch(e){}
+  renderStore();
+}
+async function storeInstall(id){
+  const r = await api.plugin_install(id, '');
+  if(r && r.ok){ toast(t('{name} installiert ✓', {name: id})); await pluginsNeuLaden(); }
+  else toast(t('Hat nicht geklappt: {grund}', {grund: (r&&r.error)||'?'}));
+  await storeLaden(false);
+}
+async function storeRemove(id){
+  const r = await api.plugin_remove(id);
+  if(r && r.ok){ toast(t('{name} entfernt', {name: id})); await pluginsNeuLaden(); }
+  await storeLaden(false);
+}
+async function storeToggle(id, el){
+  const an = !el.classList.contains('on');
+  el.classList.toggle('on', an);
+  try{ await api.plugin_set_enabled(id, an); }catch(e){}
+  await pluginsNeuLaden();
+  await storeLaden(false);
+}
 
 // ---- Plugins im Fenster ---------------------------------------------------
 // Ein Plugin bekommt einen Container und ein csb-Objekt, sonst nichts: keine
@@ -6332,6 +6613,20 @@ async function startePlugin(p){
     onEnter: () => { if(p._enter){ try{ p._enter(); }catch(e){ pluginAbschalten(p, e); } } },
     onLeave: () => { if(p._leave){ try{ p._leave(); }catch(e){ pluginAbschalten(p, e); } } },
   });
+}
+// Nach Installieren, Entfernen oder Umschalten: alle Plugin-Tabs abraeumen
+// und neu aufbauen. Ein Neustart der App ist dafuer nicht noetig.
+async function pluginsNeuLaden(){
+  const war = activeViewId();
+  for(let i=VIEWS.length-1; i>=0; i--){
+    if(VIEWS[i].plugin){
+      const el = document.getElementById(VIEWS[i].el);
+      if(el) el.remove();
+      VIEWS.splice(i, 1);
+    }
+  }
+  await ladePlugins();
+  if(viewById(war)) switchView(war); else switchView(VIEWS[0] && VIEWS[0].id);
 }
 async function ladePlugins(){
   let st;
