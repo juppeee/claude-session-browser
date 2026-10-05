@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -3389,7 +3389,8 @@ def _manifest_lesen(ordner, kennung, version):
 
     ui = str(m.get("ui") or "ui.js")
     backend = str(m.get("backend") or "")
-    for datei in (ui, backend):
+    uebersetzung = str(m.get("i18n") or "")
+    for datei in (ui, backend, uebersetzung):
         # Kein Ausbrechen aus dem Plugin-Ordner.
         if datei and (os.path.isabs(datei) or ".." in datei.replace("\\", "/").split("/")):
             return None, t("Unzulässiger Dateiname im Manifest")
@@ -3410,6 +3411,7 @@ def _manifest_lesen(ordner, kennung, version):
         "path": ordner,
         "ui": ui,
         "backend": backend,
+        "i18n": uebersetzung,
     }, ""
 
 
@@ -3436,7 +3438,7 @@ def plugins_finden():
             gefunden.append({"id": kennung, "version": version, "name": kennung,
                              "description": "", "author": "", "permissions": [],
                              "path": os.path.join(p_dir, version), "ui": "",
-                             "backend": "", "error": fehler})
+                             "backend": "", "i18n": "", "error": fehler})
         else:
             info["error"] = ""
             gefunden.append(info)
@@ -3537,6 +3539,24 @@ class PluginManager:
                 return fh.read()
         except OSError:
             return ""
+
+    def ui_uebersetzung(self, kennung):
+        """Die Tabelle des Plugins fuer die eingestellte Sprache.
+
+        Ein Plugin bringt seine Texte selbst mit - die Haupttabelle kennt sie
+        nicht und soll sie auch nicht kennen muessen. Deutsch braucht keinen
+        Eintrag, dort ist der Schluessel schon der fertige Satz.
+        """
+        info = next((p for p in self.plugins if p["id"] == kennung), None)
+        if not info or info.get("error") or not info.get("i18n"):
+            return {}
+        try:
+            with open(os.path.join(info["path"], info["i18n"]), encoding="utf-8") as fh:
+                tabelle = json.load(fh)
+            werte = tabelle.get(i18n.current()) or {}
+            return {str(k): str(v) for k, v in werte.items()} if isinstance(werte, dict) else {}
+        except (OSError, ValueError, TypeError, AttributeError):
+            return {}
 
     def zustand(self):
         return {
@@ -4208,7 +4228,9 @@ class Api:
         return self._plugins().zustand()
 
     def plugin_ui(self, plugin_id):
-        return {"id": str(plugin_id), "js": self._plugins().ui_quelltext(str(plugin_id))}
+        mgr = self._plugins()
+        return {"id": str(plugin_id), "js": mgr.ui_quelltext(str(plugin_id)),
+                "i18n": mgr.ui_uebersetzung(str(plugin_id))}
 
     def plugin_call(self, plugin_id, method, args=None):
         return self._plugins().aufrufen(str(plugin_id), method, args)
@@ -6285,9 +6307,13 @@ function pluginAbschalten(p, fehler){
   toast(t('Plugin „{name}“ abgeschaltet: {grund}', {name: p.name, grund: p.laufzeitfehler}));
 }
 async function startePlugin(p){
-  let quelle = '';
-  try{ quelle = (await api.plugin_ui(p.id)).js || ''; }catch(e){ return; }
+  let paket;
+  try{ paket = await api.plugin_ui(p.id); }catch(e){ return; }
+  const quelle = (paket && paket.js) || '';
   if(!quelle) return;
+  // Das Plugin bringt seine Texte selbst mit; sie kommen in dieselbe Tabelle,
+  // damit csb.t() sich nicht von t() unterscheidet.
+  if(paket.i18n && I18N.table) Object.assign(I18N.table, paket.i18n);
   const leiste = document.getElementById('shortcutbar');
   const el = document.createElement('div');
   el.className = 'view'; el.id = 'view-plugin-' + p.id;

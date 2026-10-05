@@ -1,0 +1,15 @@
+{
+  "id": "ssd-health",
+  "name": "Drive health",
+  "version": "1.0.0",
+  "api_version": 1,
+  "min_app_version": "1.5.3",
+  "description": "Shows every drive with its type, size and the health Windows reports, plus how full each volume is. Wear and power-on hours need administrator rights and are only shown when the app has them.",
+  "author": "juppeee",
+  "permissions": [
+    "native"
+  ],
+  "ui": "ui.js",
+  "backend": "backend.py",
+  "i18n": "i18n.json"
+}

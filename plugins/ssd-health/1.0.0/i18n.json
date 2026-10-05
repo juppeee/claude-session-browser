@@ -1,0 +1,19 @@
+{
+  "en": {
+    "Laufwerke": "Drives",
+    "Datenträger": "Volumes",
+    "Zustand": "Health",
+    "Größe": "Size",
+    "Anschluss": "Bus",
+    "Verschleiß": "Wear",
+    "Betriebsstunden": "Power-on hours",
+    "Temperatur": "Temperature",
+    "Unbekannter Typ": "Unknown type",
+    "belegt": "used",
+    "frei": "free",
+    "Lädt…": "Loading…",
+    "Nichts gefunden.": "Nothing found.",
+    "Verschleiß, Betriebsstunden und Temperatur gibt Windows nur mit Administratorrechten heraus. Alles andere hier braucht keine.": "Windows only hands out wear, power-on hours and temperature to an administrator. Everything else here needs no rights at all.",
+    "Laufwerke konnten nicht gelesen werden: {grund}": "Could not read the drives: {grund}"
+  }
+}
