@@ -5111,13 +5111,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </defs>
   </svg>
 
-  <!-- Tabs -->
-  <div class="tabs">
-    <div class="tab active" data-view="sessions" onclick="switchView('sessions')">Sessions</div>
-    <div class="tab" data-view="buddy" onclick="switchView('buddy')">Buddy</div>
-    <div class="tab" data-view="clawd" onclick="switchView('clawd')">Clawdmeter</div>
-    <div class="tab" data-view="settings" onclick="switchView('settings')">Einstellungen</div>
-  </div>
+  <!-- Tabs - Inhalt kommt aus VIEWS, siehe registerView() -->
+  <div class="tabs" id="tabs"></div>
 
   <!-- Update-Hinweis (nur sichtbar wenn Update verfuegbar) -->
   <div class="updatebar" id="updatebar">
@@ -5727,7 +5722,8 @@ async function boot(){
     render();
     watchTableWidth();
     renderSettings();
-    renderShortcutBar('sessions');   // Startansicht
+    renderTabs(VIEWS[0] && VIEWS[0].id);
+    renderShortcutBar(VIEWS[0] && VIEWS[0].id);   // Startansicht
     // Onboarding zeigen bei Erstinstallation ODER wenn seit dem letzten Anzeigen
     // eine neue Onboarding-Version hinzugekommen ist (nach Update). Einstellungen
     // werden dabei nicht angetastet – die Schritte spiegeln nur die aktuellen Werte.
@@ -5890,19 +5886,45 @@ function sortBy(c){
 }
 
 let BUDDY_STATUS_TIMER = null;
+// ---- Die Ansichten --------------------------------------------------------
+// Tableiste, Umschalten, Fusszeile und der Durchgang beim Sprachwechsel lesen
+// alle aus VIEWS. Darunter steht keine Ansicht mehr namentlich im Code - ein
+// weiterer Tab ist ein Eintrag mehr, kein Eingriff an vier Stellen.
+//
+//   id        Name in der Tableiste und in den Einstellungen
+//   label     Beschriftung, wird uebersetzt
+//   el        Zugehoeriger Container im Markup
+//   onEnter   beim Oeffnen (zeichnen, Timer starten)
+//   onLeave   beim Verlassen (Timer stoppen)
+//   shortcuts Fusszeile: [Taste, was sie tut]
+const VIEWS = [];
+function registerView(v){ VIEWS.push(v); return v; }
+function viewById(id){ return VIEWS.find(v=>v.id===id) || null; }
+function activeViewId(){
+  const tab = document.querySelector('.tab.active');
+  return (tab && tab.dataset.view) || (VIEWS[0] && VIEWS[0].id) || '';
+}
+function renderTabs(aktiv){
+  const bar = document.getElementById('tabs');
+  if(!bar) return;
+  const an = aktiv || activeViewId() || (VIEWS[0] && VIEWS[0].id);
+  bar.innerHTML = VIEWS.map(v=>
+    `<div class="tab ${v.id===an?'active':''}" data-view="${v.id}"`
+    + ` onclick="switchView('${v.id}')">${esc(t(v.label))}</div>`).join('');
+}
 function switchView(v){
-  document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active',el.dataset.view===v));
-  document.getElementById('view-sessions').classList.toggle('active',v==='sessions');
-  document.getElementById('view-settings').classList.toggle('active',v==='settings');
-  document.getElementById('view-buddy').classList.toggle('active',v==='buddy');
-  document.getElementById('view-clawd').classList.toggle('active',v==='clawd');
-  if(v==='clawd') renderClawd();
-  if(v==='buddy'){
-    renderBuddy();
-    if(!BUDDY_STATUS_TIMER) BUDDY_STATUS_TIMER = setInterval(refreshBuddyStatus, 2500);
-  } else if(BUDDY_STATUS_TIMER){
-    clearInterval(BUDDY_STATUS_TIMER); BUDDY_STATUS_TIMER = null;
+  const vorher = activeViewId();
+  renderTabs(v);
+  VIEWS.forEach(view=>{
+    const el = document.getElementById(view.el);
+    if(el) el.classList.toggle('active', view.id===v);
+  });
+  if(vorher && vorher!==v){
+    const alt = viewById(vorher);
+    if(alt && alt.onLeave){ try{ alt.onLeave(); }catch(e){} }
   }
+  const neu = viewById(v);
+  if(neu && neu.onEnter){ try{ neu.onEnter(); }catch(e){} }
   renderShortcutBar(v);
   try{ api.buddy_notify_view(v); }catch(_){}
 }
@@ -5910,31 +5932,46 @@ function switchView(v){
 // Alles neu zeichnen - gebraucht beim Sprachwechsel. Die Ansichten bauen
 // sich ohnehin bei jedem Wechsel neu auf, ein Neustart ist unnoetig.
 function renderAll(){
-  const tab = document.querySelector('.tab.active');
-  const v = tab ? tab.dataset.view : 'sessions';
+  const v = activeViewId();
+  renderTabs(v);
   renderHead();
   render();
   renderSettings();
-  if(v === 'buddy') renderBuddy();
-  if(v === 'clawd') renderClawd();
+  const neu = viewById(v);
+  if(neu && neu.onEnter){ try{ neu.onEnter(); }catch(e){} }
   renderShortcutBar(v);
 }
+
+registerView({
+  id:'sessions', label:'Sessions', el:'view-sessions',
+  shortcuts:[['Doppelklick','einsteigen'], ['Enter','einsteigen'],
+             ['F2','umbenennen'], ['Rechtsklick','Menü'], ['F11','Vollbild']],
+});
+registerView({
+  id:'buddy', label:'Buddy', el:'view-buddy',
+  onEnter:()=>{ renderBuddy();
+    if(!BUDDY_STATUS_TIMER) BUDDY_STATUS_TIMER = setInterval(refreshBuddyStatus, 2500); },
+  onLeave:()=>{ if(BUDDY_STATUS_TIMER){ clearInterval(BUDDY_STATUS_TIMER); BUDDY_STATUS_TIMER = null; } },
+  shortcuts:[['Rechtsklick','Buddy kurz wegschicken'],
+             ['Doppelklick','dasselbe'], ['Ziehen','verschieben'],
+             ['F11','Vollbild']],
+});
+registerView({
+  id:'clawd', label:'Clawdmeter', el:'view-clawd',
+  onEnter:()=>renderClawd(),
+});
+registerView({
+  id:'settings', label:'Einstellungen', el:'view-settings',
+  shortcuts:[['Esc','Dialog schließen'], ['F11','Vollbild']],
+});
 
 // Tastaturkuerzel je Ansicht. Bewusst nur das, was der keydown-Handler und
 // die Maus-Bindungen wirklich koennen - eine Fusszeile, die Kuerzel erfindet,
 // ist schlimmer als gar keine. F11 gilt ueberall und steht deshalb ueberall.
-const SHORTCUTS = {
-  sessions: [['Doppelklick','einsteigen'], ['Enter','einsteigen'],
-             ['F2','umbenennen'], ['Rechtsklick','Menü'], ['F11','Vollbild']],
-  buddy:    [['Rechtsklick','Buddy kurz wegschicken'],
-             ['Doppelklick','dasselbe'], ['Ziehen','verschieben'],
-             ['F11','Vollbild']],
-  settings: [['Esc','Dialog schließen'], ['F11','Vollbild']],
-};
 function renderShortcutBar(v){
   const bar = document.getElementById('shortcutbar');
   if(!bar) return;
-  const list = SHORTCUTS[v] || [];
+  const list = (viewById(v) || {}).shortcuts || [];
   // Beide Haelften uebersetzen: „Doppelklick" ist genauso ein Wort wie das,
   // was danach steht - nur „resume" zu uebersetzen sah halb fertig aus.
   bar.innerHTML = list.map(([k, was])=>
