@@ -3579,13 +3579,16 @@ class Api:
         reason = ""
         if bud.get("enabled") and self.buddy.is_alive():
             mode = bud.get("visibility", "when_claude")
+            # Der Grund wird als {grund} in einen schon uebersetzten Satz
+            # eingesetzt, also hier uebersetzen -- sonst bliebe die Haelfte des
+            # Satzes deutsch.
             if mode == "when_claude" and not _claude_context_active():
-                reason = "wartet auf Claude"
+                reason = t("wartet auf Claude")
             elif mode == "when_window":
                 needle = (bud.get("target_window") or "").lower().strip()
                 fg = _win_foreground_title().lower()
                 if needle and needle not in fg:
-                    reason = "wartet auf Fenster"
+                    reason = t("wartet auf Fenster")
         return {
             "config": bud,
             "anims": anims,
@@ -5943,9 +5946,9 @@ async function refreshBuddyStatus(){
     if(!d) return;
     const b = d.config || {};
     let s;
-    if (!d.have_sprites) s = 'Sprite-Daten fehlen – bitte neu installieren.';
-    else if (!b.enabled) s = 'Buddy aus';
-    else if (!d.running) s = 'Startet…';
+    if (!d.have_sprites) s = t('Sprite-Daten fehlen – bitte neu installieren.');
+    else if (!b.enabled) s = t('Buddy aus');
+    else if (!d.running) s = t('Startet…');
     else if (d.reason) s = t('Buddy läuft · {grund}', {grund: d.reason});
     else s = t('Buddy läuft');
     const el = document.getElementById('buddy-status');
@@ -6031,9 +6034,9 @@ async function renderBuddy(){
   if (hp) { try { hp.src = await api.buddy_icon(previewName); } catch(e){} }
 
   let statusTxt;
-  if (!data.have_sprites) statusTxt = 'Sprite-Daten fehlen – bitte neu installieren.';
-  else if (!b.enabled) statusTxt = 'Buddy aus';
-  else if (!data.running) statusTxt = 'Startet…';
+  if (!data.have_sprites) statusTxt = t('Sprite-Daten fehlen – bitte neu installieren.');
+  else if (!b.enabled) statusTxt = t('Buddy aus');
+  else if (!data.running) statusTxt = t('Startet…');
   else if (data.reason) statusTxt = t('Buddy läuft · {grund}', {grund: data.reason});
   else statusTxt = t('Buddy läuft');
   document.getElementById('buddy-status').textContent = statusTxt;
@@ -6068,8 +6071,7 @@ async function renderBuddy(){
     </div>
 
     <div class="ba-off-hint ${b.enabled?'':'show'}">
-      ${ic('info')}<span>Der Buddy ist ausgeschaltet. Die Einstellungen darunter
-      wirken erst, wenn du ihn oben einschaltest.</span>
+      ${ic('info')}<span>Der Buddy ist ausgeschaltet. Die Einstellungen darunter wirken erst, wenn du ihn oben einschaltest.</span>
     </div>
 
     <div class="ba-sub ${b.enabled?'':'off'}">
@@ -6291,7 +6293,7 @@ function renderSettings(){
       <h2>${ic('eye')}Anzeige</h2>
       <div class="row2">
         <div><div class="lbl">Heimatordner ausblenden</div>
-          <div class="desc">Sessions direkt in ${esc(STATE.home)} verstecken (Unterordner bleiben sichtbar).</div></div>
+          <div class="desc">${t('Sessions direkt in {ordner} verstecken (Unterordner bleiben sichtbar).', {ordner: esc(STATE.home)})}</div></div>
         <div class="toggle ${st.hide_home?'on':''}" onclick="toggleHome(this)"></div>
       </div>
     </div>
@@ -6359,7 +6361,7 @@ function renderSettings(){
       <h2>${ic('power')}Autostart</h2>
       <div class="row2">
         <div><div class="lbl">Mit Windows starten</div>
-          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\\Run.</div></div>
+          <div class="desc">Die App startet automatisch nach dem Anmelden – praktisch damit der Buddy und der Tray-Modus sofort verfügbar sind. Registry-Eintrag unter HKCU\Run.</div></div>
         <div class="toggle ${st.autostart!==false?'on':''}" onclick="toggleAutostart(this)"></div>
       </div>
     </div>
@@ -6566,7 +6568,11 @@ async function loadClawdDevices(rescan){
   const cur = (STATE.settings.clawdmeter_addr||'');
   const devs = (r&&r.devices)||[];
   const autoName = (devs.find(d=>d.address===(r&&r.auto))||{}).name;
-  const autoLbl = r&&r.auto ? `Automatisch (${esc(autoName||r.auto)})` : 'Automatisch (nichts gefunden)';
+  // Diese Liste entsteht erst nach dem Uebersetzungslauf ueber die Seite und
+  // wird zusammengesetzt -- ein fertiger Satz stuende hier also nie in der
+  // Tabelle. Deshalb ueber t() mit Platzhalter.
+  const autoLbl = r&&r.auto ? t('Automatisch ({geraet})', {geraet: esc(autoName||r.auto)})
+                            : t('Automatisch (nichts gefunden)');
   let html = `<option value="" ${cur?'':'selected'}>${autoLbl}</option>`;
   if(!devs.length){
     html += '<option value="" disabled>' + t('Keine gekoppelten Bluetooth-Geräte') + '</option>';
@@ -6695,7 +6701,7 @@ async function toggleClawd(el){
 }
 async function clawdReconnect(btn){
   const alt = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Verbinde…';
+  btn.disabled = true; btn.textContent = t('Verbinde…');
   try{
     setClawdStatus(document.getElementById('clawd-status'),
                    await api.clawdmeter_reconnect());
@@ -6826,7 +6832,7 @@ function openUpdateDialog(){
   document.getElementById('upd-title').textContent=t('Update auf v{neu} (aktuell v{alt})', {neu: UPD.latest, alt: UPD.current});
   document.getElementById('upd-notes').textContent=UPD.notes||t('Verbesserungen und Fehlerbehebungen.');
   const b=document.getElementById('upd-install');
-  b.disabled=false; b.textContent= UPD.frozen ? 'Jetzt installieren' : 'Zur Download-Seite';
+  b.disabled=false; b.textContent= UPD.frozen ? t('Jetzt installieren') : t('Zur Download-Seite');
   document.getElementById('overlay-update').classList.add('show');
 }
 function buildConfetti(){
@@ -6847,19 +6853,19 @@ function setProgress(p){
 function startInstallUI(){
   const pop=document.getElementById('upd-pop');
   pop.classList.add('installing'); pop.classList.remove('ready');
-  setProgress(0); document.getElementById('inst-state').textContent='Lädt herunter…';
+  setProgress(0); document.getElementById('inst-state').textContent=t('Lädt herunter…');
   buildConfetti();
   document.getElementById('overlay-update').classList.add('show');
 }
 // von Python aufgerufen
 window.updateProgress=function(p){
   setProgress(p);
-  if(p>=100) document.getElementById('inst-state').textContent='Fast fertig…';
+  if(p>=100) document.getElementById('inst-state').textContent=t('Fast fertig…');
 };
 window.downloadDone=function(){
   setProgress(100);
   document.getElementById('upd-pop').classList.add('ready');
-  document.getElementById('inst-state').textContent='Bereit! Programm startet neu…';
+  document.getElementById('inst-state').textContent=t('Bereit! Programm startet neu…');
 };
 async function doInstall(){
   if(!(UPD && UPD.frozen)){   // Dev/keine .exe -> nur Release-Seite oeffnen
@@ -6925,7 +6931,7 @@ function obRender(){
   let dots=''; for(let i=0;i<OB_STEPS;i++) dots+=`<i class="${i===obStep?'on':''}"></i>`;
   document.getElementById('ob-dots').innerHTML=dots;
   document.getElementById('ob-back').style.visibility = obStep===0?'hidden':'visible';
-  document.getElementById('ob-next').textContent = obStep===OB_STEPS-1 ? "Los geht's! 🎉" : 'Weiter';
+  document.getElementById('ob-next').textContent = obStep===OB_STEPS-1 ? t("Los geht's! 🎉") : t('Weiter');
 }
 function obNext(){ if(obStep<OB_STEPS-1){ obStep++; obRender(); } else obFinish(); }
 function obPrev(){ if(obStep>0){ obStep--; obRender(); } }
