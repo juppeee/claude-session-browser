@@ -189,6 +189,27 @@ UNINTERESSANT = re.compile(
 CODE = re.compile(r"['\"]\s*:\s*['\"]|=>|\bfunction\b|\breturn\b")
 
 
+def template_escapes(text):
+    """Loest die Escapes auf, die ein JS-Template-String aufloest: \\X wird X.
+
+    HTML_TEMPLATE ist ein roher Python-String, der Browser bekommt die
+    Backslashes also unveraendert - und der Template-String frisst sie dann.
+    Aus `HKCU\\Run` im Quelltext wird auf der Seite HKCU\Run, aus `HKCU\Run`
+    sogar HKCURun. Verglichen werden muss, was im Baum landet, sonst meldet
+    die Pruefung eine Uebereinstimmung, die es im Fenster nie gibt.
+    """
+    out = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            out.append(text[i + 1])
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def js_rohtexte(block):
     beginn = block.find("<script>")
     ende = block.rfind("</script>")
@@ -216,7 +237,7 @@ def js_rohtexte(block):
                 continue
             # Im Quelltext steht &amp;, im Fenster ein & - nachgeschlagen
             # wird der Text, wie er im Baum steht.
-            out.add(unescape(kern))
+            out.add(unescape(template_escapes(kern)))
     return out
 
 
