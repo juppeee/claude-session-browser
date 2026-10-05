@@ -4579,11 +4579,18 @@ class Api:
         # Echte TLS-Verifizierung (der Updater laedt eine ausfuehrbare Datei, daher
         # darf TLS nicht abgeschaltet werden). Bevorzugt den Windows-Zertifikat-
         # speicher (funktioniert auch hinter TLS-Inspektion/Firewalls), sonst certifi.
-        try:
-            import truststore
-            return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        except Exception:
-            pass
+        # Hat jemand ssl.SSLContext schon ersetzt - pip-system-certs und
+        # aehnliche Pakete tun das global, um den Windows-Zertifikatspeicher
+        # einzuhaengen -, dann ist das hier bereits erledigt. truststore ein
+        # zweites Mal daraufzusetzen dreht sich beim Verbinden im Kreis und
+        # endet in einem RecursionError, und zwar erst beim Abruf, nicht beim
+        # Anlegen - mit einem try drumherum ist dem also nicht beizukommen.
+        if ssl.SSLContext.__module__ == "ssl":
+            try:
+                import truststore
+                return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            except Exception:
+                pass
         try:
             import certifi
             return ssl.create_default_context(cafile=certifi.where())
@@ -6480,7 +6487,9 @@ registerView({
 });
 registerView({
   id:'store', label:'Store', el:'view-store',
-  onEnter:()=>renderStore(),
+  // Beim Oeffnen zeichnen und den Katalog holen: zeichnen zuerst, damit der
+  // Tab nicht leer dasteht, waehrend die Abfrage laeuft.
+  onEnter:()=>{ renderStore(); storeLaden(false); },
 });
 registerView({
   id:'settings', label:'Einstellungen', el:'view-settings',
