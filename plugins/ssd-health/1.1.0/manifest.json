@@ -1,0 +1,15 @@
+{
+  "id": "ssd-health",
+  "name": "Drives",
+  "version": "1.1.0",
+  "api_version": 1,
+  "min_app_version": "1.6.0",
+  "description": "Every disk with its type, bus, size and health, the drives that sit on it, and SMART details where Windows hands them out.",
+  "author": "juppeee",
+  "permissions": [
+    "native"
+  ],
+  "ui": "ui.js",
+  "backend": "backend.py",
+  "i18n": "i18n.json"
+}

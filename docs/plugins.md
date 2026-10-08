@@ -43,13 +43,18 @@ not loaded. `min_app_version` is checked against the app's version.
 
 The file runs in the window and receives one object, `csb`:
 
+The app draws the tab header itself — icon, the plugin's name and a status
+field on the right — so a plugin tab looks like every built-in one. Your
+container sits below it.
+
 | | |
 |---|---|
-| `csb.el` | your container; fill it with your own markup |
+| `csb.el` | your container, below the header; fill it with your own markup |
 | `csb.call(method, args)` | calls `call()` in your `backend.py`, returns `{ok, result}` or `{ok:false, error}` |
 | `csb.t(text, vars)` | translates through your `i18n.json` and the app's table |
 | `csb.toast(text)` | short message at the bottom of the window |
 | `csb.onEnter(fn)` | runs whenever your tab is opened |
+| `csb.setStatus(text)` | the text on the right of the tab header |
 | `csb.onLeave(fn)` | runs when it is left — stop your timers here |
 | `csb.id`, `csb.version` | your own id and version |
 
@@ -63,14 +68,19 @@ the tab is removed and the window says so, rather than going down with it.
 
 ## i18n.json
 
-The German sentence is the key, as everywhere in this app:
+The key is the string as you write it in your code, and you ship a table per
+language you are not writing in. A plugin written in English:
 
 ```json
-{ "en": { "Laufwerke": "Drives", "belegt": "used" } }
+{ "de": { "Drives": "Laufwerke", "used": "belegt" } }
 ```
 
 The table is merged into the app's when your plugin loads, so `csb.t()` and the
-app's own `t()` behave the same. German needs no entries.
+app's own `t()` behave the same.
+
+The `name` from your manifest goes through the same table, so put it in there
+too and your tab is named in the reader's language. Plugin tabs are placed
+before Settings, which always stays last.
 
 ## backend.py
 

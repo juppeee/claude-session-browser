@@ -47,7 +47,7 @@ except Exception:
 logging.getLogger("pywebview").setLevel(logging.CRITICAL)
 
 # ----- Version & Update ---------------------------------------------------- #
-VERSION = "1.5.3"
+VERSION = "1.6.0"
 # Wird beim GitHub-Setup auf dein echtes Repo gesetzt (OWNER/REPO):
 UPDATE_URL = "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/version.json"
 
@@ -5015,6 +5015,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   @keyframes l-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
   .titlewrap{display:flex; align-items:center; gap:13px}
   .hlogo{width:34px; height:34px; flex:none}
+  /* Kopfsymbol: fuer alle Tabs gleich, gefuellt von kopfSymbole() */
+  .kopfsymbol{display:inline-flex; align-items:center; justify-content:center; color:var(--accent)}
   .titlebar .tt{font-weight:600; font-size:13px; color:var(--muted); letter-spacing:.3px}
   .drag{flex:1; height:100%}
   .winbtns{display:flex; gap:2px}
@@ -5709,7 +5711,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="view" id="view-clawd">
     <div class="head">
       <h1 class="titlewrap">
-        <span class="hlogo" id="clawd-hlogo" style="display:inline-flex;align-items:center;justify-content:center;color:var(--accent)"></span>
+        <span class="hlogo kopfsymbol" id="clawd-hlogo"></span>
         <span>Clawdmeter</span>
       </h1>
       <div class="count" id="clawd-head-status"></div>
@@ -5720,7 +5722,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <!-- Store -->
   <div class="view" id="view-store">
     <div class="head">
-      <h1 class="titlewrap"><span>Store</span></h1>
+      <h1 class="titlewrap"><span class="hlogo kopfsymbol" id="store-hlogo"></span><span>Store</span></h1>
       <div class="count" id="store-count"></div>
     </div>
     <div class="settings" id="store-panel"></div>
@@ -5728,7 +5730,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <!-- Einstellungen -->
   <div class="view" id="view-settings">
-    <div class="head"><h1>Einstellungen</h1></div>
+    <div class="head">
+      <h1 class="titlewrap"><span class="hlogo kopfsymbol" id="settings-hlogo"></span><span>Einstellungen</span></h1>
+      <div class="count" id="settings-count"></div>
+    </div>
     <div class="jumpbar" id="settings-jump"></div>
     <div class="settings" id="settings"></div>
   </div>
@@ -6186,6 +6191,9 @@ const ICONS={
   play:'<circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.8v.4"/>',
   link:'<path d="M10 13a4 4 0 0 0 5.7.3l3-3a4 4 0 1 0-5.7-5.7l-1.7 1.7"/><path d="M14 11a4 4 0 0 0-5.7-.3l-3 3a4 4 0 1 0 5.7 5.7l1.7-1.7"/>',
+  store: '<path d="M4 7h16l-1.2 12.1A2 2 0 0 1 16.8 21H7.2a2 2 0 0 1-2-1.9L4 7Z"/>'
+       + '<path d="M9 7V5.5a3 3 0 0 1 6 0V7"/>',
+  plugin: '<path d="M10 4a2 2 0 1 1 4 0v2h3a1 1 0 0 1 1 1v3h-2a2 2 0 1 0 0 4h2v3a1 1 0 0 1-1 1h-3v-2a2 2 0 1 0-4 0v2H7a1 1 0 0 1-1-1v-3H4a2 2 0 1 1 0-4h2V7a1 1 0 0 1 1-1h3V4Z"/>',
   warn:'<path d="M12 4.5L21 19H3z"/><path d="M12 10v4"/><path d="M12 16.7v.3"/>',
 };
 function ic(k){
@@ -6242,6 +6250,7 @@ async function boot(){
     render();
     watchTableWidth();
     renderSettings();
+    kopfSymbole();
     renderTabs(VIEWS[0] && VIEWS[0].id);
     renderShortcutBar(VIEWS[0] && VIEWS[0].id);   // Startansicht
     ladePlugins();   // im Hintergrund, blockiert den Start nicht
@@ -6579,6 +6588,11 @@ function pluginSchnittstelle(p, el){
     toast: (text) => toast(text),
     onEnter: (fn) => { p._enter = fn; },
     onLeave: (fn) => { p._leave = fn; },
+    // Rechts im Kopf, wie Buddy und Clawdmeter es nutzen.
+    setStatus: (text) => {
+      const el2 = document.getElementById('plugin-status-' + p.id);
+      if(el2) el2.textContent = text || '';
+    },
   };
 }
 function pluginAbschalten(p, fehler){
@@ -6607,11 +6621,21 @@ async function startePlugin(p){
   const leiste = document.getElementById('shortcutbar');
   const el = document.createElement('div');
   el.className = 'view'; el.id = 'view-plugin-' + p.id;
+  // Denselben Kopf wie jeder eingebaute Tab - ein Plugin soll nicht daran zu
+  // erkennen sein, dass es eins ist. Der Name geht durch t(), die Tabelle des
+  // Plugins ist oben schon eingemischt.
+  el.innerHTML = `<div class="head">
+      <h1 class="titlewrap"><span class="hlogo kopfsymbol">${kopfSymbolHtml('plugin')}</span>`
+    + `<span>${esc(t(p.name))}</span></h1>
+      <div class="count" id="plugin-status-${esc(p.id)}"></div>
+    </div>
+    <div class="settings" id="plugin-panel-${esc(p.id)}"></div>`;
   leiste.parentNode.insertBefore(el, leiste);
+  const panel = el.querySelector('#plugin-panel-' + p.id);
   try{
     // Laeuft im Fenster, nicht in einem Sandkasten - deshalb kommen Plugins
     // nur aus dem geprueften Katalog.
-    (new Function('csb', quelle))(pluginSchnittstelle(p, el));
+    (new Function('csb', quelle))(pluginSchnittstelle(p, panel));
   }catch(e){
     el.remove();
     p.laufzeitfehler = String(e).slice(0, 200);
@@ -6645,6 +6669,9 @@ async function ladePlugins(){
   for(const p of PLUGINS){
     if(p.enabled && !p.error) await startePlugin(p);
   }
+  // Einstellungen gehoeren ans Ende, egal wie viele Plugins dazukommen.
+  const i = VIEWS.findIndex(v => v.id === 'settings');
+  if(i >= 0) VIEWS.push(VIEWS.splice(i, 1)[0]);
   renderTabs(activeViewId());
 }
 
@@ -7349,14 +7376,25 @@ function setClawdStatus(el, r){
 // Eigener Tab seit 1.5.0 - der Block war der groesste auf der Einstellungs-
 // seite und eher eine Geraeteansicht als eine Einstellung. Solange die
 // Anbindung aus ist, steht nur der Schalter mit dem Kopplungshinweis da.
+// Das Symbol im Kopf einer Ansicht. Eine Stelle fuer alle Tabs, damit kein
+// Tab sein eigenes Muster bekommt.
+function kopfSymbolHtml(name, groesse){
+  const g = groesse || 30;
+  return `<svg width="${g}" height="${g}" viewBox="0 0 24 24" fill="none" stroke="currentColor"`
+       + ` stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]||''}</svg>`;
+}
+function kopfSymbole(){
+  [['clawd-hlogo','bluetooth'], ['store-hlogo','store'], ['settings-hlogo','window']]
+    .forEach(([id, name])=>{
+      const el = document.getElementById(id);
+      if(el) el.innerHTML = kopfSymbolHtml(name);
+    });
+}
+
 function renderClawd(){
   const box = document.getElementById('clawd-panel');
   if(!box) return;
   const st = STATE.settings, on = !!st.clawdmeter;
-  const logo = document.getElementById('clawd-hlogo');
-  if(logo) logo.innerHTML = '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" '
-    + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
-    + (ICONS.bluetooth||'') + '</svg>';
   // Getrennt statt verschachtelt: tools/check_i18n.py liest keine
   // Template-Strings in Template-Strings.
   const rest = on ? `

@@ -3,9 +3,9 @@
   "plugins": [
     {
       "id": "ssd-health",
-      "name": "Drive health",
+      "name": "Drives",
       "author": "juppeee",
-      "description": "Every drive with its type, bus, size and the health Windows reports, plus how full each volume is. Wear and power-on hours need administrator rights.",
+      "description": "Every disk with its type, bus, size and health, the drives that sit on it, and SMART details where Windows hands them out.",
       "permissions": [
         "native"
       ],
@@ -17,6 +17,14 @@
           "url": "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/plugins/packages/ssd-health-1.0.0.zip",
           "sha256": "1adb4fbcaca5a932a1a223d82be68b5e5164c96202a9ae3ec72fa6765679e5eb",
           "notes": "First version."
+        },
+        {
+          "version": "1.1.0",
+          "api_version": 1,
+          "min_app_version": "1.6.0",
+          "url": "https://raw.githubusercontent.com/juppeee/claude-session-browser/main/plugins/packages/ssd-health-1.1.0.zip",
+          "sha256": "f6f4697346b5553a937f57b8c4b367daa48d7c9ca2ee4ad2fd315b59971a464e",
+          "notes": "Drives are grouped under the disk they sit on, with SMART details per disk and a German tab name."
         }
       ]
     }
