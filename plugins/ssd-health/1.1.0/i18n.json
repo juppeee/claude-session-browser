@@ -1,0 +1,33 @@
+{
+  "de": {
+    "Drives": "Laufwerke",
+    "Disks": "Datenträger",
+    "Drives on this disk": "Laufwerke auf diesem Datenträger",
+    "Drives without a disk": "Laufwerke ohne Datenträger",
+    "No drive letter on this disk.": "Kein Laufwerksbuchstabe auf diesem Datenträger.",
+    "Health": "Zustand",
+    "Capacity": "Kapazität",
+    "Bus": "Anschluss",
+    "Firmware": "Firmware",
+    "Serial number": "Seriennummer",
+    "Unknown type": "Unbekannter Typ",
+    "Details": "Details",
+    "Hide details": "Details ausblenden",
+    "Percentage used": "Verschleiß",
+    "Temperature": "Temperatur",
+    "Highest temperature": "Höchste Temperatur",
+    "Power-on hours": "Betriebsstunden",
+    "Power cycles": "Einschaltvorgänge",
+    "Read errors": "Lesefehler",
+    "Read errors, uncorrected": "Lesefehler, nicht korrigiert",
+    "Write errors": "Schreibfehler",
+    "Write errors, uncorrected": "Schreibfehler, nicht korrigiert",
+    "{pct}% used · {frei} free": "{pct}% belegt · {frei} frei",
+    "{n} disks": "{n} Datenträger",
+    "Loading…": "Lädt…",
+    "Could not read the disks: {grund}": "Datenträger konnten nicht gelesen werden: {grund}",
+    "Health comes from Windows ({quelle}), not from the drive manufacturer.": "Der Zustand kommt von Windows ({quelle}), nicht vom Hersteller des Datenträgers.",
+    "Wear, power-on hours and temperature need administrator rights.": "Verschleiß, Betriebsstunden und Temperatur brauchen Administratorrechte.",
+    "Windows only hands these out to an administrator. Everything else on this page needs no rights at all.": "Diese Werte gibt Windows nur mit Administratorrechten heraus. Alles andere auf dieser Seite braucht keine."
+  }
+}
