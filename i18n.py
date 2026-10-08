@@ -202,8 +202,6 @@ TRANSLATIONS = {
             "Connection active",
         "Anzahl ausgetauschter Nachrichten – gute Anhaltszahl für den Umfang.":
             "Number of messages exchanged – a good indicator of the session's size.",
-        "App":
-            "App",
         "App jetzt komplett beenden":
             "Quit the app completely now",
         "Aus offenen Fenstern wählen…":
@@ -590,6 +588,13 @@ TRANSLATIONS = {
         "{name} · {n} Frames · Klick zum Vorspielen":
             "{name} · {n} frames · click to play it",
 
+        # ---- Einstellungen: Abschnitte und Karten -------------------------
+        "Datenquelle": "Data source",
+        "Über": "About",
+        "Clawdmeter-Akku": "Clawdmeter battery",
+        "Gilt nur, wenn ein Clawdmeter verbunden ist.":
+            "Only applies while a Clawdmeter is connected.",
+
         # ---- Plugins ------------------------------------------------------
         "Manifest nicht lesbar: {grund}": "Cannot read the manifest: {grund}",
         "Kennung im Manifest passt nicht zum Ordner":
@@ -766,11 +771,12 @@ TRANSLATIONS = {
         "Rückfragen zuverlässig erkennen": "Spot permission prompts reliably",
         # Der Satz ist im Markup von einem <code> unterbrochen, deshalb zwei
         # Bruchstuecke - die Reihenfolge bleibt im Englischen dieselbe.
-        "Claude Code meldet dem Buddy selbst, wenn es auf deine Antwort "
-        "wartet. Ohne das muss die App raten – und rät falsch, sobald "
-        "mehrere Terminals offen sind: eines arbeitet, das andere fragt. "
-        "Trägt einen Hook in":
-            "Claude Code tells the buddy itself when it's waiting on you. "
+        "Claude Code meldet dem Buddy selbst, wenn es auf deine Antwort wartet.":
+            "Claude Code tells the buddy itself when it's waiting on you.",
+        "Was das genau tut": "What it actually does",
+        "Ohne das muss die App raten – und rät falsch, sobald mehrere "
+        "Terminals offen sind: eines arbeitet, das andere fragt. Trägt einen "
+        "Hook in":
             "Without it the app has to guess – and guesses wrong as soon as "
             "you have several terminals open: one is working, the other is "
             "asking. Adds a hook to",
