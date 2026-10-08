@@ -156,25 +156,65 @@ def js_attribute(block):
 
 
 def template_literale(block):
-    """Alle `…`-Zeichenketten. Ein einfacher Durchlauf statt eines Suchmusters:
-    Backticks laufen ueber viele Zeilen und enthalten ${…}."""
+    """Alle `…`-Zeichenketten, auch die ineinander verschachtelten.
+
+    Ein Durchlauf statt eines Suchmusters: Backticks laufen ueber viele Zeilen
+    und enthalten ${…}, in denen wieder ein Template-String stehen kann. Der
+    fruehere Scanner hielt den inneren Backtick fuer das Ende des aeusseren
+    und hat alles danach als Code gelesen - die Texte in Bloecken wie
+    `${an ? `…` : ''}` waren fuer die Pruefung unsichtbar und blieben
+    unuebersetzt, ohne dass hier etwas aufgefallen waere.
+
+    Zurueck kommt der Inhalt jedes Literals, der aeusseren wie der inneren;
+    die eingesetzten ${…} bleiben darin stehen und werden spaeter ersetzt.
+    """
     out = []
     i, n = 0, len(block)
     while i < n:
-        if block[i] == "`":
-            j = i + 1
-            while j < n:
-                if block[j] == "\\":
-                    j += 2
-                    continue
-                if block[j] == "`":
-                    break
-                j += 1
-            out.append(block[i + 1:j])
-            i = j + 1
-        else:
+        if block[i] != "`":
             i += 1
+            continue
+        inhalt, i = _literal_ab(block, i + 1, out)
+        out.append(inhalt)
     return out
+
+
+def _literal_ab(block, i, out):
+    """Liest ein Template-Literal ab Position i (hinter dem Backtick).
+
+    Rueckgabe (Inhalt, Position hinter dem schliessenden Backtick). Literale
+    innerhalb von ${…} landen direkt in `out`.
+    """
+    teile = []
+    n = len(block)
+    while i < n:
+        c = block[i]
+        if c == "\\":
+            teile.append(block[i:i + 2])
+            i += 2
+            continue
+        if c == "`":
+            return "".join(teile), i + 1
+        if c == "$" and i + 1 < n and block[i + 1] == "{":
+            tiefe, j = 1, i + 2
+            while j < n and tiefe:
+                if block[j] == "`":
+                    inner, j = _literal_ab(block, j + 1, out)
+                    out.append(inner)
+                    continue
+                if block[j] == "{":
+                    tiefe += 1
+                elif block[j] == "}":
+                    tiefe -= 1
+                j += 1
+            # Der eingesetzte Wert bleibt als Platzhalter stehen, damit
+            # js_rohtexte() ihn wie bisher ausblenden kann.
+            teile.append(block[i:j])
+            i = j
+            continue
+        teile.append(c)
+        i += 1
+    return "".join(teile), i
 
 
 HAT_BUCHSTABE = re.compile(r"[A-Za-zÄÖÜäöüß]")

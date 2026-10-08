@@ -5017,6 +5017,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .hlogo{width:34px; height:34px; flex:none}
   /* Kopfsymbol: fuer alle Tabs gleich, gefuellt von kopfSymbole() */
   .kopfsymbol{display:inline-flex; align-items:center; justify-content:center; color:var(--accent)}
+  /* Wiederkehrende Kleinigkeiten als Klasse - inline verteilt sich dieselbe
+     Zahl sonst ueber die halbe Seite und driftet auseinander. */
+  .num-input{width:74px; text-align:right}
+  .cmd-input{max-width:260px}
+  .inline-row{display:flex; gap:6px; align-items:center}
+  .btn.abstand{margin-top:12px}
+  .btn.abstand-klein{margin-top:6px}
+  details.mehr{margin-top:4px}
+  details.mehr>summary{cursor:pointer; font-size:12.5px; color:var(--muted); list-style:none}
+  details.mehr>summary::-webkit-details-marker{display:none}
+  details.mehr>summary::before{content:"▸ "; display:inline-block; transition:transform .12s}
+  details.mehr[open]>summary::before{content:"▾ "}
+  details.mehr>summary:hover{color:var(--fg)}
   .titlebar .tt{font-weight:600; font-size:13px; color:var(--muted); letter-spacing:.3px}
   .drag{flex:1; height:100%}
   .winbtns{display:flex; gap:2px}
@@ -7017,14 +7030,8 @@ function renderSettings(){
   const swl = ACCENTS.map(c=>`<div class="sw ${st.accent===c?'active':''}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('');
   const bgl = BG_TONES.map(tone=>`<div class="sw ${st.bg_base===tone.base?'active':''}" style="background:${shade(tone.base,0.42)}" title="${t(tone.name)}" onclick="setBg('${tone.base}')"></div>`).join('');
   document.getElementById('settings').innerHTML=`
-    <div class="secthead" id="sect-auslastung">Auslastung</div>
-    <div class="card">
-      <h2>${ic('gauge')}Dein Limit</h2>
-      <div class="sub">Wie viel vom 5-Stunden-Fenster und von der Woche verbraucht ist. Aktualisiert sich von selbst.</div>
-      <div class="limitbox" id="limitbox"><span class="dot off"></span><span class="ltext">…</span></div>
-    </div>
+    <div class="secthead" id="sect-datenquelle">Datenquelle</div>
 
-    <div class="secthead" id="sect-sessions">Sessions</div>
     <div class="card">
       <h2>${ic('folder')}Sessions-Ordner</h2>
       <div class="sub">Wo Claude die Session-Dateien speichert. Wird automatisch gesucht, lässt sich aber überschreiben.</div>
@@ -7037,36 +7044,14 @@ function renderSettings(){
     </div>
 
     <div class="card">
-      <h2>${ic('eye')}Anzeige</h2>
-      <div class="row2">
-        <div><div class="lbl">Heimatordner ausblenden</div>
-          <div class="desc">${t('Sessions direkt in {ordner} verstecken (Unterordner bleiben sichtbar).', {ordner: esc(STATE.home)})}</div></div>
-        <div class="toggle ${st.hide_home?'on':''}" onclick="toggleHome(this)"></div>
-      </div>
-    </div>
-
-    <div class="card">
       <h2>${ic('hidden')}Weitere ausgeblendete Ordner</h2>
       <div class="sub">Sessions in diesen Ordnern werden komplett ausgeblendet.</div>
       <ul class="hiddenlist">${hl}</ul>
-      <button class="btn" onclick="hideCurrent()" style="margin-top:6px">+ Ordner der gewählten Session ausblenden</button>
-    </div>
-
-    <div class="card">
-      <h2>${ic('columns')}Spalten</h2>
-      <div class="sub">Welche Spalten in der Tabelle erscheinen und in welcher Reihenfolge.</div>
-      ${normCols().map((c,i,arr)=>`
-        <div class="row2">
-          <div class="lbl">${ALL_COLS[c.key].label}</div>
-          <div style="display:flex; gap:6px; align-items:center">
-            <button class="btn mini" onclick="moveCol(${i},-1)" ${i===0?'disabled':''}>▲</button>
-            <button class="btn mini" onclick="moveCol(${i},1)" ${i===arr.length-1?'disabled':''}>▼</button>
-            <div class="toggle ${c.on?'on':''}" onclick="toggleCol('${c.key}')"></div>
-          </div>
-        </div>`).join('')}
+      <button class="btn abstand-klein" onclick="hideCurrent()">+ Ordner der gewählten Session ausblenden</button>
     </div>
 
     <div class="secthead" id="sect-darstellung">${t('Darstellung')}</div>
+
     <div class="card">
       <h2>${ic('globe')}${t('Sprache')}</h2>
       <div class="row2">
@@ -7092,7 +7077,31 @@ function renderSettings(){
       <div class="swatches">${bgl}</div>
     </div>
 
+    <div class="card">
+      <h2>${ic('eye')}Anzeige</h2>
+      <div class="row2">
+        <div><div class="lbl">Heimatordner ausblenden</div>
+          <div class="desc">${t('Sessions direkt in {ordner} verstecken (Unterordner bleiben sichtbar).', {ordner: esc(STATE.home)})}</div></div>
+        <div class="toggle ${st.hide_home?'on':''}" onclick="toggleHome(this)"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>${ic('columns')}Spalten</h2>
+      <div class="sub">Welche Spalten in der Tabelle erscheinen und in welcher Reihenfolge.</div>
+      ${normCols().map((c,i,arr)=>`
+        <div class="row2">
+          <div class="lbl">${ALL_COLS[c.key].label}</div>
+          <div class="inline-row">
+            <button class="btn mini" onclick="moveCol(${i},-1)" ${i===0?'disabled':''}>▲</button>
+            <button class="btn mini" onclick="moveCol(${i},1)" ${i===arr.length-1?'disabled':''}>▼</button>
+            <div class="toggle ${c.on?'on':''}" onclick="toggleCol('${c.key}')"></div>
+          </div>
+        </div>`).join('')}
+    </div>
+
     <div class="secthead" id="sect-verhalten">Verhalten</div>
+
     <div class="card">
       <h2>${ic('window')}Fenster schließen</h2>
       <div class="row2">
@@ -7101,7 +7110,7 @@ function renderSettings(){
           ${st.close_to_tray===false ? `<div class="warnnote">${ic('warn')}<span>Das X beendet die App jetzt wirklich – Buddy, Clawdmeter und Benachrichtigungen laufen dann nicht mehr.</span></div>` : ''}</div>
         <div class="toggle ${st.close_to_tray!==false?'on':''}" onclick="toggleTray(this)"></div>
       </div>
-      <button class="btn danger" onclick="reallyQuit()" style="margin-top:12px">App jetzt komplett beenden</button>
+      <button class="btn danger abstand" onclick="reallyQuit()">App jetzt komplett beenden</button>
     </div>
 
     <div class="card">
@@ -7112,6 +7121,8 @@ function renderSettings(){
         <div class="toggle ${st.autostart!==false?'on':''}" onclick="toggleAutostart(this)"></div>
       </div>
     </div>
+
+    <div class="secthead" id="sect-benachrichtigungen">Benachrichtigungen</div>
 
     <div class="card">
       <h2>${ic('bell')}Benachrichtigungen</h2>
@@ -7131,11 +7142,29 @@ function renderSettings(){
           <div class="desc">Ab wie viel Prozent des 5-Stunden-Limits gewarnt wird.</div></div>
         <div><input type="number" min="10" max="100" step="5"
              value="${st.limit_warn_pct||90}" onchange="setWarnPct(this)"
-             style="width:74px;text-align:right"> %</div>
+             class="num-input"> %</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>${ic('bell')}Clawdmeter-Akku</h2>
+      <div class="sub">Gilt nur, wenn ein Clawdmeter verbunden ist.</div>
+      <div class="row2">
+        <div><div class="lbl">Warnen wenn der Akku zur Neige geht</div>
+          <div class="desc">Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.</div></div>
+        <div class="toggle ${st.notify_clawd_battery!==false?'on':''}" onclick="toggleClawdBattery(this)"></div>
+      </div>
+      <div class="row2">
+        <div><div class="lbl">Schwelle für die Akku-Warnung</div>
+          <div class="desc">Ab wie viel Restladung gewarnt wird.</div></div>
+        <div><input type="number" min="5" max="90" step="5"
+             value="${st.clawd_battery_pct||15}" onchange="setClawdBatteryPct(this)"
+             class="num-input"> %</div>
       </div>
     </div>
 
     <div class="secthead" id="sect-verbindungen">Verbindungen</div>
+
     <div class="card">
       <h2>${ic('terminal')}Terminal &amp; Claude</h2>
       <div class="row2">
@@ -7148,19 +7177,22 @@ function renderSettings(){
       </div>
       <div class="row2">
         <div><div class="lbl">Claude-Befehl</div><div class="desc">Pfad/Name der Claude-CLI (Standard: claude).</div></div>
-        <input type="text" style="max-width:260px" value="${esc(st.claude_cmd||'claude')}"
+        <input type="text" class="cmd-input" value="${esc(st.claude_cmd||'claude')}"
           onchange="api.update_setting('claude_cmd',this.value)">
       </div>
       <div class="row2">
         <div><div class="lbl">Rückfragen zuverlässig erkennen</div>
-          <div class="desc">Claude Code meldet dem Buddy selbst, wenn es auf deine Antwort wartet. Ohne das muss die App raten – und rät falsch, sobald mehrere Terminals offen sind: eines arbeitet, das andere fragt. Trägt einen Hook in <code>~/.claude/settings.json</code> ein; deine übrigen Hooks bleiben unangetastet.</div>
+          <div class="desc">Claude Code meldet dem Buddy selbst, wenn es auf deine Antwort wartet.</div>
+          <details class="mehr"><summary>Was das genau tut</summary>
+            <div class="desc">Ohne das muss die App raten – und rät falsch, sobald mehrere Terminals offen sind: eines arbeitet, das andere fragt. Trägt einen Hook in <code>~/.claude/settings.json</code> ein; deine übrigen Hooks bleiben unangetastet.</div>
+          </details>
           <div class="desc" id="hook-hint"></div></div>
         <div class="toggle" id="hook-toggle" onclick="toggleHooks(this)"></div>
       </div>
     </div>
 
+    <div class="secthead" id="sect-ueber">Über</div>
 
-    <div class="secthead" id="sect-app">App</div>
     <div class="card">
       <h2>${ic('update')}Updates</h2>
       <div class="sub">${t('Aktuelle Version: v{v} — beim Start wird automatisch nach Updates gesucht (ohne Internet wird das übersprungen).', {v: esc(STATE.version||'?')})}</div>
@@ -7408,24 +7440,23 @@ function renderClawd(){
         <div><div class="lbl">Clawd-Buddy spiegeln</div><div class="desc">Das Gerät zeigt dieselbe Animation wie dein Clawd-Buddy auf dem Desktop — statt selbst eine nach Auslastung zu wählen. Braucht einen eingeschalteten Buddy.</div></div>
         <div class="toggle ${st.clawdmeter_buddy!==false?'on':''}" onclick="toggleClawdBuddy(this)"></div>
       </div>
-      <div class="row2">
-        <div><div class="lbl">Warnen wenn der Akku zur Neige geht</div>
-          <div class="desc">Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.</div></div>
-        <div class="toggle ${st.notify_clawd_battery!==false?'on':''}" onclick="toggleClawdBattery(this)"></div>
-      </div>
-      <div class="row2">
-        <div><div class="lbl">Schwelle für die Akku-Warnung</div>
-          <div class="desc">Ab wie viel Restladung gewarnt wird.</div></div>
-        <div><input type="number" min="5" max="90" step="5"
-             value="${st.clawd_battery_pct||15}" onchange="setClawdBatteryPct(this)"
-             style="width:74px;text-align:right"> %</div>
-      </div>
       <div class="field">
         <button class="btn accent" onclick="clawdReconnect(this)">Jetzt verbinden</button>
         <button class="btn" onclick="loadClawdDevices(true)">Geräte neu suchen</button>
       </div>
 ` : '';
+  // Die Auslastung steht hier statt in den Einstellungen: sie ist eine
+  // Anzeige, keine Einstellung - und sie gehoert zu dem, was das Geraet zeigt.
+  // Ohne Geraet bleibt sie nuetzlich, deshalb haengt sie nicht am Schalter.
   box.innerHTML = `
+    <div class="secthead">Auslastung</div>
+    <div class="card">
+      <h2>${ic('gauge')}Dein Limit</h2>
+      <div class="sub">Wie viel vom 5-Stunden-Fenster und von der Woche verbraucht ist. Aktualisiert sich von selbst.</div>
+      <div class="limitbox" id="limitbox"><span class="dot off"></span><span class="ltext">…</span></div>
+    </div>
+
+    <div class="secthead">Gerät</div>
     <div class="card">
       <h2>${ic('bluetooth')}Clawdmeter</h2>
       <div class="sub">Schickt deine Claude-Auslastung per Bluetooth an ein Clawdmeter-Gerät. Das Gerät muss einmalig in den Windows-Bluetooth-Einstellungen gekoppelt werden.</div>
