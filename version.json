@@ -1,9 +1,9 @@
 {
-  "version": "1.5.3",
-  "notes": "Plugins: a new Store tab installs small add-on tools from a reviewed catalogue, each checked against its SHA-256, each with a tab of its own and a switch to turn it off. The first one, Drive health, lists your drives and how full they are. Holding Shift while starting loads no plugins at all.",
+  "version": "1.6.0",
+  "notes": "Every tab now has the same header, and Settings is regrouped by topic: data source, appearance, behaviour, notifications, connections, about. The usage tiles moved to the Clawdmeter tab. The Drives plugin groups each volume under the disk it sits on and shows SMART details per disk.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "dac3d16a366e2cbd28755c44bf6d09e307b4b880137cabb80d5f4e739c63eb3e",
-  "sha256": "05e890378dd3421587beac7e38b10fa0a55fcdf4ead4221ff29be2186f73317e"
+  "installer_sha256": "d48d2491299cf19fe9dddc01a58f471d43f269dac8f1008aa6950e84e8db5344",
+  "sha256": "44a9d8b52a037a0f3eba2f0bb473b5185102017c0641cbb8613948ca8f06579e"
 }
