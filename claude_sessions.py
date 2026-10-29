@@ -1401,14 +1401,22 @@ _CLAUDE_CACHE = {"t": 0.0, "active": False, "keys": frozenset()}
 _OWN_APP_TITLE_EXACT = "claude session browser"
 
 
+def _is_claude_desktop_path(path):
+    """Desktop-App: klassischer Installer oder versioniertes MSIX-Paket.
+
+    Desktop und native CLI heissen beide claude.exe. Nur die Desktop-EXE
+    im Paket ausschliessen, nicht eine eventuell mitgelieferte Code-CLI.
+    """
+    path = path.replace("\\", "/").lower()
+    return ("/anthropicclaude/" in "/" + path
+            or re.search(r"/windowsapps/claude_[^/]+/app/claude\.exe$", path)
+            is not None)
+
+
 def _claude_context_active():
-    """True wenn ein echtes Claude-CLI-Terminal offen (oder sehr kuerzlich
-    aktiv) ist. Robuste Kombination:
-      1) Prozess 'claude.exe' laeuft, ODER
-      2) irgendein sichtbares Fenster hat 'claude' im Titel und ist nicht
-         der Session Browser und nicht offensichtlich ein Browser-Tab, ODER
-      3) irgendeine Session-.jsonl-Datei wurde in den letzten 5 min veraendert
-         (Claude ist frisch aktiv, selbst wenn Prozess/Fenster nicht erkennbar).
+    """True wenn eine native Claude-CLI laeuft oder ein Claude-Terminal
+    erkannt wird (z.B. npm-Installation). Desktop-App, Browser und eigenes
+    Fenster zaehlen nicht als CLI. Keine Erkennung anhand alter Transkripte.
     Cache 2 s."""
     now = time.time()
     if now - _CLAUDE_CACHE["t"] < 2.0:
@@ -1417,14 +1425,13 @@ def _claude_context_active():
     keys = set()
     try:
         # 1) claude.exe direkt (CLI-Installation). ABSICHTLICH nicht triggern
-        # fuer die Anthropic Claude Desktop-App (%LOCALAPPDATA%\AnthropicClaude\
-        # claude.exe) - das ist ein Chat-Client, kein CLI, und hat nichts mit
-        # unserer JSONL-Detection zu tun. Wir filtern nach Prozesspfad falls
-        # verfuegbar.
+        # fuer die Claude Desktop-App, auch nicht als Windows-Store/MSIX-App.
+        # Ohne lesbaren Pfad ist der gemeinsame Name kein CLI-Nachweis;
+        # dann bleibt die Terminal-Erkennung weiter unten.
         for name, path, pid in _win_process_names_with_path():
             if name != "claude.exe":
                 continue
-            if path and "anthropicclaude" in path.lower():
+            if not path or _is_claude_desktop_path(path):
                 # Desktop-App - ignorieren
                 continue
             keys.add(("pid", pid))
@@ -1457,7 +1464,11 @@ def _claude_context_active():
                 continue
             if "claude" not in t:
                 continue
-            if _win_hwnd_process(hwnd) in browsers:
+            owner = _win_hwnd_process(hwnd)
+            # claude.exe wurde oben schon anhand des Pfads geprueft. Sein
+            # Desktop-Fenster darf diesen Ausschluss nicht wieder umgehen.
+            # Unbekannte Besitzer koennten ebenfalls die Desktop-App sein.
+            if not owner or owner == "claude.exe" or owner in browsers:
                 continue
             if any(b in t for b in title_hints):
                 continue
