@@ -1,9 +1,9 @@
 {
-  "version": "1.6.0",
-  "notes": "Every tab now has the same header, and Settings is regrouped by topic: data source, appearance, behaviour, notifications, connections, about. The usage tiles moved to the Clawdmeter tab. The Drives plugin groups each volume under the disk it sits on and shows SMART details per disk.",
+  "version": "1.6.1",
+  "notes": "Clawd no longer appears when only Claude Desktop is running. Desktop and the Claude Code CLI are both called claude.exe, and a desktop app installed from the Microsoft Store counted as an open CLI. Found and fixed by @icepuente, who also contributed the first test suite for this project.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "d48d2491299cf19fe9dddc01a58f471d43f269dac8f1008aa6950e84e8db5344",
-  "sha256": "44a9d8b52a037a0f3eba2f0bb473b5185102017c0641cbb8613948ca8f06579e"
+  "installer_sha256": "a7cae07f9e1ce3b60b23ab0de2a2c0b7baa4de0d170ab265d75e82ef13ccba42",
+  "sha256": "ca80cf8ce0c7b8a05d2a0452c303fe399f0d643381fa77dd218dc3e3e6ac900a"
 }
