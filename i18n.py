@@ -145,6 +145,9 @@ TRANSLATIONS = {
         "Du kannst weitermachen": "You're good to go",
         "Clawdmeter hat nur noch {pct}% Akku":
             "Clawdmeter is down to {pct}% battery",
+        "{pct}% deines Wochenlimits verbraucht. "
+        "Zurückgesetzt in {dauer}.":
+            "{pct}% of your weekly limit used. Resets in {dauer}.",
         "{pct}% deines 5-Stunden-Limits verbraucht. "
         "Zurückgesetzt um {when} – in {mins} Minuten.":
             "{pct}% of your 5-hour limit used. "
@@ -184,8 +187,8 @@ TRANSLATIONS = {
             "+ hide the folder of the selected session",
         "0%":
             "0%",
-        "Ab wie viel Prozent des 5-Stunden-Limits gewarnt wird.":
-            "The percentage of the 5-hour limit at which you get warned.",
+        "Ab wie viel Prozent des Limits gewarnt wird.":
+            "The percentage of the limit at which you get warned.",
         "Ab wie viel Restladung gewarnt wird.":
             "The remaining battery level at which you get warned.",
         "Abbrechen":
@@ -398,8 +401,8 @@ TRANSLATIONS = {
             "Limit notification off",
         "Lädt herunter…":
             "Downloading…",
-        "Meldet sich einmal pro 5-Stunden-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht.":
-            "Pings you once per 5-hour window as soon as usage hits the threshold – along with the time it frees up again.",
+        "Meldet sich einmal pro Limit-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht.":
+            "Pings you once per limit window as soon as usage hits the threshold – along with the time it frees up again.",
         "Meldet sich einmal, sobald der Akku des Geräts unter die Schwelle fällt. Erst nach dem Laden wieder.":
             "Pings you once when the device's battery drops below the threshold. Won't again until it's charged.",
         "Mit Windows starten":
@@ -520,8 +523,8 @@ TRANSLATIONS = {
             "When enabled, the X button just hides the app (icon in the system tray at the bottom right, click it to bring it back).",
         "Wie eine Session gestartet wird.":
             "How a session gets started.",
-        "Wie viel vom 5-Stunden-Fenster und von der Woche verbraucht ist. Aktualisiert sich von selbst.":
-            "How much of the 5-hour window and the week you've used up. Updates on its own.",
+        "Wie viel von deinen Limits verbraucht ist. Aktualisiert sich von selbst.":
+            "How much of your limits you've used up. Updates on its own.",
         "Willkommen 👋":
             "Welcome 👋",
         "Windows Terminal":
