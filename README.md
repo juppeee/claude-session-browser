@@ -43,7 +43,7 @@ and puts you back into one with a double-click.
 - **Find it fast** — live search across title, folder, ID and first question; sortable columns you can show, hide and resize by dragging their borders
 - **Make it yours** — colour-code sessions, rename them for good, copy the ID
 - **One click back in** — opens Windows Terminal or `cmd` with the session resumed
-- **Know where your quota stands** — 5-hour and weekly usage with a live countdown to the reset
+- **Know where your quota stands** — 5-hour and weekly usage with a live countdown to the reset (on plans without a 5-hour window, just the week)
 - **Get told, not surprised** — a heads-up before the limit is full, and a notification when it resets
 - **[Clawd](#clawd-your-desktop-buddy)** — a 20×20 pixel buddy on your desktop who acts out what Claude is doing
 - **[Clawdmeter](#clawdmeter) support** — mirror Clawd onto a real device over Bluetooth
@@ -212,7 +212,7 @@ is a complete example.
 | Keep running in background | On | The X button hides the app in the system tray |
 | Start with Windows | On | Registry entry under `HKCU\Run` |
 | Notify on limit reset | On | A Windows notification when your quota is back |
-| Warn before the limit is full | On, at 90% | Once per 5-hour window |
+| Warn before the limit is full | On, at 90% | Once per 5-hour window (once per week on plans without one) |
 | Clawdmeter battery warning | On, at 15% | Once per discharge |
 
 <details>

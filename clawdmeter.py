@@ -64,6 +64,56 @@ RETRY_BACKOFF = (2, 4, 8, 15)   # Wartezeit nach dem 1., 2., 3., n-ten Fehlschla
 
 
 # --------------------------------------------------------------------------
+# Log-Datei
+# --------------------------------------------------------------------------
+# Ohne Protokoll sieht man nicht, warum das Geraet nicht mitzieht: jeder
+# Fehler landete bisher nur in der Statuszeile und war beim naechsten Versuch
+# ueberschrieben. Rotierend, damit die Datei nicht waechst.
+LOG_FILE = Path.home() / ".claude" / "csb_clawdmeter.log"
+_LOG_MAX_BYTES = 512 * 1024
+_logger = None
+_logger_lock = threading.Lock()
+
+
+def _get_logger():
+    global _logger
+    with _logger_lock:
+        if _logger is not None:
+            return _logger
+        import logging
+        import logging.handlers
+        lg = logging.getLogger("csb.clawdmeter")
+        lg.setLevel(logging.INFO)
+        lg.propagate = False
+        if not lg.handlers:
+            try:
+                LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                h = logging.handlers.RotatingFileHandler(
+                    LOG_FILE, maxBytes=_LOG_MAX_BYTES, backupCount=2,
+                    encoding="utf-8")
+                h.setFormatter(logging.Formatter(
+                    "%(asctime)s [%(threadName)s] %(message)s"))
+                lg.addHandler(h)
+            except OSError:
+                lg.addHandler(logging.NullHandler())
+        _logger = lg
+        return lg
+
+
+def file_log(msg: str) -> None:
+    """Eine Zeile ins Clawdmeter-Log. Darf nie werfen."""
+    try:
+        _get_logger().info(msg)
+    except Exception:
+        pass
+
+
+# Warum die letzte API-Abfrage nichts lieferte (fuers Log). Modulweit statt
+# im Rueckgabewert, damit poll_usage_meta seine Signatur behaelt.
+last_poll_error = ""
+
+
+# --------------------------------------------------------------------------
 # Token
 # --------------------------------------------------------------------------
 
@@ -143,6 +193,16 @@ def _reset_minutes(reset_ts: str, now: float) -> int:
     return int(round(mins)) if mins > 0 else 0
 
 
+def usage_windows(has_5h: bool, has_7d: bool) -> str:
+    """Welche Limit-Fenster das Konto hat: "sw", "w" oder "s".
+
+    Anthropic hat das 5-Stunden-Fenster fuer manche Tarife gestrichen; solche
+    Konten liefern nur noch 7d-Header. Das Kuerzel geht als "lim" ans Geraet
+    und als "windows" an die Limit-Ueberwachung - beide richten ihre Anzeige
+    danach, statt ein Fenster zu zeigen, das es nicht gibt."""
+    return ("s" if has_5h else "") + ("w" if has_7d else "")
+
+
 def poll_usage(token: str) -> dict | None:
     """Wie poll_usage_meta, aber nur der BLE-Payload."""
     payload, _meta = poll_usage_meta(token)
@@ -160,20 +220,31 @@ def poll_usage_meta(token: str) -> tuple[dict | None, dict]:
     nicht liefern: der schickt dem Geraet nur noch verbleibende MINUTEN, und
     aus einer gerundeten Minutenzahl laesst sich kein stabiler Zeitpunkt
     zurueckrechnen -- fuer den Reset-Timer brauchen wir aber genau den."""
+    global last_poll_error
+    last_poll_error = ""
     headers = dict(API_HEADERS)
     headers["Authorization"] = f"Bearer {token}"
     body = json.dumps(API_BODY).encode()
     req = urllib.request.Request(API_URL, data=body, headers=headers,
                                  method="POST")
+    http_status = 200
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             hdrs = resp.headers
     except urllib.error.HTTPError as e:
         # 429 & Co. liefern die Header trotzdem mit
         hdrs = e.headers
+        http_status = e.code
+        detail = ""
+        try:
+            detail = e.read(300).decode("utf-8", "replace").strip()
+        except Exception:
+            pass
+        last_poll_error = f"HTTP {e.code}: {detail}"
         if e.code in (401, 403):
             return None, {}
-    except Exception:
+    except Exception as e:
+        last_poll_error = f"{type(e).__name__}: {e}"
         return None, {}
 
     def hdr(name: str, default: str = "") -> str:
@@ -181,27 +252,51 @@ def poll_usage_meta(token: str) -> tuple[dict | None, dict]:
 
     now = time.time()
     meta = {}
-    if hdr("anthropic-ratelimit-unified-5h-utilization"):
+    has_5h = bool(hdr("anthropic-ratelimit-unified-5h-utilization"))
+    has_7d = bool(hdr("anthropic-ratelimit-unified-7d-utilization"))
+    if has_5h or has_7d:
+        windows = usage_windows(has_5h, has_7d)
+        # Ohne 5h-Fenster gibt es auch keinen 5h-Status; dann zaehlt der
+        # Gesamtstatus (bzw. der des Wochenfensters).
+        status = (hdr("anthropic-ratelimit-unified-5h-status", "unknown")
+                  if has_5h else
+                  hdr("anthropic-ratelimit-unified-status")
+                  or hdr("anthropic-ratelimit-unified-7d-status", "unknown"))
         meta = {
+            # 0.0 = dieses Fenster gibt es nicht
             "session_reset_at": _reset_epoch(
-                hdr("anthropic-ratelimit-unified-5h-reset")),
+                hdr("anthropic-ratelimit-unified-5h-reset")) if has_5h else 0.0,
             "weekly_reset_at": _reset_epoch(
-                hdr("anthropic-ratelimit-unified-7d-reset")),
+                hdr("anthropic-ratelimit-unified-7d-reset")) if has_7d else 0.0,
+            "windows": windows,
         }
         payload = {
             "s": _pct(hdr("anthropic-ratelimit-unified-5h-utilization")),
-            "sr": _reset_minutes(hdr("anthropic-ratelimit-unified-5h-reset"), now),
+            # -1 = "Fenster fehlt", nicht "laeuft gerade ab"
+            "sr": (_reset_minutes(hdr("anthropic-ratelimit-unified-5h-reset"), now)
+                   if has_5h else -1),
             "w": _pct(hdr("anthropic-ratelimit-unified-7d-utilization")),
-            "wr": _reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset"), now),
-            "st": hdr("anthropic-ratelimit-unified-5h-status", "unknown"),
+            "wr": (_reset_minutes(hdr("anthropic-ratelimit-unified-7d-reset"), now)
+                   if has_7d else -1),
+            "st": status,
             "acct": "pro",
             "ok": True,
         }
+        # Nur mitschicken, wenn ein Fenster fehlt: der uebliche Payload bleibt
+        # unveraendert, und aeltere Firmware ignoriert das Feld ohnehin.
+        if windows != "sw":
+            payload["lim"] = windows
+        # Dasselbe in der Schreibweise der Original-Firmware (Upstream
+        # Clawdmeter): acct "week" = kein 5-Stunden-Limit. So versteht jede
+        # der beiden Firmwares das Konto.
+        if windows == "w":
+            payload["acct"] = "week"
     elif hdr("anthropic-ratelimit-unified-overage-utilization"):
         meta = {
             "session_reset_at": _reset_epoch(
                 hdr("anthropic-ratelimit-unified-overage-reset")),
             "weekly_reset_at": 0.0,
+            "windows": "s",
         }
         payload = {
             "s": _pct(hdr("anthropic-ratelimit-unified-overage-utilization")),
@@ -213,6 +308,11 @@ def poll_usage_meta(token: str) -> tuple[dict | None, dict]:
             "ok": True,
         }
     else:
+        if not last_poll_error:
+            last_poll_error = (f"HTTP {http_status}: keine "
+                               "anthropic-ratelimit-unified-* Header")
+        else:
+            last_poll_error += " (keine Ratelimit-Header)"
         return None, {}
 
     # Uhrzeit fuers Display (lokale Wall-Clock als Epoch)
@@ -408,7 +508,8 @@ class ClawdmeterLink:
         anim_provider: liefert den Namen der Animation die das Geraet zeigen
         soll (= was der Desktop-Buddy gerade zeigt), oder "" wenn das Geraet
         selbst entscheiden soll. Wird oft gefragt, muss also billig sein."""
-        self._log = log or (lambda msg: None)
+        self._log = log or file_log
+        self._log_last = {}          # Schluessel -> letzte Meldung (Entprellung)
         self._address_provider = address_provider or (lambda: None)
         self._on_usage = on_usage
         self._anim_provider = anim_provider or (lambda: "")
@@ -417,6 +518,9 @@ class ClawdmeterLink:
         self._on_battery = on_battery
         self._last_payload = None    # letzte API-Antwort, fuer Anim-Updates
         self._last_anim = ""         # "" = nichts vorgegeben, wie beim Geraet
+        # Naechster Verbindungsaufbau liest die Dienste vom Geraet statt aus
+        # dem Windows-Zwischenspeicher (siehe _session).
+        self._fresh_services = False
         self._thread = None
         self._stop = threading.Event()
         self._status = {"connected": False, "last_send": None,
@@ -471,6 +575,14 @@ class ClawdmeterLink:
         with self._lock:
             self._status.update(kw)
 
+    def _log_change(self, key: str, msg: str) -> None:
+        """Nur loggen, wenn sich die Meldung fuer diesen Schluessel aendert -
+        sonst schreibt eine Schleife alle paar Sekunden dieselbe Zeile."""
+        if self._log_last.get(key) == msg:
+            return
+        self._log_last[key] = msg
+        self._log(msg)
+
     async def _sleep(self, seconds: float) -> None:
         """Wartet, bricht aber sofort ab wenn stop() oder reconnect() kam."""
         import asyncio
@@ -500,10 +612,14 @@ class ClawdmeterLink:
                 preferred = None
             address = discover_address(preferred)
             if not address:
+                self._log_change("discover", "Kein Geraet gefunden "
+                                 f"(bevorzugt={preferred!r}, gekoppelt="
+                                 f"{list_paired_devices()!r})")
                 self._set(connected=False,
                           last_error=t("Kein Gerät ausgewählt"))
                 await self._sleep(RETRY_INTERVAL)
                 continue
+            self._log_change("discover", f"Geraet: {address}")
             self._set(address=address, attempt=fails + 1)
             try:
                 await self._session(address)
@@ -516,8 +632,10 @@ class ClawdmeterLink:
             except Exception as e:
                 fails += 1
                 self._set(connected=False, last_error=_fehlertext(e))
-                self._log(f"Clawdmeter-Verbindung verloren: {e}")
                 wait = RETRY_BACKOFF[min(fails - 1, len(RETRY_BACKOFF) - 1)]
+                self._log(f"Clawdmeter-Verbindung verloren "
+                          f"(Fehlschlag {fails}, naechster Versuch in {wait}s): "
+                          f"{type(e).__name__}: {e!r}")
                 await self._sleep(wait)
 
     async def _session(self, address: str) -> None:
@@ -533,27 +651,52 @@ class ClawdmeterLink:
         with self._lock:
             erster = int(self._status.get("attempt") or 1) <= 1
         timeout = CONNECT_TIMEOUT_FIRST if erster else CONNECT_TIMEOUT
-        async with BleakClient(_ble_target(address), timeout=timeout) as client:
-            # Fehlt der Service, hat das zwei moegliche Gruende: falsches
-            # Geraet gewaehlt -- oder das Geraet haengt schon an einem anderen
-            # Programm, dann liefert Windows eine unvollstaendige Service-Liste.
-            # Beides ist kein Grund aufzugeben, aber ein Schreibversuch waere
-            # zwecklos. Also melden und es spaeter nochmal probieren.
+        # Windows merkt sich die Dienste eines gekoppelten Geraets. Kommt das
+        # Geraet nach einem Neustart wieder, steht in dieser Liste mitunter
+        # der Clawdmeter-Dienst (noch) nicht. Die Firmware meldet Windows
+        # deshalb nach jedem Start "Dienste geaendert"; bis Windows neu
+        # gelesen hat, vergehen ein paar Sekunden. Nach einer Liste ohne den
+        # Dienst wird darum einmal gleich wieder verbunden und dabei direkt
+        # am Geraet gelesen, statt die volle Wartezeit abzusitzen. (Das
+        # frische Lesen allein behebt eine haengende Windows-Liste nicht -
+        # mit alter Firmware bleibt sie unvollstaendig.)
+        frisch = self._fresh_services
+        self._log(f"Verbinde mit {address} (timeout {timeout}s"
+                  f"{', Dienste frisch lesen' if frisch else ''})")
+        async with BleakClient(
+                _ble_target(address), timeout=timeout,
+                winrt={"use_cached_services": False} if frisch else {},
+        ) as client:
+            # Fehlt der Service, hat das mehrere moegliche Gruende: Windows
+            # hat eine veraltete Liste geliefert (siehe oben), falsches Geraet
+            # gewaehlt -- oder das Geraet haengt schon an einem anderen
+            # Programm. Nichts davon ist ein Grund aufzugeben, aber ein
+            # Schreibversuch waere zwecklos.
             if not any(s.uuid.lower() == SERVICE_UUID
                        for s in client.services):
+                if not frisch:
+                    self._fresh_services = True
+                    self._log(f"{address}: kein Clawdmeter-Dienst in der "
+                              f"gemerkten Liste "
+                              f"{[s.uuid for s in client.services]}, "
+                              "lese die Dienste frisch vom Geraet")
+                    return
                 self._set(connected=False, last_error=t(
                     "Gerät meldet keinen Clawdmeter-Dienst — falsches Gerät, "
                     "oder es ist von einem anderen Programm belegt"))
-                self._log(f"{address}: kein Clawdmeter-Dienst gefunden")
+                self._log(f"{address}: kein Clawdmeter-Dienst gefunden, "
+                          f"Dienste: {[s.uuid for s in client.services]}")
                 await self._sleep(RETRY_INTERVAL)
                 return
 
+            self._fresh_services = False
             self._set(connected=True, last_error=None)
             self._log(f"Clawdmeter verbunden ({address})")
             try:
                 await client.start_notify(REQ_CHAR_UUID, on_refresh)
-            except Exception:
-                pass  # Refresh-Kanal ist optional, der Poll-Loop reicht
+            except Exception as e:
+                # Refresh-Kanal ist optional, der Poll-Loop reicht
+                self._log(f"Refresh-Abo fehlgeschlagen (optional): {e!r}")
 
             def on_battery(_char, data) -> None:
                 if data:
@@ -592,6 +735,16 @@ class ClawdmeterLink:
                         # Request kosten.
                         if self._anim_changed():
                             await self._send_once(client, poll=False)
+                        elif self._last_payload is None:
+                            # Genau hier haengt das Spiegeln: ohne eine
+                            # geglueckte API-Abfrage geht auch kein
+                            # Animationswechsel raus.
+                            self._log_change(
+                                "anim_blocked",
+                                f"Anim '{self._current_anim()}' wartet - "
+                                "noch keine Usage-Daten zum Mitschicken")
+            self._log(f"Sitzung beendet (stop={self._stop.is_set()}, "
+                      f"is_connected={client.is_connected})")
         # Ohne Verbindung ist der Ladestand unbekannt, nicht "wie zuletzt" -
         # ein stehengebliebener Wert waere schlimmer als gar keiner.
         self._set(connected=False, battery=None)
@@ -638,12 +791,17 @@ class ClawdmeterLink:
         if poll or self._last_payload is None:
             token = read_token()
             if not token:
+                self._log_change("poll", "Kein Claude-Token gefunden in "
+                                 f"{[str(p) for p in _credential_candidates()]}")
                 self._set(last_error=t("Kein Claude-Token gefunden"))
                 return
             payload, meta = await asyncio.to_thread(poll_usage_meta, token)
             if not payload:
+                self._log_change("poll", "API-Abfrage fehlgeschlagen: "
+                                 f"{last_poll_error or 'unbekannt'}")
                 self._set(last_error=t("API-Abfrage fehlgeschlagen"))
                 return
+            self._log_change("poll", "API-Abfrage ok")
             self._last_payload = payload
             # Die Limit-Ueberwachung mitfuettern, damit sie nicht dieselben
             # Header ein zweites Mal abfragen muss.
@@ -656,14 +814,27 @@ class ClawdmeterLink:
         payload = dict(self._last_payload)
         anim = self._current_anim()
         payload["a"] = anim          # "" = Geraet entscheidet selbst
+        prev_anim = self._last_anim
         self._last_anim = anim
 
         data = json.dumps(payload, separators=(",", ":")).encode()
-        await client.write_gatt_char(RX_CHAR_UUID, data, response=False)
+        try:
+            await client.write_gatt_char(RX_CHAR_UUID, data, response=False)
+        except Exception as e:
+            self._log(f"BLE-Write fehlgeschlagen ({len(data)} Bytes, "
+                      f"a={anim!r}): {type(e).__name__}: {e!r}")
+            raise
         self._set(last_send=time.time(), last_error=None)
+        self._log_last.pop("anim_blocked", None)
         if poll:
-            self._log(f"Clawdmeter: {payload['s']}% / {payload['w']}%"
-                      + (f" [{anim}]" if anim else ""))
+            lim = payload.get("lim", "sw")
+            werte = " / ".join(
+                ([f"5h {payload['s']}%"] if "s" in lim else [])
+                + ([f"Woche {payload['w']}%"] if "w" in lim else []))
+            self._log(f"Gesendet (Poll, {len(data)} Bytes): "
+                      f"{werte} a={anim!r}")
+        else:
+            self._log(f"Gesendet (Anim): {prev_anim!r} -> {anim!r}")
 
 
 class UsageWatcher:

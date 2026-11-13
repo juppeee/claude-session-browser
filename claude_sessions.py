@@ -277,13 +277,14 @@ DEFAULT_SETTINGS = {
     "notify_limit_reset": True,  # Windows-Notification wenn Claude-Limit sich zurueckgesetzt hat
     "limit_reset_at": 0,         # Epoche wann Limit zurueckgesetzt wird (aus JSONL geparst, 0 = unbekannt)
     "limit_reset_notified_for": 0,  # Fuer welche limit_reset_at wurde schon benachrichtigt (verhindert Doppel-Feuer)
-    "notify_limit_near": True,   # Warnen bevor das 5h-Limit voll ist
+    "notify_limit_near": True,   # Warnen bevor das Limit (5h bzw. Woche) voll ist
     "limit_warn_pct": 90,        # ab wieviel Prozent gewarnt wird
     "notify_clawd_battery": True,  # Warnen wenn der Clawdmeter leer wird
     "clawd_battery_pct": 15,       # ab wieviel Prozent Restladung
     "clawd_battery_warned": False,  # Sperre, damit es nicht dauernd meldet
     # --- intern, aus den Ratelimit-Headern der API gepflegt ---
-    "limit_window_at": 0,        # Reset-Zeitpunkt des aktuellen 5h-Fensters (Epoche)
+    "limit_window_at": 0,        # Reset-Zeitpunkt des ueberwachten Fensters (Epoche)
+    "limit_window_kind": "s",    # Welches Fenster ueberwacht wird: "s" = 5h, "w" = Woche
     "limit_window_peak": 0,      # hoechste Auslastung in diesem Fenster (Prozent)
     "limit_warned_for": 0,       # fuer welches Fenster schon gewarnt wurde
     "onboarded": False,          # Erst-Einrichtung schon durchlaufen?
@@ -463,6 +464,25 @@ _RESET_HHMM_RE = re.compile(
     r"(?:\(([^)]+)\))?", re.IGNORECASE)
 _RESET_REL_RE = re.compile(
     r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?", re.IGNORECASE)
+
+
+def limit_near_text(pct, reset_at, weekly=False, now=None):
+    """Text der Vorwarnung, fuer das 5-Stunden- oder das Wochenfenster.
+
+    Die Woche bekommt eine Restdauer statt einer Uhrzeit: "um 14:00" sagt bei
+    einem Reset in vier Tagen nichts."""
+    now = time.time() if now is None else now
+    rest = max(0, int(reset_at - now))
+    if weekly:
+        tage, std = rest // 86400, (rest % 86400) // 3600
+        dauer = (f"{tage} d {std} h" if tage
+                 else f"{std} h {(rest % 3600) // 60:02d} min")
+        return t("{pct}% deines Wochenlimits verbraucht. "
+                 "Zurückgesetzt in {dauer}.", pct=pct, dauer=dauer)
+    return t("{pct}% deines 5-Stunden-Limits verbraucht. "
+             "Zurückgesetzt um {when} – in {mins} Minuten.",
+             pct=pct, when=time.strftime("%H:%M", time.localtime(reset_at)),
+             mins=rest // 60)
 
 
 def _parse_reset_epoch(text):
@@ -4105,12 +4125,27 @@ class Api:
         "" heisst: keine Vorgabe, das Geraet entscheidet nach Auslastung. Das
         ist auch der Fall wenn der Buddy selbst aus ist -- ohne laufenden
         Buddy gibt es keinen Zustand zu spiegeln."""
+        why = ""
         if not self.settings.get("clawdmeter_buddy", True):
-            return ""
-        try:
-            return self.buddy.current_anim()
-        except Exception:
-            return ""
+            anim, why = "", "Spiegeln aus (clawdmeter_buddy=false)"
+        else:
+            try:
+                anim = self.buddy.current_anim()
+                if not anim:
+                    why = ("Buddy-Thread laeuft nicht"
+                           if not self.buddy.is_alive()
+                           else "Buddy hat noch keine Animation")
+            except Exception as e:
+                anim, why = "", f"current_anim-Fehler: {e!r}"
+        # Nur Wechsel des Grundes loggen; der Link fragt sekuendlich.
+        if why != getattr(self, "_clawd_anim_why", None):
+            self._clawd_anim_why = why
+            try:
+                from clawdmeter import file_log
+                file_log("Buddy-Spiegel: " + (why or "aktiv"))
+            except Exception:
+                pass
+        return anim
 
     def _clawd_link(self):
         """Lazy-Init des BLE-Links. None wenn das Modul nicht verfuegbar ist."""
@@ -4178,13 +4213,23 @@ class Api:
         """
         reset_at = float(meta.get("session_reset_at") or 0)
         pct = int(meta.get("session_pct") or 0)
+        wpct = int(meta.get("weekly_pct") or 0)
+        wreset_at = float(meta.get("weekly_reset_at") or 0)
+        # Welche Fenster das Konto ueberhaupt hat ("sw", "w", "s"). Manche
+        # Tarife haben kein 5-Stunden-Fenster mehr, nur noch die Woche.
+        windows = str(meta.get("windows") or "sw")
         # Fuer die Anzeige in den Einstellungen festhalten. Absichtlich nur im
         # Speicher: der Wert ist Sekunden spaeter veraltet, in der
         # Einstellungsdatei waere er beim naechsten Start eine Luege.
         self._usage_meta = {"pct": pct, "reset_at": reset_at,
-                            "wpct": int(meta.get("weekly_pct") or 0),
-                            "wreset_at": float(meta.get("weekly_reset_at") or 0),
-                            "at": time.time()}
+                            "wpct": wpct, "wreset_at": wreset_at,
+                            "windows": windows, "at": time.time()}
+        # Ueberwacht wird das Fenster, das als naechstes zuschlaegt: das
+        # 5-Stunden-Fenster, und wo es das nicht gibt, die Woche. Ohne diese
+        # Umschaltung bekaeme ein Nur-Wochen-Konto nie eine Vorwarnung.
+        weekly = "s" not in windows
+        if weekly:
+            pct, reset_at = wpct, wreset_at
         if reset_at <= 0:
             return
         s = self.settings
@@ -4193,9 +4238,16 @@ class Api:
         peak = int(s.get("limit_window_peak", 0) or 0)
         dirty = False
 
+        kind = "w" if weekly else "s"
+        same_kind = s.get("limit_window_kind", "s") == kind
+        if not same_kind:
+            s["limit_window_kind"] = kind
+            dirty = True
         if abs(window - reset_at) > 60:
-            # Neues Fenster. War das alte heiss, ist das Limit jetzt zurueck.
-            if window > 0 and peak >= warn_at:
+            # Neues Fenster. War das alte heiss, ist das Limit jetzt zurueck -
+            # ausser es ist gar nicht abgelaufen, sondern das Konto misst
+            # jetzt ein anderes Fenster (Tarifwechsel).
+            if window > 0 and peak >= warn_at and same_kind:
                 s["limit_reset_at"] = window
                 try:
                     self.buddy._notify_limit_reset()
@@ -4215,7 +4267,7 @@ class Api:
                 and abs(float(s.get("limit_warned_for", 0) or 0) - reset_at) > 60):
             s["limit_warned_for"] = reset_at
             dirty = True
-            self._notify_limit_near(pct, reset_at)
+            self._notify_limit_near(pct, reset_at, weekly)
 
         if dirty:
             try:
@@ -4223,17 +4275,12 @@ class Api:
             except Exception:
                 pass
 
-    def _notify_limit_near(self, pct, reset_at):
-        """Tray-Meldung dass das 5h-Limit gleich voll ist."""
-        mins = max(0, int((reset_at - time.time()) / 60))
-        when = time.strftime("%H:%M", time.localtime(reset_at))
+    def _notify_limit_near(self, pct, reset_at, weekly=False):
+        """Tray-Meldung dass das Limit gleich voll ist (5h oder Woche)."""
         tray = getattr(self, "_tray", None)
         if tray and tray.icon:
             try:
-                tray.icon.notify(
-                    t("{pct}% deines 5-Stunden-Limits verbraucht. "
-                      "Zurückgesetzt um {when} – in {mins} Minuten.",
-                      pct=pct, when=when, mins=mins), "Clawd")
+                tray.icon.notify(limit_near_text(pct, reset_at, weekly), "Clawd")
             except Exception:
                 pass
 
@@ -4288,10 +4335,15 @@ class Api:
             # Fenster gewechselt: die Prozentzahl gilt weiter, die naechste
             # Abfrage bringt den neuen Zeitpunkt.
             wreset = float(meta.get("wreset_at") or 0)
+            wpct = int(meta.get("wpct") or 0)
+            # "hit" gehoert zum Fenster, das zaehlt: ohne 5-Stunden-Fenster
+            # ist das die Woche.
+            windows = str(meta.get("windows") or "sw")
             return {"pct": pct, "reset_at": reset_at if reset_at > now else 0,
-                    "hit": pct >= 100,
-                    "wpct": int(meta.get("wpct") or 0),
+                    "hit": (pct if "s" in windows else wpct) >= 100,
+                    "wpct": wpct,
                     "wreset_at": wreset if wreset > now else 0,
+                    "windows": windows,
                     "known": True, "now": now}
 
         # Nichts Frisches da. Selbst eine holen - sonst haengt die Anzeige
@@ -7144,13 +7196,13 @@ function renderSettings(){
       </div>
       <div class="row2">
         <div><div class="lbl">Vorwarnen bevor das Limit voll ist</div>
-          <div class="desc">Meldet sich einmal pro 5-Stunden-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht.</div>
+          <div class="desc">Meldet sich einmal pro Limit-Fenster, sobald die Auslastung die Schwelle erreicht – zusammen mit der Uhrzeit, wann es wieder freigeht.</div>
           ${st.notify_limit_near===false ? `<div class="warnnote">${ic('warn')}<span>Ohne Vorwarnung merkst du es erst bei 100 % – dann ist es zum Reagieren zu spät.</span></div>` : ''}</div>
         <div class="toggle ${st.notify_limit_near!==false?'on':''}" onclick="toggleLimitNear(this)"></div>
       </div>
       <div class="row2">
         <div><div class="lbl">Schwelle für die Vorwarnung</div>
-          <div class="desc">Ab wie viel Prozent des 5-Stunden-Limits gewarnt wird.</div></div>
+          <div class="desc">Ab wie viel Prozent des Limits gewarnt wird.</div></div>
         <div><input type="number" min="10" max="100" step="5"
              value="${st.limit_warn_pct||90}" onchange="setWarnPct(this)"
              class="num-input"> %</div>
@@ -7282,10 +7334,16 @@ function paintLimit(){
     return;
   }
   if(d.reset_at && d.reset_at*1000 <= Date.now()){ refreshLimit(); return; }
-  let html = limitCard(d.hit ? 100 : d.pct, d.reset_at, t('5 Stunden'), d.hit);
+  // Nur die Fenster zeigen, die das Konto hat: manche Tarife haben kein
+  // 5-Stunden-Fenster mehr, eine "5 Stunden 0%"-Kachel waere dort erfunden.
+  const fenster = d.windows || 'sw';
+  const nurWoche = !fenster.includes('s');
+  let html = '';
+  if(!nurWoche) html += limitCard(d.hit ? 100 : d.pct, d.reset_at, t('5 Stunden'), d.hit);
   // Wochenwert nur wenn er wirklich vorliegt - ohne Clawdmeter-Abfrage
   // steht er auf 0 und eine leere Kachel waere irrefuehrend.
-  if(d.wpct > 0 || d.wreset_at) html += limitCard(d.wpct, d.wreset_at, t('Woche'), false);
+  if(fenster.includes('w') && (nurWoche || d.wpct > 0 || d.wreset_at))
+    html += limitCard(nurWoche && d.hit ? 100 : d.wpct, d.wreset_at, t('Woche'), nurWoche && d.hit);
   box.innerHTML = html;
 }
 async function refreshLimit(){
@@ -7463,7 +7521,7 @@ function renderClawd(){
     <div class="secthead">Auslastung</div>
     <div class="card">
       <h2>${ic('gauge')}Dein Limit</h2>
-      <div class="sub">Wie viel vom 5-Stunden-Fenster und von der Woche verbraucht ist. Aktualisiert sich von selbst.</div>
+      <div class="sub">Wie viel von deinen Limits verbraucht ist. Aktualisiert sich von selbst.</div>
       <div class="limitbox" id="limitbox"><span class="dot off"></span><span class="ltext">…</span></div>
     </div>
 
