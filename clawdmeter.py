@@ -286,6 +286,11 @@ def poll_usage_meta(token: str) -> tuple[dict | None, dict]:
         # unveraendert, und aeltere Firmware ignoriert das Feld ohnehin.
         if windows != "sw":
             payload["lim"] = windows
+        # Dasselbe in der Schreibweise der Original-Firmware (Upstream
+        # Clawdmeter): acct "week" = kein 5-Stunden-Limit. So versteht jede
+        # der beiden Firmwares das Konto.
+        if windows == "w":
+            payload["acct"] = "week"
     elif hdr("anthropic-ratelimit-unified-overage-utilization"):
         meta = {
             "session_reset_at": _reset_epoch(

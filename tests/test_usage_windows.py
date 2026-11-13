@@ -47,7 +47,7 @@ class PollWindowsTests(unittest.TestCase):
             "anthropic-ratelimit-unified-overage-status": "rejected",
         })
         self.assertEqual(payload["lim"], "w")
-        self.assertEqual(payload["acct"], "pro")
+        self.assertEqual(payload["acct"], "week")   # upstream firmware's spelling
         self.assertEqual(payload["w"], 10)
         self.assertEqual(payload["wr"], 4 * 1440)
         self.assertEqual(payload["s"], 0)
