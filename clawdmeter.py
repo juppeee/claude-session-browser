@@ -513,6 +513,9 @@ class ClawdmeterLink:
         self._on_battery = on_battery
         self._last_payload = None    # letzte API-Antwort, fuer Anim-Updates
         self._last_anim = ""         # "" = nichts vorgegeben, wie beim Geraet
+        # Naechster Verbindungsaufbau liest die Dienste vom Geraet statt aus
+        # dem Windows-Zwischenspeicher (siehe _session).
+        self._fresh_services = False
         self._thread = None
         self._stop = threading.Event()
         self._status = {"connected": False, "last_send": None,
@@ -643,15 +646,36 @@ class ClawdmeterLink:
         with self._lock:
             erster = int(self._status.get("attempt") or 1) <= 1
         timeout = CONNECT_TIMEOUT_FIRST if erster else CONNECT_TIMEOUT
-        self._log(f"Verbinde mit {address} (timeout {timeout}s)")
-        async with BleakClient(_ble_target(address), timeout=timeout) as client:
-            # Fehlt der Service, hat das zwei moegliche Gruende: falsches
-            # Geraet gewaehlt -- oder das Geraet haengt schon an einem anderen
-            # Programm, dann liefert Windows eine unvollstaendige Service-Liste.
-            # Beides ist kein Grund aufzugeben, aber ein Schreibversuch waere
-            # zwecklos. Also melden und es spaeter nochmal probieren.
+        # Windows merkt sich die Dienste eines gekoppelten Geraets. Kommt das
+        # Geraet nach einem Neustart wieder, steht in dieser Liste mitunter
+        # der Clawdmeter-Dienst (noch) nicht. Die Firmware meldet Windows
+        # deshalb nach jedem Start "Dienste geaendert"; bis Windows neu
+        # gelesen hat, vergehen ein paar Sekunden. Nach einer Liste ohne den
+        # Dienst wird darum einmal gleich wieder verbunden und dabei direkt
+        # am Geraet gelesen, statt die volle Wartezeit abzusitzen. (Das
+        # frische Lesen allein behebt eine haengende Windows-Liste nicht -
+        # mit alter Firmware bleibt sie unvollstaendig.)
+        frisch = self._fresh_services
+        self._log(f"Verbinde mit {address} (timeout {timeout}s"
+                  f"{', Dienste frisch lesen' if frisch else ''})")
+        async with BleakClient(
+                _ble_target(address), timeout=timeout,
+                winrt={"use_cached_services": False} if frisch else {},
+        ) as client:
+            # Fehlt der Service, hat das mehrere moegliche Gruende: Windows
+            # hat eine veraltete Liste geliefert (siehe oben), falsches Geraet
+            # gewaehlt -- oder das Geraet haengt schon an einem anderen
+            # Programm. Nichts davon ist ein Grund aufzugeben, aber ein
+            # Schreibversuch waere zwecklos.
             if not any(s.uuid.lower() == SERVICE_UUID
                        for s in client.services):
+                if not frisch:
+                    self._fresh_services = True
+                    self._log(f"{address}: kein Clawdmeter-Dienst in der "
+                              f"gemerkten Liste "
+                              f"{[s.uuid for s in client.services]}, "
+                              "lese die Dienste frisch vom Geraet")
+                    return
                 self._set(connected=False, last_error=t(
                     "Gerät meldet keinen Clawdmeter-Dienst — falsches Gerät, "
                     "oder es ist von einem anderen Programm belegt"))
@@ -660,6 +684,7 @@ class ClawdmeterLink:
                 await self._sleep(RETRY_INTERVAL)
                 return
 
+            self._fresh_services = False
             self._set(connected=True, last_error=None)
             self._log(f"Clawdmeter verbunden ({address})")
             try:
