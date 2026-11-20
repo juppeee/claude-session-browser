@@ -422,7 +422,41 @@ BUDDY_STATE_MAP = {
     # Alternate-Anims fuer Variety (werden alle ~30s durchgemischt)
     "active_alt":   "write",         # Rotation-Alternative zu work coding
     "thinking_alt": "think",         # Rotation-Alternative zu work think
+    # Was Claude Code gerade tut. Die Werkzeugphasen kommen aus dem
+    # Protokoll, die drei darunter ueber Hooks.
+    "tool_read":    "tool read",
+    "tool_search":  "tool search",
+    "tool_bash":    "tool bash",
+    "tool_web":     "tool web",
+    "subagent":     "subagent",
+    "compact":      "compact",
+    "error":        "error",
 }
+
+# Welches Werkzeug zeigt welche Phase. Nur Werkzeuge, die lange genug
+# laufen, um sichtbar zu sein - ein Edit ist vorbei, bevor ein Bild steht.
+# Was hier fehlt, faellt auf "arbeitet" zurueck.
+WERKZEUG_ZUSTAND = {
+    "read": "tool_read", "notebookread": "tool_read",
+    "glob": "tool_search", "grep": "tool_search", "toolsearch": "tool_search",
+    "bash": "tool_bash", "powershell": "tool_bash", "bashoutput": "tool_bash",
+    "webfetch": "tool_web", "websearch": "tool_web",
+    "agent": "subagent", "task": "subagent",
+}
+
+
+def werkzeug_zustand(name):
+    """Zustand zu einem Werkzeugnamen, oder None.
+
+    MCP-Werkzeuge heissen `mcp__server__werkzeug`; sie kommen aus dem Netz
+    und zaehlen deshalb als Netz-Zugriff.
+    """
+    n = str(name or "").strip().lower()
+    if not n:
+        return None
+    if n.startswith("mcp__"):
+        return "tool_web"
+    return WERKZEUG_ZUSTAND.get(n)
 
 # Sehr spezifische Muster in der neuesten .jsonl-Datei die eindeutig auf ein
 # erreichtes Claude-Nutzungslimit hindeuten. Absichtlich streng gewaehlt
@@ -603,6 +637,7 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
         "last_block_type": None,
         "last_tool_name": None,
         "has_pending_tool": False,
+        "hook_zustand": None,
     }
     if not projects_dir or not os.path.isdir(projects_dir):
         return empty
@@ -767,7 +802,20 @@ def _latest_jsonl_status(projects_dir, max_files=200, tail_kb=8):
         "last_block_type": None,
         "last_tool_name": None,
         "has_pending_tool": False,
+        "hook_zustand": None,
     }
+
+    # Verdichtung, Subagent und Fehler meldet nur der Hook. Im Protokoll
+    # stehen sie entweder gar nicht oder erst, wenn sie vorbei sind - waehrend
+    # einer Verdichtung sieht die Datei aus, als sei nichts los.
+    #
+    # Das gehoert hierher und nicht in den Zweig fuer laufende Werkzeuge:
+    # keins der drei Ereignisse hat etwas mit einem Werkzeug zu tun.
+    meldung = hook_meldung(os.path.splitext(os.path.basename(newest_path))[0])
+    if (meldung and meldung.get("zustand")
+            and meldung["zustand"] != "awaiting_approval"
+            and time.time() - float(meldung.get("zeit") or 0) <= HOOK_FRESH_S):
+        result["hook_zustand"] = meldung["zustand"]
 
     if is_limit:
         result["internal_state"] = limit_type or "rate_limited"
@@ -2610,6 +2658,8 @@ class BuddyController:
         state["is_awaiting_approval"] = False
         state["last_block_type"] = None
         state["last_tool_name"] = None
+        state["has_pending_tool"] = False
+        state["hook_zustand"] = None
         state["internal_state"] = "no_session"
         # State-Stabilisierung: coding/tool_running bleibt stabil
         state["stable_state"] = None
@@ -2691,6 +2741,8 @@ class BuddyController:
                     state["is_awaiting_approval"] = bool(status.get("awaiting_approval"))
                     state["last_block_type"] = status.get("last_block_type")
                     state["last_tool_name"] = status.get("last_tool_name")
+                    state["has_pending_tool"] = bool(status.get("has_pending_tool"))
+                    state["hook_zustand"] = status.get("hook_zustand")
                     state["internal_state"] = status.get("internal_state", "unknown_active")
 
             if state["last_mtime"] <= 0:
@@ -2704,6 +2756,17 @@ class BuddyController:
                 return "limit"
             if state["is_awaiting_approval"] and age < 300:
                 return "awaiting_approval"
+
+            # Was nur der Hook weiss: ein Fehler, eine Verdichtung, ein
+            # Subagent. Das steht vor den Arbeitszustaenden - waehrend einer
+            # Verdichtung sieht das Protokoll aus wie Stillstand, und ein
+            # Fehler ist die wichtigere Nachricht als "arbeitet".
+            # Danach faellt es von selbst wieder heraus: die Meldung
+            # veraltet, und der naechste Durchgang sieht sie nicht mehr.
+            hook_zustand = state.get("hook_zustand")
+            if hook_zustand in ("error", "compact", "subagent") and age < 300:
+                return hook_zustand
+
             if int_state == "done" and age < 180:
                 return "waiting"
 
@@ -2725,6 +2788,13 @@ class BuddyController:
                     return "thinking"
                 if int_state == "tool_pending_approval":
                     return "awaiting_approval"
+                # Laeuft gerade ein Werkzeug, zeigt der Buddy welches. Nur
+                # solange es noch kein Ergebnis gibt - sonst stuende die
+                # Lupe auch dann noch da, wenn die Suche laengst vorbei ist.
+                if state.get("has_pending_tool"):
+                    phase = werkzeug_zustand(state.get("last_tool_name"))
+                    if phase:
+                        return phase
                 return "active"
 
             # Nicht mehr aktiv arbeitend - stable state zuruecksetzen
