@@ -1,9 +1,9 @@
 {
-  "version": "1.6.1",
-  "notes": "Clawd no longer appears when only Claude Desktop is running. Desktop and the Claude Code CLI are both called claude.exe, and a desktop app installed from the Microsoft Store counted as an open CLI. Found and fixed by @icepuente, who also contributed the first test suite for this project.",
+  "version": "1.7.0",
+  "notes": "Plans without a 5-hour window are now supported: the app follows whichever usage windows your account actually has, warns on the weekly limit when there is no session limit, and tells the Clawdmeter which window is missing. Contributed by @icepuente. The work coding and work think animations are redrawn in the character's own palette.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "a7cae07f9e1ce3b60b23ab0de2a2c0b7baa4de0d170ab265d75e82ef13ccba42",
-  "sha256": "ca80cf8ce0c7b8a05d2a0452c303fe399f0d643381fa77dd218dc3e3e6ac900a"
+  "installer_sha256": "2648e25fe549cd744918ff07b8a3ef9f5b94ad55ad6896d8ff0ca2a02664231d",
+  "sha256": "6bb56448b02a87c2aca7374729f9418fad26be41ad0cef615642e3d1af90a7ee"
 }
