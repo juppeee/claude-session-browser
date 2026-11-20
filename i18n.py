@@ -778,20 +778,25 @@ TRANSLATIONS = {
             "Claude Code tells the buddy itself when it's waiting on you.",
         "Was das genau tut": "What it actually does",
         "Ohne das muss die App raten – und rät falsch, sobald mehrere "
-        "Terminals offen sind: eines arbeitet, das andere fragt. Trägt einen "
-        "Hook in":
+        "Terminals offen sind: eines arbeitet, das andere fragt. Trägt Hooks "
+        "in":
             "Without it the app has to guess – and guesses wrong as soon as "
             "you have several terminals open: one is working, the other is "
-            "asking. Adds a hook to",
-        "ein; deine übrigen Hooks bleiben unangetastet.":
-            "; your other hooks stay untouched.",
+            "asking. Adds hooks to",
+        "ein, die Claude Code an diese App melden lassen; deine übrigen Hooks "
+        "bleiben unangetastet. Gemeldet wird nur an deinen eigenen Rechner, "
+        "und nur solange die App läuft.":
+            " that let Claude Code report to this app; your other hooks stay "
+            "untouched. Reports go to your own machine only, and only while "
+            "the app is running.",
         "~/.claude/settings.json": "~/.claude/settings.json",
-        "Eingerichtet. Neu gestartete Claude-Code-Sitzungen melden sich von "
-        "selbst.":
-            "Set up. Claude Code sessions started from now on report in by "
-            "themselves.",
-        "Hook eingerichtet ✓ – gilt ab der nächsten Claude-Code-Sitzung":
-            "Hook added ✓ – takes effect in your next Claude Code session",
+        "Eingerichtet. Claude Code meldet sich ab sofort, auch aus "
+        "Sitzungen, die schon laufen.":
+            "Set up. Claude Code reports in from now on, including from "
+            "sessions that are already running.",
+        "Hook eingerichtet ✓ – gilt sofort": "Hook added ✓ – effective now",
+        "Der Empfänger ließ sich nicht starten.":
+            "Couldn't start the receiver.",
         "Hook entfernt": "Hook removed",
         "Hook konnte nicht gesetzt werden": "Couldn't set the hook",
 
