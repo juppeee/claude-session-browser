@@ -1,9 +1,9 @@
 {
-  "version": "1.7.0",
-  "notes": "Plans without a 5-hour window are now supported: the app follows whichever usage windows your account actually has, warns on the weekly limit when there is no session limit, and tells the Clawdmeter which window is missing. Contributed by @icepuente. The work coding and work think animations are redrawn in the character's own palette.",
+  "version": "1.7.1",
+  "notes": "Clawd is drawn on a slightly larger surface so it finally sits in the middle of its frame instead of half a pixel to the right - the dark strip on the left is gone. Groundwork for the new buddy states: the app now listens for six Claude Code hook events instead of one. This release also adds the first test suite for the project.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "2648e25fe549cd744918ff07b8a3ef9f5b94ad55ad6896d8ff0ca2a02664231d",
-  "sha256": "6bb56448b02a87c2aca7374729f9418fad26be41ad0cef615642e3d1af90a7ee"
+  "installer_sha256": "a47269439493010d1a7b00e31679b297774ab42e90f4f05895e0f442c59286a6",
+  "sha256": "27d901300f54238028e6abe207ca8446d73ec65d1dd4906d1920d83d11212661"
 }
