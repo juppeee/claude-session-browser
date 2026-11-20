@@ -11,10 +11,16 @@ import claude_sessions as app
 from clawd_sprites import BLOB
 
 BODY = "#DE7552"
-# Drawn by hand, so the body sits where the artist put it rather than where
-# the grid wants it. Both are off by half a pixel in the sprite data itself
-# and cannot be corrected by the surface; see issue #19.
-SCHIEF = {"expression wink", "write"}
+# How far the body may sit off centre on average, in pixels. An animation
+# that leans or sways moves the body on purpose, so a single frame says
+# nothing - but averaged over the loop it has to come out in the middle.
+# The bug this guards against was a constant half-pixel offset in every
+# frame, which shows up as half a pixel of average drift.
+ERLAUBTE_DRIFT = 0.25
+
+# Drawn leaning to one side for the whole animation. Known and reported to
+# the artist; the surface cannot correct what the frames do.
+SCHIEF = {"expression wink"}
 
 
 def animationen():
@@ -57,12 +63,39 @@ class EveryAnimationTests(unittest.TestCase):
         for a in animationen():
             if a["n"] in SCHIEF:
                 continue
-            xs = [x for f in a["f"] for x, _y, v in belegt(f)
-                  if a["p"][v] == BODY]
-            if not xs:
+            # Je Frame mitteln, dann ueber die Frames - sonst zaehlen Frames
+            # mit mehr sichtbarem Koerper staerker als die anderen.
+            je_frame = []
+            for f in a["f"]:
+                xs = [x for x, _y, v in belegt(f) if a["p"][v] == BODY]
+                if xs:
+                    je_frame.append(sum(xs) / len(xs))
+            if not je_frame:
                 continue              # limit malt die Figur nicht in Koerperfarbe
             with self.subTest(anim=a["n"]):
-                self.assertAlmostEqual(sum(xs) / len(xs), mitte, delta=0.1)
+                self.assertAlmostEqual(sum(je_frame) / len(je_frame), mitte,
+                                       delta=ERLAUBTE_DRIFT)
+
+    def test_a_still_animation_is_centred_in_every_frame(self):
+        """Wo sich die Figur nicht bewegt, muss jedes Frame mittig sein.
+
+        Trennt den Fall "schwankt um die Mitte" von "sitzt schief": eine
+        Animation ohne Seitwaertsbewegung hat keine Entschuldigung.
+        """
+        mitte = (app.FLAECHE_W - 1) / 2
+        for a in animationen():
+            if a["n"] in SCHIEF:
+                continue
+            je_frame = []
+            for f in a["f"]:
+                xs = [x for x, _y, v in belegt(f) if a["p"][v] == BODY]
+                if xs:
+                    je_frame.append(sum(xs) / len(xs))
+            if not je_frame or max(je_frame) - min(je_frame) > 0.05:
+                continue              # bewegt sich absichtlich
+            with self.subTest(anim=a["n"]):
+                for x in je_frame:
+                    self.assertAlmostEqual(x, mitte, delta=0.1)
 
     def test_nothing_touches_the_edge_of_the_surface(self):
         for a in animationen():
