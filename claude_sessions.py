@@ -1788,6 +1788,25 @@ def _draw_frame_panel(canvas, w, h, pad, color, label):
     return ids
 
 
+# Gezeichnet wird auf eine Flaeche, die groesser ist als das Sprite.
+#
+# Der Koerper ist 11 px breit und sitzt in einem geraden 20er-Raster
+# zwangslaeufig schief: sein Schwerpunkt liegt in fast jeder Animation auf
+# Spalte 10, einen halben Pixel rechts der Mitte (9.5). Sichtbar wird das
+# als breiterer dunkler Streifen links neben der Figur. Um ganze Pixel
+# verschieben hilft nicht - dann kippt der Fehler nur auf die andere Seite.
+#
+# Mit 23 Spalten und dem Sprite um eine Spalte eingerueckt landet Spalte 10
+# auf Spalte 11, und das ist die exakte Mitte von 23. Die 22 Zeilen sind
+# nicht fuers Zentrieren noetig, sondern damit oben und unten derselbe
+# Abstand frei bleibt wie an den Seiten. Ringsum bleibt mindestens 1 px
+# Hintergrund stehen, auch bei den Animationen, die bis an den Rand malen
+# (limit, expression surprise, dance sway).
+SPRITE_PX = 20
+FLAECHE_W, FLAECHE_H = 23, 22
+SPRITE_OFF_X, SPRITE_OFF_Y = 1, 1
+
+
 def _hintergrund_index(frame):
     """Welcher Paletten-Index ist die Hintergrundflaeche des Sprites?
 
@@ -1808,6 +1827,27 @@ def _hintergrund_index(frame):
     for v in rand:
         zaehler[v] = zaehler.get(v, 0) + 1
     return max(zaehler.items(), key=lambda kv: kv[1])[0]
+
+
+def flaeche_zellen(frame, hg_idx):
+    """Das 20x20-Sprite auf die groessere Zeichenflaeche legen.
+
+    Gibt FLAECHE_W * FLAECHE_H Paletten-Indizes zurueck, None fuer alles,
+    was Hintergrund ist: der angesetzte Rand, nicht gesetzte Pixel und die
+    Hintergrundflaeche des Sprites selbst. Wer das zeichnet, fuellt alle
+    drei gleich - sonst saehe man, wo das Sprite aufhoert.
+    """
+    zellen = []
+    for row in range(FLAECHE_H):
+        s_row = row - SPRITE_OFF_Y
+        for col in range(FLAECHE_W):
+            s_col = col - SPRITE_OFF_X
+            if not (0 <= s_row < SPRITE_PX and 0 <= s_col < SPRITE_PX):
+                zellen.append(None)
+                continue
+            idx = frame[s_row * SPRITE_PX + s_col]
+            zellen.append(None if (idx <= 0 or idx == hg_idx) else idx)
+    return zellen
 
 
 def _resolved_frame_style(bud):
@@ -2086,13 +2126,15 @@ class BuddyController:
             pass
         root.configure(bg=self._TRANSPARENT)
 
-        # Rahmen einlesen und Fenstermaße daraus ableiten. Sprite bleibt
-        # immer 20*scale, das Fenster wird um Padding groesser.
+        # Rahmen einlesen und Fenstermaße daraus ableiten. Die
+        # Zeichenflaeche bleibt immer FLAECHE_W x FLAECHE_H mal scale, das
+        # Fenster wird um das Padding groesser.
         frame_style = _resolved_frame_style(s)
         frame_pad = _frame_pad(frame_style, scale)
-        px_sprite = 20 * scale
-        px_w = px_sprite + frame_pad["l"] + frame_pad["r"]
-        px_h = px_sprite + frame_pad["t"] + frame_pad["b"]
+        px_fl_w = FLAECHE_W * scale
+        px_fl_h = FLAECHE_H * scale
+        px_w = px_fl_w + frame_pad["l"] + frame_pad["r"]
+        px_h = px_fl_h + frame_pad["t"] + frame_pad["b"]
         root.geometry(f"{px_w}x{px_h}+{x}+{y}")
 
         canvas = tk.Canvas(root, width=px_w, height=px_h,
@@ -2108,7 +2150,7 @@ class BuddyController:
             self._TRANSPARENT)
 
         # PhotoImage als Zeichenflaeche – Sprite zentriert im Innenbereich
-        img = tk.PhotoImage(width=px_sprite, height=px_sprite)
+        img = tk.PhotoImage(width=px_fl_w, height=px_fl_h)
         sprite_id = canvas.create_image(frame_pad["l"], frame_pad["t"],
                                         anchor="nw", image=img)
         canvas.image = img
@@ -2120,15 +2162,17 @@ class BuddyController:
         def rebuild_frame(new_style, new_color, new_label, new_scale):
             """Loescht alle Frame-Layer und zeichnet sie neu; passt Fenster-,
             Canvas- und Bildgroesse an."""
-            nonlocal frame_style, frame_pad, px_sprite, px_w, px_h, frame_items
+            nonlocal frame_style, frame_pad, px_fl_w, px_fl_h, px_w, px_h
+            nonlocal frame_items
             # Sprite-Zeichenflaeche und Fenster neu dimensionieren
             frame_style = new_style
             frame_pad = _frame_pad(new_style, new_scale)
-            px_sprite = 20 * new_scale
-            px_w = px_sprite + frame_pad["l"] + frame_pad["r"]
-            px_h = px_sprite + frame_pad["t"] + frame_pad["b"]
+            px_fl_w = FLAECHE_W * new_scale
+            px_fl_h = FLAECHE_H * new_scale
+            px_w = px_fl_w + frame_pad["l"] + frame_pad["r"]
+            px_h = px_fl_h + frame_pad["t"] + frame_pad["b"]
             try:
-                img.configure(width=px_sprite, height=px_sprite)
+                img.configure(width=px_fl_w, height=px_fl_h)
                 canvas.configure(width=px_w, height=px_h)
                 root.geometry(f"{px_w}x{px_h}")
                 canvas.coords(sprite_id, frame_pad["l"], frame_pad["t"])
@@ -2705,18 +2749,14 @@ class BuddyController:
                 # 0 ist „nicht gesetzt", der zweite Wert ist die eigene
                 # Hintergrundflaeche des Sprites - beides zaehlt als leer.
                 hg_idx = _hintergrund_index(f)
+                zellen = flaeche_zellen(f, hg_idx)
                 rows_data = []
-                for row in range(20):
-                    cells = []
-                    ridx = row * 20
-                    for col in range(20):
-                        idx = f[ridx + col]
-                        if idx <= 0 or idx == hg_idx:
-                            cells.append(bg_fill)
-                        elif idx < len(palette):
-                            cells.append(palette[idx])
-                        else:
-                            cells.append(bg_fill)
+                for row in range(FLAECHE_H):
+                    cells = [
+                        palette[i] if (i is not None and i < len(palette))
+                        else bg_fill
+                        for i in zellen[row * FLAECHE_W:(row + 1) * FLAECHE_W]
+                    ]
                     row_str = "{" + " ".join(
                         (" ".join([c] * sc)) for c in cells) + "}"
                     rows_data.append(row_str)
@@ -2725,9 +2765,9 @@ class BuddyController:
                 render_cache[key] = rows_data
 
             try:
-                for row in range(20):
+                for row in range(FLAECHE_H):
                     y1 = row * sc
-                    img.put(rows_data[row], to=(0, y1, 20 * sc, y1 + sc))
+                    img.put(rows_data[row], to=(0, y1, FLAECHE_W * sc, y1 + sc))
                 last_drawn["key"] = key
             except Exception:
                 pass
@@ -4540,9 +4580,9 @@ class Api:
             self.buddy.start()
             time.sleep(0.4)
         scale = max(2, min(10, int(bud.get("size", 4))))
-        # Rahmen berücksichtigen – das Fenster ist ggf. groesser als 20*scale.
+        # Rahmen berücksichtigen - das Fenster ist breiter als die Flaeche.
         pad = _frame_pad(_resolved_frame_style(bud), scale)
-        size_px = 20 * scale + pad["l"] + pad["r"]
+        size_px = FLAECHE_W * scale + pad["l"] + pad["r"]
         mi = int(monitor_idx) if monitor_idx is not None else None
         nx, ny = _anchor_position(anchor, size_px, int(bud.get("x", 200)),
                                   int(bud.get("y", 200)), mi)
@@ -4598,17 +4638,24 @@ class Api:
         scale = 4
         # PNG selbst bauen ist Overkill – wir generieren stattdessen ein
         # BMP mit 4x-Scale und liefern es als data-uri.
-        w = 20 * scale
-        h = 20 * scale
+        #
+        # Dieselbe Flaeche wie im Buddy-Fenster, sonst sitzt die Figur in der
+        # Vorschau anders als da, wo sie spaeter steht.
+        w = FLAECHE_W * scale
+        h = FLAECHE_H * scale
+        # Die eigene Hintergrundflaeche des Sprites zaehlt wie "leer" - ohne
+        # das setzt sich ihr Schwarz vom angesetzten Rand ab und die Kachel
+        # bekommt einen Kasten.
+        zellen = flaeche_zellen(frame, _hintergrund_index(frame))
         # 24-bit BMP, unten-nach-oben.
         row_bytes = w * 3
         pad = (4 - row_bytes % 4) % 4
         pixels = bytearray()
-        for row in range(19, -1, -1):
+        for row in range(FLAECHE_H - 1, -1, -1):
             for _ in range(scale):
-                for col in range(20):
-                    idx = frame[row * 20 + col]
-                    if idx <= 0:
+                for col in range(FLAECHE_W):
+                    idx = zellen[row * FLAECHE_W + col]
+                    if idx is None:
                         r, g, b = 20, 16, 14   # dunkler App-Hintergrund
                     else:
                         hx = palette[idx] if idx < len(palette) else "#000000"
