@@ -23,10 +23,8 @@ import shutil
 import base64
 import ctypes
 import logging
-import secrets
 import tempfile
 import threading
-import http.server
 import webbrowser
 import datetime as dt
 import subprocess
@@ -121,9 +119,7 @@ def _hook_entry():
         os.makedirs(HOOK_DIR, exist_ok=True)
         with open(os.path.join(HOOK_DIR, sid + ".json"), "w",
                   encoding="utf-8") as fh:
-            json.dump({"ereignis": d.get("hook_event_name") or "Notification",
-                       "meldung": str(d.get("message") or "")[:300],
-                       "zeit": time.time()}, fh)
+            json.dump(hook_eintrag(d), fh)
     except OSError:
         return
     # Alte Dateien wegraeumen: jede Session hinterlaesst eine, sonst waechst
@@ -164,32 +160,23 @@ def _hook_wartet(session_id, seit):
 
 
 # ---------------------------------------------------------------------------
-# Hook-Empfaenger: Claude Code schickt Ereignisse per HTTP an uns.
+# Welche Hook-Ereignisse die App abonniert.
 #
-# Vorher war jedes Ereignis ein Programmstart (`--csb-hook`). Gemessen am
-# fertigen Build sind das rund 440 ms pro Aufruf - fuer die seltene Rueckfrage
-# gerade noch hinnehmbar, fuer alles andere nicht: eine einzige Sitzung hier
-# hatte 3707 Werkzeugaufrufe.
+# Claude Code startet fuer jedes Ereignis ein Programm. Am fertigen Build
+# gemessen sind das rund 440 ms pro Aufruf - fuer diese Liste hier
+# unbedenklich: die Rueckfrage kommt laut Doku ohnehin erst etwa sechs
+# Sekunden nach dem Prompt, Verdichtungen gab es in einer langen Sitzung
+# vierzehn, Subagent und Fehler noch seltener.
 #
-# Claude Code kann Hooks stattdessen per HTTP zustellen. Der Empfaenger darf
-# ein laufender Dienst sein, also kostet ein Ereignis nur noch eine Anfrage
-# ueber die Loopback-Schnittstelle. Laeuft die App nicht, kommt sofort
-# "Verbindung abgelehnt" zurueck; nachgemessen: das haelt Claude Code nicht
-# auf, auch nicht ohne `async`.
-#
-# Gelauscht wird ausschliesslich auf 127.0.0.1, und die Adresse enthaelt ein
-# Zufallsmerkmal. Ohne das koennte jedes andere Programm auf diesem Rechner
-# dem Buddy Ereignisse unterschieben.
-#
-# Bewusst nicht abonniert: PreToolUse und PostToolUse. Welches Werkzeug laeuft,
-# steht ohnehin im Protokoll, das die App schon liest - dafuer brauchen wir
-# keine zweite Quelle und keine tausenden Anfragen.
+# Fuer PreToolUse und PostToolUse waere derselbe Weg untragbar - eine Sitzung
+# hier hatte 3707 Werkzeugaufrufe. Die stehen aber ohnehin im Protokoll, das
+# die App liest, also brauchen wir sie hier gar nicht.
 HOOK_EREIGNISSE = ("Notification", "SubagentStart", "SubagentStop",
                    "PreCompact", "PostCompact", "StopFailure")
 
 # Welcher Buddy-Zustand gehoert zu welchem Ereignis. Die Namen sind die der
-# Animationen; was es noch nicht gibt, wird erst sichtbar, wenn die Sprites
-# dafuer da sind (siehe choose_anim).
+# Animationen; was es noch nicht gibt, bleibt unsichtbar, bis die Sprites
+# dafuer da sind.
 HOOK_ZUSTAND = {
     "Notification": "awaiting_approval",
     "SubagentStart": "subagent",
@@ -199,48 +186,23 @@ HOOK_ZUSTAND = {
     "StopFailure": "error",
 }
 
-_HOOK_MELDUNGEN = {}            # session_id -> dict
-_HOOK_LOCK = threading.Lock()
 
-
-def hook_melden(daten):
-    """Ein eingegangenes Ereignis ablegen. Gibt die Sitzungskennung zurueck."""
-    sid = re.sub(r"[^A-Za-z0-9_-]", "", str(daten.get("session_id") or ""))[:64]
+def hook_eintrag(daten):
+    """Aus der Meldung von Claude Code wird das, was wir uns merken."""
     ereignis = str(daten.get("hook_event_name") or "")[:40]
-    if not ereignis:
-        return ""
-    eintrag = {
+    return {
         "ereignis": ereignis,
         "zustand": HOOK_ZUSTAND.get(ereignis),
         "meldung": str(daten.get("message") or "")[:300],
         "grund": str(daten.get("error") or "")[:80],
         "zeit": time.time(),
     }
-    with _HOOK_LOCK:
-        _HOOK_MELDUNGEN[sid or "unbekannt"] = eintrag
-        # Der Speicher darf nicht mitwachsen: eine Sitzung, die seit Stunden
-        # nichts mehr meldet, interessiert niemanden.
-        if len(_HOOK_MELDUNGEN) > 64:
-            grenze = time.time() - HOOK_FRESH_S
-            for k in [k for k, v in _HOOK_MELDUNGEN.items()
-                      if v["zeit"] < grenze]:
-                _HOOK_MELDUNGEN.pop(k, None)
-    return sid
 
 
 def hook_meldung(session_id):
-    """Letzte Meldung zu einer Sitzung, oder None.
-
-    Erst der Empfaenger, dann die Dateien des alten Programmstart-Hooks -
-    wer noch den alten Eintrag in seinen Einstellungen hat, soll nicht
-    schlechter dastehen als vorher.
-    """
+    """Letzte Meldung zu einer Sitzung, oder None."""
     if not session_id:
         return None
-    with _HOOK_LOCK:
-        eintrag = _HOOK_MELDUNGEN.get(session_id)
-    if eintrag:
-        return dict(eintrag)
     try:
         with open(os.path.join(HOOK_DIR, session_id + ".json"),
                   encoding="utf-8") as fh:
@@ -249,100 +211,9 @@ def hook_meldung(session_id):
         return None
     if not isinstance(d, dict):
         return None
+    # Aeltere Dateien kennen das Feld noch nicht.
     d.setdefault("zustand", HOOK_ZUSTAND.get(d.get("ereignis") or ""))
     return d
-
-
-class _HookHandler(http.server.BaseHTTPRequestHandler):
-    pfad = ""                   # wird beim Start gesetzt
-    protocol_version = "HTTP/1.1"
-
-    def do_POST(self):
-        if self.path != self.pfad:
-            self._antwort(404, b"{}")
-            return
-        try:
-            laenge = int(self.headers.get("Content-Length") or 0)
-        except (TypeError, ValueError):
-            laenge = 0
-        if laenge <= 0 or laenge > 262144:
-            self._antwort(400, b"{}")
-            return
-        try:
-            daten = json.loads(self.rfile.read(laenge).decode("utf-8", "replace"))
-        except (ValueError, OSError):
-            daten = None
-        if isinstance(daten, dict):
-            try:
-                hook_melden(daten)
-            except Exception:
-                pass
-        # Immer freundlich antworten: ein Fehler von uns darf Claude Code
-        # nicht belasten, wir sind hier nur Zuhoerer.
-        self._antwort(200, b"{}")
-
-    def _antwort(self, code, koerper):
-        try:
-            self.send_response(code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(koerper)))
-            self.end_headers()
-            self.wfile.write(koerper)
-        except OSError:
-            pass
-
-    def log_message(self, *a):
-        pass                    # nicht in die Konsole schreiben
-
-
-class HookEmpfaenger:
-    """Haelt den kleinen HTTP-Dienst, auf den die Hooks zeigen."""
-
-    def __init__(self):
-        self.server = None
-        self.port = 0
-        self.token = ""
-
-    @property
-    def url(self):
-        if not self.port or not self.token:
-            return ""
-        return "http://127.0.0.1:%d/csb/%s" % (self.port, self.token)
-
-    def start(self, wunschport=0, token=""):
-        if self.server:
-            return self.url
-        self.token = token or secrets.token_hex(16)
-        pfad = "/csb/" + self.token
-        klasse = type("_H", (_HookHandler,), {"pfad": pfad})
-        for port in ([wunschport] if wunschport else []) + [0]:
-            try:
-                self.server = http.server.ThreadingHTTPServer(
-                    ("127.0.0.1", port), klasse)
-                break
-            except OSError:
-                self.server = None
-        if not self.server:
-            return ""
-        self.server.daemon_threads = True
-        self.port = self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever,
-                         kwargs={"poll_interval": 0.5},
-                         daemon=True).start()
-        return self.url
-
-    def stop(self):
-        if not self.server:
-            return
-        try:
-            self.server.shutdown()
-            self.server.server_close()
-        except Exception:
-            pass
-        self.server = None
-
-
-HOOK_EMPFAENGER = HookEmpfaenger()
 
 
 # Woran wir unsere eigenen Eintraege in fremden Einstellungen wiedererkennen.
@@ -388,19 +259,6 @@ def hooks_eingerichtet():
     return False
 
 
-def hooks_url_eingetragen():
-    """Die Adresse, die aktuell in den Einstellungen steht (oder "")."""
-    hooks = _claude_settings_lesen().get("hooks")
-    if not isinstance(hooks, dict):
-        return ""
-    for gruppen in hooks.values():
-        for g in gruppen if isinstance(gruppen, list) else []:
-            for h in (g.get("hooks") or []) if isinstance(g, dict) else []:
-                if isinstance(h, dict) and "/csb/" in str(h.get("url", "")):
-                    return str(h["url"])
-    return ""
-
-
 def _ohne_unsere(gruppen):
     """Eine Hook-Gruppe ohne unsere Eintraege; fremde bleiben, wie sie sind."""
     sauber = []
@@ -418,18 +276,15 @@ def _ohne_unsere(gruppen):
     return sauber
 
 
-def hooks_einrichten(an, url=""):
+def hooks_einrichten(an):
     """Traegt unsere Hooks in ~/.claude/settings.json ein oder entfernt sie.
 
     Fremde Hooks bleiben unangetastet - erkannt wird ausschliesslich der
-    eigene Eintrag. Eingetragen wird je Ereignis ein HTTP-Hook auf unseren
-    Empfaenger; ohne Adresse wird nur aufgeraeumt.
+    eigene Eintrag. Eingetragen wird je Ereignis derselbe Aufruf; welches
+    Ereignis es war, steht in der Meldung auf der Standardeingabe.
 
-    `async` steht bewusst drin: Claude Code soll nicht auf uns warten. Dass
-    eine abgelehnte Verbindung auch ohne das nichts kostet, ist nachgemessen -
-    aber verlassen wollen wir uns darauf nicht.
-
-    Raeumt nebenbei den alten Programmstart-Hook weg, falls er noch drinsteht.
+    Raeumt nebenbei Eintraege frueherer Fassungen weg, auch den HTTP-Eintrag
+    aus der Zwischenversion.
     """
     d = _claude_settings_lesen()
     hooks = d.get("hooks")
@@ -438,10 +293,10 @@ def hooks_einrichten(an, url=""):
 
     for name in set(list(hooks) + list(HOOK_EREIGNISSE)):
         sauber = _ohne_unsere(hooks.get(name))
-        if an and url and name in HOOK_EREIGNISSE:
+        if an and name in HOOK_EREIGNISSE:
             sauber.append({"matcher": "",
-                           "hooks": [{"type": "http", "url": url,
-                                      "async": True}]})
+                           "hooks": [{"type": "command",
+                                      "command": _hook_command()}]})
         if sauber:
             hooks[name] = sauber
         else:
@@ -4264,52 +4119,11 @@ class Api:
 
     def hooks_state(self):
         return {"on": hooks_eingerichtet(), "cmd": _hook_command(),
-                "url": hooks_url_eingetragen(),
                 "events": list(HOOK_EREIGNISSE)}
 
     def hooks_toggle(self, on):
-        if on:
-            url = self._hook_empfaenger_starten()
-            if not url:
-                return {"ok": False, "on": hooks_eingerichtet(),
-                        "error": t("Der Empfänger ließ sich nicht starten.")}
-            ok = hooks_einrichten(True, url)
-        else:
-            ok = hooks_einrichten(False)
-            HOOK_EMPFAENGER.stop()
+        ok = hooks_einrichten(bool(on))
         return {"ok": ok, "on": hooks_eingerichtet()}
-
-    def _hook_empfaenger_starten(self):
-        """Den Empfaenger hochfahren und Port samt Merkmal behalten.
-
-        Beides wird gemerkt, damit die Adresse ueber Neustarts dieselbe
-        bleibt - sonst muesste bei jedem Start in fremden Einstellungen
-        herumgeschrieben werden.
-        """
-        url = HOOK_EMPFAENGER.start(int(self.settings.get("hook_port") or 0),
-                                    str(self.settings.get("hook_token") or ""))
-        if not url:
-            return ""
-        if (self.settings.get("hook_port") != HOOK_EMPFAENGER.port
-                or self.settings.get("hook_token") != HOOK_EMPFAENGER.token):
-            self.settings["hook_port"] = HOOK_EMPFAENGER.port
-            self.settings["hook_token"] = HOOK_EMPFAENGER.token
-            save_json(SETTINGS_FILE, self.settings)
-        return url
-
-    def hooks_hochfahren(self):
-        """Beim Programmstart: Empfaenger an, wenn Hooks eingerichtet sind.
-
-        Steht in den Einstellungen noch eine andere Adresse - anderer Port
-        nach einem belegten Port, oder noch der alte Programmstart-Hook -,
-        wird der Eintrag einmal richtiggestellt.
-        """
-        if not hooks_eingerichtet():
-            return ""
-        url = self._hook_empfaenger_starten()
-        if url and hooks_url_eingetragen() != url:
-            hooks_einrichten(True, url)
-        return url
 
     def set_language(self, code):
         """Sprache umstellen. Gibt Sprache + Tabelle zurueck, damit die
@@ -7546,7 +7360,7 @@ function renderSettings(){
         <div><div class="lbl">Rückfragen zuverlässig erkennen</div>
           <div class="desc">Claude Code meldet dem Buddy selbst, wenn es auf deine Antwort wartet.</div>
           <details class="mehr"><summary>Was das genau tut</summary>
-            <div class="desc">Ohne das muss die App raten – und rät falsch, sobald mehrere Terminals offen sind: eines arbeitet, das andere fragt. Trägt Hooks in <code>~/.claude/settings.json</code> ein, die Claude Code an diese App melden lassen; deine übrigen Hooks bleiben unangetastet. Gemeldet wird nur an deinen eigenen Rechner, und nur solange die App läuft.</div>
+            <div class="desc">Ohne das muss die App raten – und rät falsch, sobald mehrere Terminals offen sind: eines arbeitet, das andere fragt. Trägt Hooks in <code>~/.claude/settings.json</code> ein, die Claude Code an diese App melden lassen; deine übrigen Hooks bleiben unangetastet. Gemeldet wird nur auf deinem eigenen Rechner, nichts verlässt ihn.</div>
           </details>
           <div class="desc" id="hook-hint"></div></div>
         <div class="toggle" id="hook-toggle" onclick="toggleHooks(this)"></div>
@@ -8698,12 +8512,6 @@ def main():
     # Handle in Modul-Scope halten bis Prozess-Ende (Mutex faellt sonst weg)
     globals()["_SINGLE_INSTANCE_HANDLE"] = mutex_handle
     api = Api()
-    # Hook-Empfaenger moeglichst frueh: die erste Rueckfrage kann kommen,
-    # bevor jemand das Fenster angesehen hat.
-    try:
-        api.hooks_hochfahren()
-    except Exception:
-        pass
     s = api.settings
     kw = dict(
         html=build_html(), js_api=api, min_size=(820, 520),

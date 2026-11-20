@@ -784,19 +784,17 @@ TRANSLATIONS = {
             "you have several terminals open: one is working, the other is "
             "asking. Adds hooks to",
         "ein, die Claude Code an diese App melden lassen; deine übrigen Hooks "
-        "bleiben unangetastet. Gemeldet wird nur an deinen eigenen Rechner, "
-        "und nur solange die App läuft.":
+        "bleiben unangetastet. Gemeldet wird nur auf deinem eigenen Rechner, "
+        "nichts verlässt ihn.":
             " that let Claude Code report to this app; your other hooks stay "
-            "untouched. Reports go to your own machine only, and only while "
-            "the app is running.",
+            "untouched. Reporting happens on your own machine; nothing leaves "
+            "it.",
         "~/.claude/settings.json": "~/.claude/settings.json",
         "Eingerichtet. Claude Code meldet sich ab sofort, auch aus "
         "Sitzungen, die schon laufen.":
             "Set up. Claude Code reports in from now on, including from "
             "sessions that are already running.",
         "Hook eingerichtet ✓ – gilt sofort": "Hook added ✓ – effective now",
-        "Der Empfänger ließ sich nicht starten.":
-            "Couldn't start the receiver.",
         "Hook entfernt": "Hook removed",
         "Hook konnte nicht gesetzt werden": "Couldn't set the hook",
 
