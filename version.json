@@ -1,9 +1,9 @@
 {
-  "version": "1.7.1",
-  "notes": "Clawd is drawn on a slightly larger surface so it finally sits in the middle of its frame instead of half a pixel to the right - the dark strip on the left is gone. Groundwork for the new buddy states: the app now listens for six Claude Code hook events instead of one. This release also adds the first test suite for the project.",
+  "version": "1.8.0",
+  "notes": "Clawd now shows what Claude Code is doing: reading, searching, running a command, fetching from the web, waiting on a subagent, compacting the conversation, or running into an error. Twenty-two animations instead of fifteen, twelve of the old ones redrawn - the limit animation in particular.",
   "url": "https://github.com/juppeee/claude-session-browser/releases/latest",
   "exe_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser.exe",
   "installer_url": "https://github.com/juppeee/claude-session-browser/releases/latest/download/ClaudeSessionBrowser-Setup.exe",
-  "installer_sha256": "a47269439493010d1a7b00e31679b297774ab42e90f4f05895e0f442c59286a6",
-  "sha256": "27d901300f54238028e6abe207ca8446d73ec65d1dd4906d1920d83d11212661"
+  "installer_sha256": "2a2b309b004e722aaa5487b2a200645fef9e414c827ae3df2390706db2527ee9",
+  "sha256": "0522b1795388fb98dd858d3917c0e8804e759b8a58947202de22feda4d0d62db"
 }
