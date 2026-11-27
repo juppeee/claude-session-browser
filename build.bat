@@ -9,9 +9,11 @@ REM   pip install pyinstaller pywebview pystray Pillow
 REM   winget install JRSoftware.InnoSetup
 
 setlocal
-set TCL_LIBRARY=%LOCALAPPDATA%\Programs\Python\Python311\tcl\tcl8.6
+REM Only on the machine where this path exists; CI brings its own Tcl/Tk.
+if not defined TCL_LIBRARY if exist "%LOCALAPPDATA%\Programs\Python\Python311\tcl\tcl8.6" set TCL_LIBRARY=%LOCALAPPDATA%\Programs\Python\Python311\tcl\tcl8.6
 set SETUPTOOLS_USE_DISTUTILS=stdlib
-set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+REM ISCC can be preset from outside (CI installs Inno Setup elsewhere).
+if not defined ISCC set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 
 echo.
 echo [0/5] Uebersetzungen pruefen...
