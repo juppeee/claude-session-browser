@@ -5,13 +5,17 @@ REM Baut die App als "onedir" (schnelle Startzeit, kein Temp-Extract)
 REM und verpackt sie mit Inno Setup zu einem echten Installer.
 REM
 REM Voraussetzungen (einmalig):
-REM   pip install pyinstaller pywebview pystray Pillow
+REM   pip install pyinstaller pywebview pystray Pillow bleak truststore certifi
+REM   (bleak, truststore and certifi are imported lazily: without them the
+REM   build succeeds but the Clawdmeter link and Windows TLS store are missing)
 REM   winget install JRSoftware.InnoSetup
 
 setlocal
-set TCL_LIBRARY=%LOCALAPPDATA%\Programs\Python\Python311\tcl\tcl8.6
+REM Only on the machine where this path exists; CI brings its own Tcl/Tk.
+if not defined TCL_LIBRARY if exist "%LOCALAPPDATA%\Programs\Python\Python311\tcl\tcl8.6" set TCL_LIBRARY=%LOCALAPPDATA%\Programs\Python\Python311\tcl\tcl8.6
 set SETUPTOOLS_USE_DISTUTILS=stdlib
-set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+REM ISCC can be preset from outside (CI installs Inno Setup elsewhere).
+if not defined ISCC set ISCC="%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 
 echo.
 echo [0/5] Uebersetzungen pruefen...

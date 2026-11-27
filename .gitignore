@@ -2,6 +2,8 @@
 build/
 dist/
 *.spec
+# build.bat needs this one; the app specs are generated from the command line
+!csb_updater.spec
 *.exe
 
 # Python
