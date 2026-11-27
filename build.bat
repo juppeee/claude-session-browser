@@ -5,7 +5,9 @@ REM Baut die App als "onedir" (schnelle Startzeit, kein Temp-Extract)
 REM und verpackt sie mit Inno Setup zu einem echten Installer.
 REM
 REM Voraussetzungen (einmalig):
-REM   pip install pyinstaller pywebview pystray Pillow
+REM   pip install pyinstaller pywebview pystray Pillow bleak truststore certifi
+REM   (bleak, truststore and certifi are imported lazily: without them the
+REM   build succeeds but the Clawdmeter link and Windows TLS store are missing)
 REM   winget install JRSoftware.InnoSetup
 
 setlocal
